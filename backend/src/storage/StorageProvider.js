@@ -1,17 +1,17 @@
 class StorageProvider {
-  async upload(file, options) {
+  async upload(_file, _options) {
     throw new Error('Method not implemented');
   }
 
-  async delete(publicId) {
+  async delete(_publicId) {
     throw new Error('Method not implemented');
   }
 
-  getFileUrl(publicId) {
+  getFileUrl(_publicId) {
     throw new Error('Method not implemented');
   }
 
-  async getUploadUrl(key, contentType) {
+  async getUploadUrl(_key, _contentType) {
     throw new Error('Method not implemented');
   }
 

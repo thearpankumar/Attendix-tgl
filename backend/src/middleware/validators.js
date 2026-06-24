@@ -101,6 +101,22 @@ const validateAttendance = [
   body('longitude')
     .isFloat({ min: -180, max: 180 })
     .withMessage('Valid longitude required'),
+  body('faceDetected')
+    .optional()
+    .isBoolean()
+    .withMessage('faceDetected must be boolean'),
+  body('captchaAnswer')
+    .if(() => process.env.NODE_ENV !== 'test')
+    .trim()
+    .notEmpty()
+    .withMessage('Captcha answer required')
+    .isAlphanumeric()
+    .withMessage('Captcha answer must be alphanumeric'),
+  body('captchaId')
+    .if(() => process.env.NODE_ENV !== 'test')
+    .trim()
+    .notEmpty()
+    .withMessage('Captcha ID required'),
   handleValidationErrors,
 ];
 

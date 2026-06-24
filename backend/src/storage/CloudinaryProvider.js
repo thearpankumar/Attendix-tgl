@@ -18,7 +18,6 @@ class CloudinaryProvider extends StorageProvider {
       const result = await cloudinary.uploader.upload(file, {
         folder: options.folder || 'attendance-photos',
         resource_type: 'image',
-        max_file_size: 5000000,
         transformation: [
           { quality: 'auto:good' },
           { width: 800, height: 800, crop: 'limit' },
@@ -30,7 +29,7 @@ class CloudinaryProvider extends StorageProvider {
         provider: 'cloudinary',
       };
     } catch (error) {
-      throw new Error(`Cloudinary upload failed: ${error.message}`);
+      throw new Error(`Cloudinary upload failed: ${error.message}`, { cause: error });
     }
   }
 
@@ -39,7 +38,7 @@ class CloudinaryProvider extends StorageProvider {
       await cloudinary.uploader.destroy(publicId);
       return true;
     } catch (error) {
-      throw new Error(`Cloudinary delete failed: ${error.message}`);
+      throw new Error(`Cloudinary delete failed: ${error.message}`, { cause: error });
     }
   }
 
@@ -47,7 +46,7 @@ class CloudinaryProvider extends StorageProvider {
     return cloudinary.url(publicId, { secure: true });
   }
 
-  async getUploadUrl(key, contentType) {
+  async getUploadUrl(key, _contentType) {
     const timestamp = Math.round(new Date().getTime() / 1000);
     const signature = cloudinary.utils.api_sign_request(
       { timestamp, folder: 'attendance-photos' },

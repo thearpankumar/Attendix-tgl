@@ -55,7 +55,7 @@ class S3Provider extends StorageProvider {
         provider: 's3',
       };
     } catch (error) {
-      throw new Error(`S3 upload failed: ${error.message}`);
+      throw new Error(`S3 upload failed: ${error.message}`, { cause: error });
     }
   }
 
@@ -68,7 +68,7 @@ class S3Provider extends StorageProvider {
       await this.s3Client.send(command);
       return true;
     } catch (error) {
-      throw new Error(`S3 delete failed: ${error.message}`);
+      throw new Error(`S3 delete failed: ${error.message}`, { cause: error });
     }
   }
 
@@ -100,7 +100,7 @@ class S3Provider extends StorageProvider {
         },
       };
     } catch (error) {
-      throw new Error(`Failed to generate upload URL: ${error.message}`);
+      throw new Error(`Failed to generate upload URL: ${error.message}`, { cause: error });
     }
   }
 
@@ -113,7 +113,7 @@ class S3Provider extends StorageProvider {
 
       return await getSignedUrl(this.s3Client, command, { expiresIn });
     } catch (error) {
-      throw new Error(`Failed to generate download URL: ${error.message}`);
+      throw new Error(`Failed to generate download URL: ${error.message}`, { cause: error });
     }
   }
 

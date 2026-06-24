@@ -31,6 +31,7 @@ router.get('/sessions', sessionController.getSessions);
 router.get('/sessions/:id', sessionController.getSessionById);
 router.post('/sessions/:id/rotate', sessionController.rotateToken);
 router.post('/sessions/:id/deactivate', sessionController.deactivateSession);
+router.delete('/sessions/:id', sessionController.deleteSession);
 router.get('/sessions/:id/attendance', sessionController.getSessionAttendance);
 router.get('/sessions/:id/stats', sessionController.getSessionStats);
 

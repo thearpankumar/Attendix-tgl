@@ -35,6 +35,7 @@ module.exports = {
   jwtExpire: process.env.JWT_EXPIRE || '7d',
   adminSecret: process.env.ADMIN_SECRET || 'dev-admin-secret',
   nodeEnv: process.env.NODE_ENV || 'development',
+  corsOrigin: process.env.CORS_ORIGIN || '*',
   
   storage: {
     provider: storageProvider,

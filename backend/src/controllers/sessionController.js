@@ -1,6 +1,8 @@
 const Session = require('../models/Session');
 const Location = require('../models/Location');
 const Attendance = require('../models/Attendance');
+const Admin = require('../models/Admin');
+const { getStorageProvider } = require('../storage');
 
 const createSession = async (req, res) => {
   try {
@@ -197,6 +199,63 @@ const getSessionStats = async (req, res) => {
   }
 };
 
+const deleteSession = async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required to delete a session' });
+    }
+
+    // Re-fetch admin WITH the password field (protect middleware strips it with .select('-password'))
+    const adminWithPassword = await Admin.findById(req.admin._id);
+    if (!adminWithPassword) {
+      return res.status(401).json({ message: 'Admin not found' });
+    }
+
+    const isMatch = await adminWithPassword.matchPassword(password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Incorrect password' });
+    }
+
+    // Find session — must belong to this admin
+    const session = await Session.findOne({
+      _id: req.params.id,
+      createdBy: req.admin._id,
+    });
+
+    if (!session) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+
+    // Delete Cloudinary photos for all attendance records that have one
+    const attendanceWithPhotos = await Attendance.find({
+      sessionId: session._id,
+      photoPublicId: { $exists: true, $ne: '' },
+    });
+
+    if (attendanceWithPhotos.length > 0) {
+      try {
+        const storage = getStorageProvider();
+        // allSettled so one failed deletion doesn't block the rest
+        await Promise.allSettled(
+          attendanceWithPhotos.map((record) => storage.delete(record.photoPublicId))
+        );
+      } catch (storageError) {
+        console.error('Storage cleanup error (non-fatal):', storageError.message);
+      }
+    }
+
+    // Cascade: delete all attendance records then the session itself
+    await Attendance.deleteMany({ sessionId: session._id });
+    await Session.findByIdAndDelete(session._id);
+
+    res.json({ message: 'Session and all attendance records deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
 module.exports = {
   createSession,
   getSessions,
@@ -205,4 +264,5 @@ module.exports = {
   deactivateSession,
   getSessionAttendance,
   getSessionStats,
+  deleteSession,
 };

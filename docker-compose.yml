@@ -3,10 +3,10 @@ services:
     image: mongo:8.0
     container_name: attendance-mongodb
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    ports:
+      - "27017:27017"
     environment:
       MONGO_INITDB_DATABASE: attendance-geotag
     healthcheck:
@@ -21,8 +21,6 @@ services:
     build: ./backend
     container_name: attendance-backend
     restart: unless-stopped
-    ports:
-      - "5000:5000"
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -44,6 +42,8 @@ services:
       
       MONGODB_POOL_MAX: ${MONGODB_POOL_MAX:-300}
       MONGODB_POOL_MIN: ${MONGODB_POOL_MIN:-20}
+    ports:
+      - "5000:5000"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -57,7 +57,10 @@ services:
       - attendance-network
 
   admin-frontend:
-    build: ./frontend/admin
+    build: 
+      context: ./frontend/admin
+      args:
+        VITE_BASE_PATH: /admin
     container_name: attendance-admin
     restart: unless-stopped
     ports:
@@ -78,23 +81,36 @@ services:
     networks:
       - attendance-network
 
+  nginx:
+    build: ./nginx
+    container_name: attendance-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+      admin-frontend:
+        condition: service_started
+      student-frontend:
+        condition: service_started
+    networks:
+      - attendance-network
+
   ngrok:
     image: ngrok/ngrok:latest
     container_name: attendance-ngrok
     restart: unless-stopped
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    command:
-      - "http"
-      - "backend:5000"
-      - "--url=${NGROK_DOMAIN}"
+    command: http nginx:80 --url=${NGROK_DOMAIN}
     ports:
       - "4040:4040"
     networks:
       - attendance-network
     depends_on:
-      backend:
-        condition: service_healthy
+      nginx:
+        condition: service_started
     profiles:
       - ngrok
 

@@ -22,7 +22,7 @@ function App() {
   const { admin } = useAuth();
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/admin">
       {admin && <Navbar />}
       <Routes>
         <Route path="/login" element={admin ? <Navigate to="/" /> : <Login />} />
