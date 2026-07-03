@@ -40,6 +40,7 @@ const validateLogin = [
 const validateLocation = [
   body('name')
     .trim()
+    .escape()                         // Sanitize HTML/script tags (XSS prevention)
     .isLength({ min: 1, max: 100 })
     .withMessage('Location name must be 1-100 characters'),
   body('latitude')

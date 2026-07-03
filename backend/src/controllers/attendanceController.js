@@ -3,6 +3,7 @@ const Attendance = require('../models/Attendance');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
 const { validateTOTPCode } = require('../utils/totpUtils');
+const { getCachedSession, invalidateSessionCache } = require('../middleware/sessionCache');
 const svgCaptcha = require('svg-captcha');
 const crypto = require('crypto');
 const config = require('../config');
@@ -19,11 +20,7 @@ const validateToken = async (req, res) => {
     const { token } = req.params;
     const tokenHash = Session.hashToken(token);
 
-    const session = await Session.findOne({
-      tokenHash,
-      isActive: true,
-      expiresAt: { $gt: new Date() },
-    }).populate('locationId', 'name latitude longitude radiusMeters');
+    const session = await getCachedSession(tokenHash);
 
     if (!session) {
       return res.status(404).json({
@@ -57,11 +54,7 @@ const getUploadUrl = async (req, res) => {
     const { token } = req.params;
     const tokenHash = Session.hashToken(token);
 
-    const session = await Session.findOne({
-      tokenHash,
-      isActive: true,
-      expiresAt: { $gt: new Date() },
-    });
+    const session = await getCachedSession(tokenHash);
 
     if (!session) {
       return res.status(404).json({

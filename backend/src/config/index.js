@@ -60,6 +60,11 @@ module.exports = {
     apiSecret: process.env.CLOUDINARY_API_SECRET || '',
   },
   
+  redis: {
+    url: process.env.REDIS_URL || '',
+    enabled: !!process.env.REDIS_URL,
+  },
+  
   webauthn: {
     rpName: process.env.WEBAUTHN_RP_NAME || 'SentriX Attendance System',
     rpID: process.env.WEBAUTHN_RP_ID || 'localhost',

@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "jest --detectOpenHandles --forceExit",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
+    "test": "jest --runInBand --forceExit",
+    "test:watch": "jest --watch --runInBand",
+    "test:coverage": "jest --coverage --runInBand",
+    "test:parallel": "jest --forceExit",
+    "test:debug": "jest --detectOpenHandles --runInBand --forceExit",
+    "test:seq": "jest --runInBand --forceExit",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix"
   },
@@ -25,6 +28,7 @@
     "express-rate-limit": "^7.2.0",
     "express-validator": "^7.3.2",
     "helmet": "^7.1.0",
+    "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.3.3",
     "multer": "^1.4.5-lts.1",

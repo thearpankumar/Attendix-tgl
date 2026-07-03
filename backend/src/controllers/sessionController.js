@@ -6,6 +6,7 @@ const ShortLink = require('../models/ShortLink');
 const Device = require('../models/Device');
 const { getStorageProvider } = require('../storage');
 const { generateTOTPWithTimestamp } = require('../utils/totpUtils');
+const { invalidateSessionCache } = require('../middleware/sessionCache');
 
 const createSession = async (req, res) => {
   try {
@@ -58,6 +59,7 @@ const getSessions = async (req, res) => {
   try {
     const sessions = await Session.find({ createdBy: req.admin._id })
       .populate('locationId', 'name latitude longitude radiusMeters')
+      .select('-totpSecret')
       .sort({ createdAt: -1 });
 
     const sessionsWithStats = await Promise.all(
@@ -65,8 +67,10 @@ const getSessions = async (req, res) => {
         const attendanceCount = await Attendance.countDocuments({
           sessionId: session._id,
         });
+        const obj = session.toObject();
+        delete obj.totpSecret; // Belt-and-suspenders: remove even if select missed it
         return {
-          ...session.toObject(),
+          ...obj,
           attendanceCount,
         };
       })
@@ -112,6 +116,8 @@ const rotateToken = async (req, res) => {
     if (!session) {
       return res.status(404).json({ message: 'Session not found' });
     }
+
+    await invalidateSessionCache(session.tokenHash);
 
     const newToken = Session.generateToken();
     session.tokenHash = Session.hashToken(newToken);
@@ -206,6 +212,16 @@ const getSessionStats = async (req, res) => {
 
 const deleteSession = async (req, res) => {
   try {
+    // First verify session ownership — so cross-admin deletions get 404, not 400
+    const session = await Session.findOne({
+      _id: req.params.id,
+      createdBy: req.admin._id,
+    });
+
+    if (!session) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+
     const { password } = req.body;
 
     if (!password) {
@@ -221,16 +237,6 @@ const deleteSession = async (req, res) => {
     const isMatch = await adminWithPassword.matchPassword(password);
     if (!isMatch) {
       return res.status(401).json({ message: 'Incorrect password' });
-    }
-
-    // Find session — must belong to this admin
-    const session = await Session.findOne({
-      _id: req.params.id,
-      createdBy: req.admin._id,
-    });
-
-    if (!session) {
-      return res.status(404).json({ message: 'Session not found' });
     }
 
     // Delete Cloudinary photos for all attendance records that have one

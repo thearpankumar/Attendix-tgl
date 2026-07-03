@@ -37,7 +37,10 @@ adminSchema.pre('save', async function (next) {
   if (!this.isModified('password')) {
     return next();
   }
-  const salt = await bcrypt.genSalt(10);
+  // Use 1 round in tests for speed (100ms → ~1ms per hash).
+  // Production keeps 10 rounds for real security.
+  const rounds = process.env.NODE_ENV === 'test' ? 1 : 10;
+  const salt = await bcrypt.genSalt(rounds);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });

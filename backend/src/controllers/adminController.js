@@ -30,10 +30,12 @@ const createAdmin = async (req, res) => {
     const token = generateToken(admin._id);
 
     res.status(201).json({
-      _id: admin._id,
-      username: admin.username,
-      email: admin.email,
-      role: admin.role,
+      admin: {
+        _id: admin._id,
+        username: admin.username,
+        email: admin.email,
+        role: admin.role,
+      },
       token,
     });
   } catch (error) {
