@@ -6,11 +6,11 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[![Tests Backend](https://img.shields.io/badge/Tests-141%20passing-brightgreen)](backend/tests/)
-[![Tests Frontend](https://img.shields.io/badge/Tests-8%20passing-brightgreen)](frontend/admin/src/Login.test.jsx)
+[![Tests Backend](https://img.shields.io/badge/Tests-269%20passing-brightgreen)](backend/tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-Comprehensive-blue)](backend/tests/)
+[![WebAuthn](https://img.shields.io/badge/WebAuthn-Enabled-purple)](https://webauthn.io/)
 
-A lightweight, production-ready attendance system that uses GPS geolocation and camera verification to mark student attendance. Supports 1000+ concurrent submissions with flexible storage options.
+A production-ready attendance system with GPS geolocation, camera verification, and **WebAuthn biometric authentication** for secure student identity verification.
 
 ---
 
@@ -20,12 +20,14 @@ A lightweight, production-ready attendance system that uses GPS geolocation and 
 - [Tech Stack](#tech-stack)
 - [Storage Options](#storage-options)
 - [Quick Start](#quick-start)
+- [WebAuthn Biometric Verification](#webauthn-biometric-verification)
 - [Usage](#usage)
 - [API Endpoints](#api-endpoints)
 - [Development](#development)
 - [Architecture](#architecture)
 - [Environment Variables](#environment-variables-reference)
 - [Security](#security-features)
+- [Testing](#testing)
 - [Scaling](#scaling)
 - [Hardware Requirements](#hardware-requirements)
 - [License](#license)
@@ -36,16 +38,21 @@ A lightweight, production-ready attendance system that uses GPS geolocation and 
 
 | Feature | Description |
 |---------|-------------|
+| **WebAuthn Biometric** | Face ID/Touch ID verification prevents impersonation |
 | **Geotag Verification** | Students must be within specified radius of location |
 | **Camera Capture** | Photo verification for each attendance submission |
+| **TOTP Security** | Time-based codes for session authentication |
+| **Device Fingerprinting** | Detects multi-device and suspicious activity |
+| **Short Links** | Easy-to-share session URLs with rotation support |
 | **Rotating Tokens** | Admin can rotate session links to prevent sharing |
 | **Duplicate Prevention** | Same roll number cannot submit twice per session |
 | **Real-time Stats** | Live attendance count with polling-based updates |
+| **Flagged Attendance** | Automatic flagging of suspicious submissions |
 | **NoSQL Performance** | MongoDB handles 1000+ concurrent submissions |
 | **Flexible Storage** | Choose between Cloudinary or AWS S3 |
 | **Direct Upload** | S3 presigned URLs for direct browser uploads |
 | **Docker Ready** | One-command deployment with docker-compose |
-| **Ngrok Support** | Built-in ngrok integration for public URLs |
+| **CI/CD Pipeline** | GitHub Actions for automated testing and deployment |
 
 ---
 
@@ -55,10 +62,13 @@ A lightweight, production-ready attendance system that uses GPS geolocation and 
 |-----------|------------|
 | **Backend** | Node.js + Express.js |
 | **Database** | MongoDB 7.0 |
+| **Biometric Auth** | WebAuthn (@simplewebauthn/server) |
+| **TOTP** | Custom implementation with SHA-256 |
 | **Image Storage** | Cloudinary OR AWS S3 (configurable) |
 | **Admin Panel** | React 18 + Vite |
 | **Student Page** | Vanilla JS (lightweight, mobile-optimized) |
 | **Authentication** | JWT with bcrypt password hashing |
+| **Testing** | Jest (269 tests) |
 | **Deployment** | Docker Compose |
 
 ---
@@ -112,6 +122,11 @@ ADMIN_SECRET=your-admin-secret
 CLOUDINARY_CLOUD_NAME=your-cloud-name
 CLOUDINARY_API_KEY=your-api-key
 CLOUDINARY_API_SECRET=your-api-secret
+
+# WebAuthn Configuration
+WEBAUTHN_RP_NAME=Your Institution Name
+WEBAUTHN_RP_ID=localhost
+WEBAUTHN_ORIGIN=http://localhost:5000
 ```
 
 **For AWS S3:**
@@ -123,6 +138,11 @@ AWS_S3_BUCKET=your-bucket-name
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
+
+# WebAuthn Configuration
+WEBAUTHN_RP_NAME=Your Institution Name
+WEBAUTHN_RP_ID=your-domain.com
+WEBAUTHN_ORIGIN=https://your-domain.com
 ```
 
 ### 2. S3 CORS Configuration (Required for S3 only)
@@ -139,13 +159,6 @@ AWS_SECRET_ACCESS_KEY=your-secret-key
 ]
 ```
 
-Apply via AWS CLI:
-```bash
-aws s3api put-bucket-cors \
-  --bucket your-bucket-name \
-  --cors-configuration file://cors.json
-```
-
 ### 3. Run with Docker Compose
 
 ```bash
@@ -157,11 +170,6 @@ This starts:
 - Backend API on port 5000
 - Admin panel on port 3000
 - Student page on port 8080
-
-**With Ngrok (for public URL):**
-```bash
-docker-compose --profile ngrok up -d
-```
 
 ### 4. Create Admin Account
 
@@ -186,6 +194,75 @@ curl -X POST http://localhost:5000/api/admin/register \
 
 ---
 
+## WebAuthn Biometric Verification
+
+### Overview
+
+The system supports WebAuthn-based biometric authentication using platform authenticators (Face ID, Touch ID, Windows Hello, Android fingerprint). This adds a strong security layer to prevent impersonation.
+
+### How It Works
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Student Enrollment Flow                        │
+├──────────────────────────────────────────────────────────────────┤
+│  1. Student enters roll number                                   │
+│  2. System checks if already enrolled                            │
+│  3. If not enrolled → Registration flow                          │
+│     - Browser prompts for biometric (Face ID/Touch ID)           │
+│     - Credential stored with student ID                          │
+│  4. If enrolled → Authentication flow                            │
+│     - Browser prompts for biometric verification                  │
+│     - Session counter checked for replay attacks                 │
+│  5. After biometric success → Complete attendance form           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Security Features
+
+| Feature | Implementation |
+|---------|---------------|
+| **Platform Authenticator Only** | No USB keys, only built-in biometrics |
+| **User Verification Required** | Must use biometric or device PIN |
+| **Sign Counter Tracking** | Detects credential cloning attacks |
+| **Challenge Expiry** | 5-minute TTL prevents replay attacks |
+| **Admin Rate Limiting** | Alert on >10 resets per hour |
+| **Audit Logging** | All admin actions logged with reason |
+
+### Admin Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/admin/webauthn/reset` | Reset student credential |
+| POST | `/api/admin/webauthn/suspend` | Suspend credential (with reason) |
+| POST | `/api/admin/webauthn/unsuspend` | Reactivate suspended credential |
+| GET | `/api/admin/webauthn/credentials` | List all credentials (paginated) |
+| GET | `/api/admin/webauthn/stats` | Enrollment statistics |
+
+### Student Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/s/:shortCode/webauthn/status/:rollNumber` | Check enrollment status |
+| POST | `/s/:shortCode/webauthn/register/start` | Begin registration |
+| POST | `/s/:shortCode/webauthn/register/finish` | Complete registration |
+| POST | `/s/:shortCode/webauthn/authenticate/start` | Begin authentication |
+| POST | `/s/:shortCode/webauthn/authenticate/finish` | Complete with attendance |
+
+### Production Configuration
+
+For production deployment, WebAuthn requires HTTPS:
+
+```bash
+WEBAUTHN_RP_NAME=Your Institution Name
+WEBAUTHN_RP_ID=your-domain.com
+WEBAUTHN_ORIGIN=https://your-domain.com
+```
+
+> **Note:** WebAuthn works on `localhost` for testing without HTTPS. In production, valid SSL certificate is required.
+
+---
+
 ## Usage
 
 ### Admin Workflow
@@ -198,29 +275,40 @@ curl -X POST http://localhost:5000/api/admin/register \
 2. **Create Session**
    - Select location
    - Set duration (default: 30 minutes)
-   - System generates unique link
+   - Optionally enable TOTP for additional security
+   - System generates unique short link
 
 3. **Share Link**
    - Copy link from session creation modal
    - Share via email/LMS/messaging
+   - Display QR code for scanning
 
 4. **Monitor Attendance**
    - View live stats
    - See verified/unverified students
+   - Review flagged submissions
+   - Manage WebAuthn credentials
    - Export to CSV
 
-5. **Rotate Token (Optional)**
-   - If link gets shared, rotate token
-   - Old link stops working immediately
-   - New link generated
+5. **Handle Issues**
+   - Reset biometric credentials for students who lost devices
+   - Suspend credentials for suspicious accounts
+   - Rotate token if link gets shared
 
 ### Student Workflow
 
 1. Open attendance link on mobile device
-2. Grant camera and GPS permissions
-3. Fill name and roll number
-4. Capture photo
-5. Submit attendance
+2. Enter roll number
+3. **If first time:**
+   - Complete biometric enrollment (Face ID/Touch ID)
+   - Fill name
+   - Capture photo
+   - Enable GPS
+   - Submit attendance
+4. **If returning:**
+   - Complete biometric verification
+   - Capture new photo
+   - Submit attendance
 
 ---
 
@@ -232,8 +320,6 @@ curl -X POST http://localhost:5000/api/admin/register \
 |--------|----------|-------------|
 | POST | `/api/admin/register` | Create admin (requires adminSecret) |
 | POST | `/api/admin/login` | Login and get JWT token |
-| GET | `/api/admin/profile` | Get current admin profile |
-| GET | `/api/admin/dashboard` | Get dashboard statistics |
 | POST | `/api/admin/locations` | Create location |
 | GET | `/api/admin/locations` | List all locations |
 | PUT | `/api/admin/locations/:id` | Update location |
@@ -245,16 +331,28 @@ curl -X POST http://localhost:5000/api/admin/register \
 | POST | `/api/admin/sessions/:id/deactivate` | Deactivate session |
 | GET | `/api/admin/sessions/:id/attendance` | Get attendance records |
 | GET | `/api/admin/sessions/:id/stats` | Get session statistics |
+| GET | `/api/admin/sessions/:id/totp` | Get TOTP code |
+| POST | `/api/admin/shortlinks` | Create short link |
+| GET | `/api/admin/shortlinks` | List short links |
+| POST | `/api/admin/shortlinks/:code/attach` | Attach link to session |
+| DELETE | `/api/admin/shortlinks/:code` | Delete short link |
+| POST | `/api/admin/webauthn/reset` | Reset biometric credential |
+| POST | `/api/admin/webauthn/suspend` | Suspend credential |
+| GET | `/api/admin/webauthn/credentials` | List credentials |
+| GET | `/api/admin/webauthn/stats` | Enrollment statistics |
 
-### Student Endpoints (Token-based)
+### Student Endpoints (Short Link Token)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/storage-info` | Get storage provider info |
-| GET | `/api/attend/:token` | Validate attendance token |
-| GET | `/api/attend/:token/status` | Check if already submitted |
-| GET | `/api/attend/:token/upload-url` | Get presigned upload URL (S3 only) |
-| POST | `/api/attend/:token` | Submit attendance |
+| GET | `/s/:shortCode` | Redirect to student page |
+| GET | `/s/:shortCode/info` | Get TOTP code |
+| GET | `/s/:shortCode/session` | Get session info |
+| GET | `/s/:shortCode/webauthn/status/:roll` | Check enrollment |
+| POST | `/s/:shortCode/webauthn/register/start` | Begin registration |
+| POST | `/s/:shortCode/webauthn/register/finish` | Complete registration |
+| POST | `/s/:shortCode/webauthn/auth/start` | Begin authentication |
+| POST | `/s/:shortCode/webauthn/auth/finish` | Complete with attendance |
 
 ---
 
@@ -265,9 +363,11 @@ curl -X POST http://localhost:5000/api/admin/register \
 ```bash
 cd backend
 npm install
-npm run dev     # Development with hot reload
-npm test        # Run tests (141 tests)
-npm run lint    # Run ESLint
+npm run dev        # Development with hot reload
+npm test           # Run tests (269 tests)
+npm run test:watch # Watch mode
+npm run lint       # Run ESLint
+npm run lint:fix   # Fix linting issues
 ```
 
 ### Admin Frontend
@@ -275,9 +375,9 @@ npm run lint    # Run ESLint
 ```bash
 cd frontend/admin
 npm install
-npm run dev     # Development server (port 5173)
-npm run build   # Production build
-npm test        # Run tests (8 tests)
+npm run dev        # Development server (port 5173)
+npm run build      # Production build
+npm run preview    # Preview production build
 ```
 
 ### Student Page
@@ -291,23 +391,25 @@ npx serve -p 8080
 
 ## Architecture
 
-### Cloudinary Flow
+### Request Flow (with WebAuthn)
 
 ```
-Student Browser --> Backend Server --> Cloudinary CDN
-                      (image upload)
-```
-
-### S3 Direct Upload Flow
-
-```
-Student Browser --> Backend (get presigned URL)
-       |
-       v
-Student Browser --> S3 (direct upload)
-       |
-       v
-Student Browser --> Backend (confirm upload + submit attendance)
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Student Attendance Flow                         │
+├─────────────────────────────────────────────────────────────────────┤
+│  1. Student opens short link                                        │
+│  2. GET /s/:shortCode → Redirect to student-scan.html               │
+│  3. Enter roll number → GET webauthn/status                         │
+│  4. If not enrolled:                                                 │
+│     - POST webauthn/register/start → Get challenge                  │
+│     - Browser prompts for biometric                                 │
+│     - POST webauthn/register/finish → Store credential              │
+│  5. If enrolled:                                                     │
+│     - POST webauthn/authenticate/start → Get challenge              │
+│     - Browser prompts for biometric                                 │
+│     - POST webauthn/authenticate/finish → Verify + Submit           │
+│  6. Photo capture, GPS check, Attendance saved                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Database Schema
@@ -317,6 +419,7 @@ Admins
   |-- username (unique)
   |-- email (unique)
   |-- password (bcrypt hashed)
+  |-- role
 
 Locations
   |-- name
@@ -327,8 +430,18 @@ Locations
 Sessions
   |-- locationId (ref: Location)
   |-- tokenHash (SHA-256, unique)
-  |-- tokenPrefix (first 4 chars)
+  |-- tokenPrefix (first 8 chars)
   |-- expiresAt (TTL index)
+  |-- isActive
+  |-- totpEnabled
+  |-- totpSecret (encrypted)
+  |-- totpWindowSeconds
+
+ShortLinks
+  |-- shortCode (unique, lowercase)
+  |-- sessionId (ref: Session)
+  |-- createdBy (ref: Admin)
+  |-- clickCount
   |-- isActive
 
 Attendance
@@ -339,7 +452,49 @@ Attendance
   |-- studentLatitude, studentLongitude
   |-- distanceFromLocation
   |-- verified (boolean)
+  |-- webauthnCredentialId (ref: WebAuthnCredential)
+  |-- webauthnVerified (boolean)
+  |-- webauthnDeviceType
+  |-- webauthnCounter
+  |-- flagged (boolean)
   |-- capturedAt
+
+WebAuthnCredential
+  |-- studentId (unique)
+  |-- credentialId (unique)
+  |-- publicKey (Buffer)
+  |-- counter (sign count for replay detection)
+  |-- deviceLabel
+  |-- transports
+  |-- aaguid (authenticator model)
+  |-- isSuspended
+  |-- suspendedReason
+  |-- enrolledAt
+  |-- lastUsedAt
+
+WebAuthnChallenge
+  |-- studentId
+  |-- challenge
+  |-- type (registration/authentication)
+  |-- sessionId
+  |-- used (boolean)
+  |-- expiresAt (TTL: 5 minutes)
+
+Device
+  |-- fingerprintHash (SHA-256)
+  |-- boundToStudent
+  |-- sessionId
+  |-- attendanceCount
+  |-- flags[] (MULTI_STUDENT_DEVICE, etc.)
+  |-- deviceFirstSeen
+
+Flag
+  |-- type
+  |-- sessionId
+  |-- attendanceId
+  |-- reason
+  |-- isRead
+  |-- createdAt
 ```
 
 ---
@@ -360,8 +515,9 @@ Attendance
 | `JWT_EXPIRE` | JWT expiration time | No | 7d |
 | `ADMIN_SECRET` | Secret for admin creation | Yes | - |
 | `MONGODB_URI` | MongoDB connection string | No | mongodb://localhost:27017/attendance-geotag |
-| `MONGODB_POOL_MAX` | MongoDB max connection pool | No | 300 |
-| `MONGODB_POOL_MIN` | MongoDB min connection pool | No | 20 |
+| `WEBAUTHN_RP_NAME` | WebAuthn relying party name | No | Attendance System |
+| `WEBAUTHN_RP_ID` | WebAuthn relying party ID (domain) | No | localhost |
+| `WEBAUTHN_ORIGIN` | WebAuthn origin URL | No | http://localhost:5000 |
 | `NGROK_AUTHTOKEN` | Ngrok auth token | Optional | - |
 | `NGROK_DOMAIN` | Ngrok domain | Optional | - |
 
@@ -371,6 +527,9 @@ Attendance
 
 | Feature | Implementation |
 |---------|---------------|
+| **Biometric Verification** | WebAuthn with platform authenticators |
+| **Replay Attack Prevention** | Sign counter tracking |
+| **Challenge Expiry** | 5-minute TTL for WebAuthn challenges |
 | **Token Hashing** | Session tokens stored as SHA-256 hashes |
 | **JWT Authentication** | Admin routes protected with JWT |
 | **Password Hashing** | bcrypt with 10 salt rounds |
@@ -380,6 +539,49 @@ Attendance
 | **Security Headers** | Helmet middleware |
 | **S3 Presigned URLs** | Time-limited (5 min) upload URLs |
 | **MongoDB Injection** | Mongoose sanitization |
+| **Device Fingerprinting** | Detect suspicious device activity |
+| **Admin Audit Trail** | All credential changes logged |
+
+---
+
+## Testing
+
+### Test Coverage
+
+| Category | Tests | Status |
+|----------|-------|--------|
+| WebAuthn Flow | 66 | ✅ Passing |
+| TOTP Utilities | 15 | ✅ Passing |
+| ShortLink API | 25 | ✅ Passing |
+| Device Model | 8 | ✅ Passing |
+| Session/TOTP | 12 | ✅ Passing |
+| Models | 28 | ✅ Passing |
+| Middleware | 38 | ✅ Passing |
+| Attendance | 45 | ✅ Passing |
+| Security | 12 | ✅ Passing |
+| **Total** | **269** | **✅ 100% Passing** |
+
+### Running Tests
+
+```bash
+# Backend tests
+cd backend
+npm test                    # Run all tests
+npm test -- --coverage      # With coverage report
+npm test -- tests/webauthn  # WebAuthn tests only
+
+# Frontend tests
+cd frontend/admin
+npm test
+```
+
+### CI/CD Pipeline
+
+GitHub Actions workflow includes:
+- Backend lint and test
+- Frontend lint and build
+- Security scanning with CodeQL
+- Docker image build and push
 
 ---
 
@@ -394,6 +596,7 @@ Attendance
 | S3 Direct Upload | Reduces backend load significantly |
 | Cloudinary CDN | Images served from global CDN |
 | Rate Limiting | Prevents abuse |
+| WebAuthn Challenge TTL | Auto-expiry prevents accumulation |
 
 ### Performance Metrics
 
@@ -402,14 +605,13 @@ Attendance
 | Max RPS (backend) | ~150-250 |
 | Photo upload latency (S3) | 200-400ms |
 | Photo upload latency (Cloudinary) | 500-1500ms |
+| WebAuthn verification | 100-300ms |
 | MongoDB query time | <10ms (indexed) |
 | Token validation | <5ms |
 
 ---
 
 ## Hardware Requirements
-
-For detailed hardware specifications and cost estimates, see [HardwareRequirements.md](HardwareRequirements.md).
 
 ### Minimum (1,000 students)
 
@@ -437,32 +639,39 @@ For detailed hardware specifications and cost estimates, see [HardwareRequiremen
 
 ```
 Attendence-GEOTAG-System/
+|-- .github/
+|   `-- workflows/
+|       |-- ci.yml              # CI/CD pipeline
+|       `-- codeql.yml          # Security scanning
+|
 |-- backend/
 |   |-- src/
-|   |   |-- config/           # Configuration files
-|   |   |-- controllers/      # Route controllers
-|   |   |-- middleware/       # Auth, validation, rate limiting
-|   |   |-- models/           # Mongoose models
-|   |   |-- routes/           # Express routes
-|   |   |-- storage/          # Storage providers (Cloudinary, S3)
-|   |   |-- utils/            # Utility functions
-|   |   `-- app.js            # Express app
-|   |-- tests/                # Test files (141 tests)
+|   |   |-- config/             # Configuration files
+|   |   |-- controllers/        # Route controllers
+|   |   |-- middleware/         # Auth, validation, rate limiting
+|   |   |-- models/             # Mongoose models
+|   |   |-- routes/             # Express routes
+|   |   |-- storage/            # Storage providers (Cloudinary, S3)
+|   |   |-- utils/              # Utility functions (WebAuthn, TOTP)
+|   |   `-- server.js           # Entry point
+|   |-- tests/                  # Test files (269 tests)
+|   |-- jest.config.js
+|   |-- jest.setup.js
 |   `-- package.json
 |
 |-- frontend/
-|   |-- admin/                # React admin panel
+|   |-- admin/                  # React admin panel
 |   |   |-- src/
-|   |   |   |-- components/   # React components
-|   |   |   |-- context/      # Auth context
-|   |   |   |-- pages/        # Page components
-|   |   |   `-- tests/        # Test files (8 tests)
+|   |   |   |-- components/     # React components
+|   |   |   |-- context/        # Auth context
+|   |   |   |-- pages/          # Page components
+|   |   |   `-- index.css       # Global styles
+|   |   |-- public/
 |   |   `-- package.json
 |   |
-|   `-- student/              # Static student page
+|   `-- student/                # Static student page
 |       `-- public/
-|           |-- index.html
-|           `-- app.js        # Vanilla JS
+|           `-- student-scan.html
 |
 |-- docker-compose.yml
 |-- .env.example
