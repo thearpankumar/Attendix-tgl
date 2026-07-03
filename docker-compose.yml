@@ -1,6 +1,6 @@
 services:
   mongodb:
-    image: mongo:8.0
+    image: mongo:7.0
     container_name: attendance-mongodb
     restart: unless-stopped
     volumes:
@@ -96,23 +96,6 @@ services:
         condition: service_started
     networks:
       - attendance-network
-
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: attendance-ngrok
-    restart: unless-stopped
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    command: http nginx:80 --url=${NGROK_DOMAIN}
-    ports:
-      - "4040:4040"
-    networks:
-      - attendance-network
-    depends_on:
-      nginx:
-        condition: service_started
-    profiles:
-      - ngrok
 
 volumes:
   mongodb_data:

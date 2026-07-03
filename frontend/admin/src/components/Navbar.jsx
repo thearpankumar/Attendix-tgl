@@ -17,6 +17,15 @@ const Navbar = () => {
         <Link to="/sessions" className="nav-link">
           Sessions
         </Link>
+        <Link to="/shortlinks" className="nav-link">
+          Short Links
+        </Link>
+        <Link to="/webauthn" className="nav-link">
+          Biometrics
+        </Link>
+        <Link to="/flagged" className="nav-link" style={{ color: '#e74c3c' }}>
+          ⚠ Flags
+        </Link>
         <span style={{ color: '#666', marginLeft: '10px' }}>
           {admin?.username}
         </span>

@@ -179,6 +179,15 @@ const SessionDetail = () => {
           >
             Rotate Token
           </button>
+          {session.totpEnabled && (
+            <Link
+              to={`/sessions/${id}/qr`}
+              className="btn btn-success"
+              style={{ marginLeft: '10px' }}
+            >
+              📱 View QR Display
+            </Link>
+          )}
           {session.isActive && !isExpired() && (
             <button
               className="btn btn-danger"

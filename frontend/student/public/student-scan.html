@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mark Attendance</title>
+    <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        h2 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .session-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .session-info .location {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .session-info .expires {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .totp-section {
+            background: #e8f4f8;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .totp-code {
+            font-size: 48px;
+            font-weight: bold;
+            letter-spacing: 8px;
+            color: #667eea;
+            font-family: 'Courier New', monospace;
+            margin: 10px 0;
+        }
+
+        .totp-timer {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .totp-progress {
+            width: 100%;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .totp-progress-bar {
+            height: 100%;
+            background: #667eea;
+            transition: width 0.5s linear;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #555;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .webauthn-section {
+            background: #f0f7ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .webauthn-status {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .webauthn-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .webauthn-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .webauthn-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .webauthn-btn .icon {
+            font-size: 24px;
+        }
+
+        .camera-container {
+            position: relative;
+            width: 100%;
+            height: 300px;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        video, canvas, #photoPreview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #photoPreview {
+            display: none;
+        }
+
+        .camera-btn {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255,255,255,0.9);
+            border: none;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+
+        .retake-btn {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .location-status {
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 500;
+        }
+
+        .location-status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .location-status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .location-status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+
+        .captcha-box {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .captcha-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .captcha-display svg {
+            max-width: 150px;
+        }
+
+        .captcha-refresh {
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .submit-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            background: #5a6fd6;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .success-message {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .info-box {
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .info-box strong {
+            color: #667eea;
+        }
+
+        .warning-box {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .fallback-btn {
+            background: #6c757d;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loadingScreen" class="loading">
+            <div class="spinner"></div>
+            <p>Loading session...</p>
+        </div>
+
+        <div id="content" class="hidden">
+            <h2>Mark Attendance</h2>
+            
+            <div class="session-info">
+                <div class="location" id="locationName">Loading...</div>
+                <div class="expires" id="expiresAt">Session expires: --</div>
+            </div>
+
+            <div class="totp-section">
+                <div class="totp-timer">Current code expires in <span id="timerSeconds">0</span>s</div>
+                <div class="totp-code" id="totpCode">------</div>
+                <div class="totp-progress">
+                    <div class="totp-progress-bar" id="totpProgress" style="width: 100%"></div>
+                </div>
+            </div>
+
+            <div id="errorMessage" class="error-message hidden"></div>
+            <div id="successMessage" class="success-message hidden"></div>
+
+            <!-- WebAuthn Check Section -->
+            <div id="webauthnCheckSection">
+                <div class="form-group">
+                    <label for="rollNumberInput">Roll Number</label>
+                    <input type="text" id="rollNumberInput" required placeholder="Enter your roll number" style="text-transform: uppercase;">
+                </div>
+                <button type="button" id="checkStatusBtn" class="webauthn-btn">
+                    <span class="icon">🔍</span>
+                    <span>Check Status</span>
+                </button>
+            </div>
+
+            <!-- WebAuthn Action Section -->
+            <div id="webauthnActionSection" class="hidden">
+                <div class="webauthn-section">
+                    <div class="webauthn-status" id="webauthnStatus"></div>
+                    <button type="button" id="webauthnActionBtn" class="webauthn-btn">
+                        <span class="icon">🔐</span>
+                        <span id="webauthnActionText">Verify Identity</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Browser Not Supported Warning -->
+            <div id="browserWarning" class="warning-box hidden">
+                <strong>⚠️ Biometric authentication not supported</strong>
+                <p style="margin-top: 8px;">Your browser doesn't support WebAuthn. You can still submit attendance, but it will be flagged for manual verification.</p>
+                <button type="button" id="fallbackBtn" class="webauthn-btn fallback-btn">
+                    Continue Without Biometric
+                </button>
+            </div>
+
+            <!-- Attendance Form -->
+            <div id="attendanceFormSection" class="hidden">
+                <div class="location-status" id="locationStatus">
+                    Getting your location...
+                </div>
+
+                <div class="info-box" id="deviceInfo">
+                    <strong>✓ Biometric Verified</strong><br>
+                    <span id="verificationMethod"></span>
+                </div>
+
+                <form id="attendanceForm">
+                    <div class="form-group">
+                        <label for="studentName">Full Name</label>
+                        <input type="text" id="studentName" required placeholder="Enter your full name">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Photo (Face Required)</label>
+                        <div class="camera-container">
+                            <video id="video" autoplay playsinline></video>
+                            <canvas id="canvas" style="display: none;"></canvas>
+                            <img id="photoPreview" alt="Photo preview">
+                            <button type="button" class="camera-btn" id="captureBtn">📷</button>
+                        </div>
+                    </div>
+
+                    <div class="captcha-box" id="captchaBox">
+                        <label>Captcha Verification</label>
+                        <div class="captcha-display">
+                            <div id="captchaSvg"></div>
+                            <button type="button" class="captcha-refresh" id="refreshCaptcha">↻ Refresh</button>
+                        </div>
+                        <input type="text" id="captchaInput" required placeholder="Enter the code shown above" style="margin-top: 10px;">
+                    </div>
+
+                    <input type="hidden" id="photoData">
+                    <input type="hidden" id="captchaId">
+                    <input type="hidden" id="currentTotp">
+                    <input type="hidden" id="deviceFingerprint">
+                    <input type="hidden" id="webauthnCredential">
+                    <input type="hidden" id="webauthnVerified" value="false">
+
+                    <button type="submit" class="submit-btn" id="submitBtn" disabled>Submit Attendance</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const urlParams = new URLSearchParams(window.location.search);
+        const shortCode = urlParams.get('sl');
+
+        let sessionData = null;
+        let totpIntervalId = null;
+        let captchaData = null;
+        let deviceFingerprint = null;
+        let photoTaken = false;
+        let webauthnSupported = false;
+        let currentCredential = null;
+        let rollNumber = '';
+        let isEnrolled = false;
+        let isSuspended = false;
+        let fallbackMode = false;
+
+        // Check WebAuthn support
+        function checkWebAuthnSupport() {
+            return window.PublicKeyCredential !== undefined;
+        }
+
+        // Initialize fingerprint
+        async function initFingerprint() {
+            try {
+                const fp = await FingerprintJS.load();
+                const result = await fp.get();
+                deviceFingerprint = result.visitorId;
+                document.getElementById('deviceFingerprint').value = deviceFingerprint;
+            } catch (error) {
+                console.warn('FingerprintJS error:', error);
+            }
+        }
+
+        // Load session data
+        async function loadSession() {
+            try {
+                const res = await fetch(`${API_BASE}/s/${shortCode}/session`);
+                if (!res.ok) {
+                    throw new Error('Session not found or inactive');
+                }
+                sessionData = await res.json();
+                document.getElementById('locationName').textContent = sessionData.session.locationName;
+                document.getElementById('expiresAt').textContent = `Session expires: ${new Date(sessionData.session.expiresAt).toLocaleTimeString()}`;
+                
+                startTotpPolling();
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('content').classList.remove('hidden');
+                
+                // Check WebAuthn support
+                webauthnSupported = checkWebAuthnSupport();
+                if (!webauthnSupported) {
+                    document.getElementById('browserWarning').classList.remove('hidden');
+                }
+                
+                await initCamera();
+                await initFingerprint();
+                loadCaptcha();
+            } catch (error) {
+                document.getElementById('loadingScreen').innerHTML = `
+                    <div class="error-message">${error.message}</div>
+                    <p>Please contact your instructor.</p>
+                `;
+            }
+        }
+
+        // TOTP polling
+        async function fetchTotp() {
+            try {
+                const res = await fetch(`${API_BASE}/s/${shortCode}/info`);
+                if (!res.ok) return;
+                
+                const data = await res.json();
+                document.getElementById('totpCode').textContent = data.totpCode;
+                document.getElementById('currentTotp').value = data.totpCode;
+                
+                const now = Date.now();
+                const expires = new Date(data.expiresAt).getTime();
+                const duration = (expires - now) / 1000;
+                const totalWindow = data.windowSeconds;
+                const progress = (duration / totalWindow) * 100;
+                
+                document.getElementById('timerSeconds').textContent = Math.max(0, Math.ceil(duration));
+                document.getElementById('totpProgress').style.width = `${progress}%`;
+            } catch (error) {
+                console.error('TOTP fetch error:', error);
+            }
+        }
+
+        function startTotpPolling() {
+            fetchTotp();
+            setInterval(fetchTotp, 1000);
+        }
+
+        // Camera
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user', width: 640, height: 480 } 
+                });
+                document.getElementById('video').srcObject = stream;
+                document.getElementById('video').play();
+            } catch (error) {
+                alert('Camera access is required for attendance. Please enable camera permissions.');
+            }
+        }
+
+        document.getElementById('captureBtn').addEventListener('click', function() {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            
+            const photoData = canvas.toDataURL('image/jpeg', 0.8);
+            document.getElementById('photoData').value = photoData;
+            document.getElementById('photoPreview').src = photoData;
+            document.getElementById('photoPreview').style.display = 'block';
+            video.style.display = 'none';
+            
+            photoTaken = true;
+            this.textContent = '🔄';
+            this.classList.add('retake-btn');
+            checkFormValidity();
+        });
+
+        // Location
+        function getLocation() {
+            if (!navigator.geolocation) {
+                document.getElementById('locationStatus').className = 'location-status warning';
+                document.getElementById('locationStatus').textContent = 'Geolocation not supported. Attendance may be marked as unverified.';
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    document.getElementById('locationStatus').className = 'location-status success';
+                    document.getElementById('locationStatus').innerHTML = `
+                        ✓ Location acquired<br>
+                        <small>Lat: ${position.coords.latitude.toFixed(6)}, Lng: ${position.coords.longitude.toFixed(6)}</small>
+                    `;
+                    window.formData = window.formData || {};
+                    window.formData.latitude = position.coords.latitude;
+                    window.formData.longitude = position.coords.longitude;
+                    checkFormValidity();
+                },
+                (error) => {
+                    document.getElementById('locationStatus').className = 'location-status error';
+                    document.getElementById('locationStatus').textContent = '⚠ Location access denied. Attendance may be marked as unverified.';
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        }
+
+        // Captcha
+        async function loadCaptcha() {
+            try {
+                const res = await fetch(`${API_BASE}/s/${shortCode}/captcha`);
+                captchaData = await res.json();
+                document.getElementById('captchaSvg').innerHTML = captchaData.captchaSvg;
+                document.getElementById('captchaId').value = captchaData.captchaId;
+            } catch (error) {
+                console.error('Captcha load error:', error);
+            }
+        }
+
+        document.getElementById('refreshCaptcha').addEventListener('click', loadCaptcha);
+
+        // Check enrollment status
+        document.getElementById('checkStatusBtn').addEventListener('click', async () => {
+            rollNumber = document.getElementById('rollNumberInput').value.trim().toUpperCase();
+            
+            if (!rollNumber) {
+                showError('Please enter your roll number');
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/s/${shortCode}/webauthn/status/${rollNumber}`);
+                const data = await res.json();
+                
+                if (data.alreadySubmitted) {
+                    showSuccess(data.message || 'Attendance already submitted');
+                    document.getElementById('webauthnCheckSection').classList.add('hidden');
+                    return;
+                }
+                
+                isEnrolled = data.enrolled;
+                isSuspended = data.suspended;
+                
+                document.getElementById('webauthnCheckSection').classList.add('hidden');
+                document.getElementById('webauthnActionSection').classList.remove('hidden');
+                
+                if (isSuspended) {
+                    document.getElementById('webauthnStatus').innerHTML = `
+                        <strong style="color: #e74c3c;">⚠️ Your credential has been suspended</strong><br>
+                        Please contact admin for assistance.
+                    `;
+                    document.getElementById('webauthnActionBtn').disabled = true;
+                    document.getElementById('webauthnActionBtn').style.background = '#ccc';
+                } else if (isEnrolled) {
+                    document.getElementById('webauthnStatus').textContent = 'Your device is enrolled. Verify your identity to continue.';
+                    document.getElementById('webauthnActionText').textContent = '🔐 Verify Identity';
+                } else {
+                    document.getElementById('webauthnStatus').textContent = 'No device enrolled. Please register your biometric.';
+                    document.getElementById('webauthnActionText').textContent = '📱 Enroll Device';
+                }
+            } catch (error) {
+                showError('Failed to check status: ' + error.message);
+            }
+        });
+
+        // WebAuthn Action
+        document.getElementById('webauthnActionBtn').addEventListener('click', async () => {
+            if (isSuspended) return;
+            
+            if (isEnrolled) {
+                await authenticateWithWebAuthn();
+            } else {
+                await registerWithWebAuthn();
+            }
+        });
+
+        // Registration Flow
+        async function registerWithWebAuthn() {
+            const studentName = prompt('Enter your full name for registration:');
+            if (!studentName) return;
+            
+            try {
+                showLoading('Starting registration...');
+                
+                // Start registration
+                const startRes = await fetch(`${API_BASE}/s/${shortCode}/webauthn/register/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rollNumber, studentName })
+                });
+                
+                if (!startRes.ok) {
+                    const err = await startRes.json();
+                    throw new Error(err.message);
+                }
+                
+                const options = await startRes.json();
+                
+                // Convert base64url to ArrayBuffer
+                options.challenge = Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+                options.user.id = Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+                
+                hideLoading();
+                
+                // Create credential
+                const credential = await navigator.credentials.create({ publicKey: options });
+                
+                showLoading('Verifying registration...');
+                
+                // Finish registration
+                const finishRes = await fetch(`${API_BASE}/s/${shortCode}/webauthn/register/finish`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        rollNumber,
+                        credential: {
+                            id: credential.id,
+                            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                            response: {
+                                attestationObject: btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                                clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                            },
+                            type: credential.type
+                        }
+                    })
+                });
+                
+                if (!finishRes.ok) {
+                    const err = await finishRes.json();
+                    throw new Error(err.message);
+                }
+                
+                const result = await finishRes.json();
+                
+                hideLoading();
+                showSuccess('Device enrolled successfully!');
+                
+                // Now proceed to attendance form
+                document.getElementById('studentName').value = studentName;
+                document.getElementById('webauthnVerified').value = 'true';
+                document.getElementById('verificationMethod').textContent = 'Device: ' + (result.credentialId?.substring(0, 8) || 'Enrolled');
+                
+                showAttendanceForm();
+                
+            } catch (error) {
+                hideLoading();
+                showError('Registration failed: ' + error.message);
+            }
+        }
+
+        // Authentication Flow
+        async function authenticateWithWebAuthn() {
+            try {
+                showLoading('Starting authentication...');
+                
+                // Start authentication
+                const startRes = await fetch(`${API_BASE}/s/${shortCode}/webauthn/authenticate/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rollNumber })
+                });
+                
+                if (!startRes.ok) {
+                    const err = await startRes.json();
+                    throw new Error(err.message);
+                }
+                
+                const options = await startRes.json();
+                
+                // Convert base64url to ArrayBuffer
+                options.challenge = Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+                
+                if (options.allowCredentials) {
+                    options.allowCredentials = options.allowCredentials.map(cred => ({
+                        ...cred,
+                        id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+                    }));
+                }
+                
+                hideLoading();
+                
+                // Get assertion
+                const assertion = await navigator.credentials.get({ publicKey: options });
+                
+                // Store credential for submission
+                currentCredential = {
+                    id: assertion.id,
+                    rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                    response: {
+                        authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                        clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                        signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                        userHandle: assertion.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : null
+                    },
+                    type: assertion.type
+                };
+                
+                document.getElementById('webauthnCredential').value = JSON.stringify(currentCredential);
+                
+                showSuccess('Identity verified!');
+                document.getElementById('webauthnVerified').value = 'true';
+                document.getElementById('verificationMethod').textContent = 'Biometric verified';
+                
+                showAttendanceForm();
+                
+            } catch (error) {
+                hideLoading();
+                
+                if (error.name === 'NotAllowedError') {
+                    showError('Authentication cancelled or timed out. Please try again.');
+                } else {
+                    showError('Authentication failed: ' + error.message);
+                }
+            }
+        }
+
+        // Fallback Mode (no WebAuthn)
+        document.getElementById('fallbackBtn').addEventListener('click', () => {
+            fallbackMode = true;
+            rollNumber = document.getElementById('rollNumberInput').value.trim().toUpperCase();
+            
+            if (!rollNumber) {
+                showError('Please enter your roll number first');
+                return;
+            }
+            
+            document.getElementById('webauthnCheckSection').classList.add('hidden');
+            document.getElementById('browserWarning').classList.add('hidden');
+            document.getElementById('webauthnVerified').value = 'false';
+            document.getElementById('verificationMethod').textContent = '⚠️ Manual verification required';
+            document.getElementById('deviceInfo').style.background = '#fff3cd';
+            
+            showAttendanceForm();
+        });
+
+        function showAttendanceForm() {
+            document.getElementById('webauthnActionSection').classList.add('hidden');
+            document.getElementById('attendanceFormSection').classList.remove('hidden');
+            getLocation();
+            loadCaptcha();
+        }
+
+        // Form validation
+        function checkFormValidity() {
+            const name = document.getElementById('studentName').value.trim();
+            const captcha = document.getElementById('captchaInput').value.trim();
+            
+            const valid = name && captcha && photoTaken;
+            document.getElementById('submitBtn').disabled = !valid;
+        }
+
+        document.getElementById('studentName').addEventListener('input', checkFormValidity);
+        document.getElementById('captchaInput').addEventListener('input', checkFormValidity);
+
+        // Submit
+        document.getElementById('attendanceForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('submitBtn').textContent = 'Submitting...';
+            
+            const endpoint = currentCredential 
+                ? `${API_BASE}/s/${shortCode}/webauthn/authenticate/finish`
+                : `${API_BASE}/s/${shortCode}/submit`;
+            
+            const data = {
+                studentName: document.getElementById('studentName').value.trim(),
+                rollNumber: rollNumber,
+                photo: document.getElementById('photoData').value,
+                latitude: window.formData?.latitude,
+                longitude: window.formData?.longitude,
+                faceDetected: true,
+                captchaAnswer: document.getElementById('captchaInput').value.trim(),
+                captchaId: document.getElementById('captchaId').value,
+                totpCode: document.getElementById('currentTotp').value,
+                deviceFingerprint: deviceFingerprint,
+                webauthnVerified: document.getElementById('webauthnVerified').value === 'true'
+            };
+            
+            if (currentCredential) {
+                data.credential = currentCredential;
+            }
+
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(result.message || 'Failed to submit attendance');
+                }
+
+                showSuccess(result.message);
+                document.getElementById('attendanceForm').classList.add('hidden');
+            } catch (error) {
+                showError(error.message);
+                document.getElementById('submitBtn').disabled = false;
+                document.getElementById('submitBtn').textContent = 'Submit Attendance';
+                loadCaptcha();
+            }
+        });
+
+        function showLoading(message) {
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            document.getElementById('loadingScreen').innerHTML = `
+                <div class="spinner"></div>
+                <p>${message}</p>
+            `;
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingScreen').classList.add('hidden');
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.classList.remove('hidden');
+            setTimeout(() => el.classList.add('hidden'), 5000);
+        }
+
+        function showSuccess(message) {
+            const el = document.getElementById('successMessage');
+            el.textContent = message;
+            el.classList.remove('hidden');
+        }
+
+        // Initialize
+        loadSession();
+    </script>
+</body>
+</html>

@@ -6,6 +6,10 @@ import Dashboard from './pages/Dashboard';
 import Locations from './pages/Locations';
 import Sessions from './pages/Sessions';
 import SessionDetail from './pages/SessionDetail';
+import ShortLinks from './pages/ShortLinks';
+import QRDisplay from './pages/QRDisplay';
+import FlaggedAttendance from './pages/FlaggedAttendance';
+import WebAuthnCredentials from './pages/WebAuthnCredentials';
 import Navbar from './components/Navbar';
 
 const PrivateRoute = ({ children }) => {
@@ -55,6 +59,38 @@ function App() {
           element={
             <PrivateRoute>
               <SessionDetail />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/sessions/:id/qr"
+          element={
+            <PrivateRoute>
+              <QRDisplay />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/shortlinks"
+          element={
+            <PrivateRoute>
+              <ShortLinks />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/flagged"
+          element={
+            <PrivateRoute>
+              <FlaggedAttendance />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/webauthn"
+          element={
+            <PrivateRoute>
+              <WebAuthnCredentials />
             </PrivateRoute>
           }
         />
