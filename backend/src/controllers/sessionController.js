@@ -5,7 +5,7 @@ const Admin = require('../models/Admin');
 const ShortLink = require('../models/ShortLink');
 const Device = require('../models/Device');
 const { getStorageProvider } = require('../storage');
-const { generateTOTPWithTimestamp } = require('../utils/totpUtils');
+const { generateTOTPWithTimestamp, generateQRToken } = require('../utils/totpUtils');
 const { invalidateSessionCache } = require('../middleware/sessionCache');
 
 const createSession = async (req, res) => {
@@ -297,6 +297,9 @@ const getSessionTOTP = async (req, res) => {
       windowSeconds: totpData.windowSeconds,
       shortLink: shortLink ? shortLink.shortCode : null,
       sessionActive: session.isActive,
+      // QR anti-sharing: 4-second rotating token for the QR URL
+      qrToken: shortLink ? generateQRToken(shortLink.shortCode, session.totpSecret) : null,
+      qrTokenWindowSeconds: 4,
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

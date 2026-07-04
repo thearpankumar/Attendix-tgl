@@ -7,7 +7,7 @@ const Admin = require('../src/models/Admin');
 const ShortLink = require('../src/models/ShortLink');
 const Device = require('../src/models/Device');
 const Attendance = require('../src/models/Attendance');
-const { generateTOTPCode, validateTOTPCode } = require('../src/utils/totpUtils');
+const { generateTOTPCode, validateTOTPCode, generateQRToken, validateQRToken } = require('../src/utils/totpUtils');
 
 describe('TOTP Utility Functions', () => {
   const secret = 'test-secret-12345';
@@ -85,6 +85,82 @@ describe('TOTP Utility Functions', () => {
       const code = generateTOTPCode(secret, sessionId, windowSeconds);
       const result = validateTOTPCode(code, secret, sessionId, windowSeconds, 2);
       expect(result.valid).toBe(true);
+    });
+  });
+});
+
+describe('QR Token Functions (Anti-Sharing)', () => {
+  const secret = 'qr-test-secret-abc';
+  const shortCode = 'testcode';
+
+  describe('generateQRToken', () => {
+    it('should return a string in slot.signature format', () => {
+      const token = generateQRToken(shortCode, secret);
+      expect(token).toMatch(/^\d+\.[a-f0-9]{16}$/);
+    });
+
+    it('should generate same token within same 4-second slot', () => {
+      const t1 = generateQRToken(shortCode, secret);
+      const t2 = generateQRToken(shortCode, secret);
+      expect(t1).toBe(t2);
+    });
+
+    it('should produce different tokens for different shortCodes', () => {
+      const t1 = generateQRToken('code1', secret);
+      const t2 = generateQRToken('code2', secret);
+      expect(t1).not.toBe(t2);
+    });
+
+    it('should produce different tokens for different secrets', () => {
+      const t1 = generateQRToken(shortCode, 'secret-a');
+      const t2 = generateQRToken(shortCode, 'secret-b');
+      expect(t1).not.toBe(t2);
+    });
+  });
+
+  describe('validateQRToken', () => {
+    it('should validate a freshly generated token', () => {
+      const token = generateQRToken(shortCode, secret);
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should reject a token for a different shortCode', () => {
+      const token = generateQRToken('other-code', secret);
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject a token signed with a different secret', () => {
+      const token = generateQRToken(shortCode, 'wrong-secret');
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject a token from 2+ slots ago (>8 seconds old)', () => {
+      const oldSlot = Math.floor(Date.now() / 4000) - 2;
+      const fakeSig = 'aaaaaaaaaaaaaaaa'; // invalid sig
+      const staleToken = `${oldSlot}.${fakeSig}`;
+      const result = validateQRToken(shortCode, secret, staleToken);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject null token', () => {
+      const result = validateQRToken(shortCode, secret, null);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject malformed token (no dot)', () => {
+      const result = validateQRToken(shortCode, secret, 'notavalidtoken');
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject token with tampered signature', () => {
+      const token = generateQRToken(shortCode, secret);
+      const [slot] = token.split('.');
+      const tampered = `${slot}.0000000000000000`;
+      const result = validateQRToken(shortCode, secret, tampered);
+      expect(result.valid).toBe(false);
     });
   });
 });
@@ -587,12 +663,40 @@ describe('Short Link Redirect Route', () => {
   });
 
   describe('GET /s/:shortCode/session', () => {
-    it('should return session info', async () => {
+    it('should return session info without QRT (backward compat)', async () => {
       const res = await request(app).get('/s/redirect123/session');
 
       expect(res.status).toBe(200);
       expect(res.body.valid).toBe(true);
       expect(res.body.session.totpEnabled).toBe(true);
+    });
+
+    it('should accept a valid fresh QR token', async () => {
+      const token = generateQRToken('redirect123', 'redirect-test-secret');
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(token)}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+    });
+
+    it('should return 403 with qrExpired for a stale QR token', async () => {
+      const oldSlot = Math.floor(Date.now() / 4000) - 3; // 12+ seconds old
+      const staleToken = `${oldSlot}.aaaaaaaaaaaaaaaa`;
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(staleToken)}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.qrExpired).toBe(true);
+      expect(res.body.message).toContain('expired');
+    });
+
+    it('should return 403 with qrExpired for a tampered QR token', async () => {
+      const token = generateQRToken('redirect123', 'redirect-test-secret');
+      const [slot] = token.split('.');
+      const tampered = `${slot}.0000000000000000`;
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(tampered)}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.qrExpired).toBe(true);
     });
   });
 });

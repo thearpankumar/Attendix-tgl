@@ -6,7 +6,7 @@ const Attendance = require('../models/Attendance');
 const Location = require('../models/Location');
 const Device = require('../models/Device');
 const { studentLimiter } = require('../middleware/rateLimiter');
-const { generateTOTPWithTimestamp, validateTOTPCode } = require('../utils/totpUtils');
+const { generateTOTPWithTimestamp, validateTOTPCode, validateQRToken } = require('../utils/totpUtils');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
 const svgCaptcha = require('svg-captcha');
@@ -397,6 +397,18 @@ router.get('/:shortCode/session', studentLimiter, async (req, res) => {
     
     if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
       return res.status(400).json({ message: 'Session is not active' });
+    }
+
+    // QR anti-sharing validation: if ?qrt= is present, verify the 4-second rotating token
+    const { qrt } = req.query;
+    if (qrt) {
+      const qrtResult = validateQRToken(shortCode, session.totpSecret, qrt);
+      if (!qrtResult.valid) {
+        return res.status(403).json({
+          qrExpired: true,
+          message: 'QR code has expired. Please scan the current QR code shown on screen.',
+        });
+      }
     }
 
     res.json({
