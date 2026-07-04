@@ -646,17 +646,35 @@ describe('Short Link Redirect Route', () => {
     });
   });
 
-  describe('GET /s/:shortCode/info', () => {
-    it('should return current TOTP code', async () => {
-      const res = await request(app).get('/s/redirect123/info');
+  describe('POST /s/:shortCode/verify-gatekeeper', () => {
+    it('should verify correct TOTP code and roll number', async () => {
+      const totpCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 5);
+      
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode
+      });
 
       expect(res.status).toBe(200);
-      expect(res.body.totpCode).toMatch(/^[A-Z0-9]{6}$/);
-      expect(res.body.sessionId).toBe(sessionId.toString());
+      expect(res.body.valid).toBe(true);
+      expect(res.body.enrolled).toBe(false);
+    });
+
+    it('should return 400 for incorrect TOTP', async () => {
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode: '000000'
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain('Invalid or expired code');
     });
 
     it('should return 404 for non-existent link', async () => {
-      const res = await request(app).get('/s/nonexistent/info');
+      const res = await request(app).post('/s/nonexistent/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode: '123456'
+      });
 
       expect(res.status).toBe(404);
     });
@@ -914,8 +932,9 @@ describe('Security Tests', () => {
   });
 
   it('should reject TOTP replay attack', async () => {
-    const totpRes = await request(app).get('/s/security123/info');
-    const totpCode = totpRes.body.totpCode;
+    // We don't have an endpoint to fetch TOTP directly anymore.
+    // We just generate a valid one for the test.
+    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 5);
 
     const result1 = validateTOTPCode(totpCode, 'security-test-secret', sessionId.toString(), 5, 1);
     expect(result1.valid).toBe(true);
@@ -953,13 +972,15 @@ describe('Security Tests', () => {
   });
 
   it('should handle concurrent TOTP requests', async () => {
+    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 5);
     const requests = Array(10).fill(null).map(() => 
-      request(app).get('/s/security123/info')
+      request(app).post('/s/security123/verify-gatekeeper').send({ rollNumber: 'CONC123', totpCode })
     );
 
     const responses = await Promise.all(requests);
     responses.forEach(res => {
       expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
     });
   });
 });
