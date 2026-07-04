@@ -38,6 +38,15 @@ async function createShortLink(req, res) {
       expiresAt: expiresAt || null,
     });
     await shortLink.save();
+
+    if (sessionId) {
+      const session = await Session.findById(sessionId);
+      if (session) {
+        session.totpEnabled = true;
+        await session.save();
+      }
+    }
+
     res.status(201).json(shortLink);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

@@ -333,47 +333,7 @@ router.post('/:shortCode/submit', studentLimiter, async (req, res) => {
   }
 });
 
-router.get('/:shortCode/info', studentLimiter, async (req, res) => {
-  try {
-    const { shortCode } = req.params;
-    
-    const shortLink = await ShortLink.findOne({ 
-      shortCode: shortCode.toLowerCase(),
-      isActive: true,
-    }).populate('sessionId');
 
-    if (!shortLink) {
-      return res.status(404).json({ message: 'Short link not found' });
-    }
-
-    if (!shortLink.sessionId) {
-      return res.status(400).json({ message: 'No session attached to this link' });
-    }
-
-    const session = shortLink.sessionId;
-    
-    if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
-      return res.status(400).json({ message: 'Session is not active' });
-    }
-
-    const totpData = generateTOTPWithTimestamp(
-      session.totpSecret,
-      session._id.toString(),
-      session.totpWindowSeconds
-    );
-
-    res.json({
-      sessionId: session._id,
-      totpCode: totpData.code,
-      expiresAt: totpData.expiresAt,
-      windowSeconds: totpData.windowSeconds,
-      sessionActive: session.isActive,
-      sessionExpiresAt: session.expiresAt,
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
 
 router.get('/:shortCode/session', studentLimiter, async (req, res) => {
   try {

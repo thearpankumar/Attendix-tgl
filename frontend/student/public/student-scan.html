@@ -366,11 +366,8 @@
             </div>
 
             <div class="totp-section">
-                <div class="totp-timer">Current code expires in <span id="timerSeconds">0</span>s</div>
-                <div class="totp-code" id="totpCode">------</div>
-                <div class="totp-progress">
-                    <div class="totp-progress-bar" id="totpProgress" style="width: 100%"></div>
-                </div>
+                <div class="totp-timer" style="font-weight: 500; color: #333;">Enter the 6-digit code shown on the projector:</div>
+                <input type="text" id="totpInput" class="totp-input" placeholder="------" maxlength="6" autocomplete="off" style="width: 100%; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; font-family: 'Courier New', monospace; text-align: center; border: 2px solid #ddd; border-radius: 8px; padding: 10px; margin: 10px 0; text-transform: uppercase;" required>
             </div>
 
             <div id="errorMessage" class="error-message hidden"></div>
@@ -530,7 +527,7 @@
                 document.getElementById('locationName').textContent = sessionData.session.locationName;
                 document.getElementById('expiresAt').textContent = `Session expires: ${new Date(sessionData.session.expiresAt).toLocaleTimeString()}`;
                 
-                startTotpPolling();
+                // No polling needed
                 document.getElementById('loadingScreen').classList.add('hidden');
                 document.getElementById('content').classList.remove('hidden');
                 
@@ -551,33 +548,7 @@
             }
         }
 
-        // TOTP polling
-        async function fetchTotp() {
-            try {
-                const res = await fetch(`${API_BASE}/s/${shortCode}/info`);
-                if (!res.ok) return;
-                
-                const data = await res.json();
-                document.getElementById('totpCode').textContent = data.totpCode;
-                document.getElementById('currentTotp').value = data.totpCode;
-                
-                const now = Date.now();
-                const expires = new Date(data.expiresAt).getTime();
-                const duration = (expires - now) / 1000;
-                const totalWindow = data.windowSeconds;
-                const progress = (duration / totalWindow) * 100;
-                
-                document.getElementById('timerSeconds').textContent = Math.max(0, Math.ceil(duration));
-                document.getElementById('totpProgress').style.width = `${progress}%`;
-            } catch (error) {
-                console.error('TOTP fetch error:', error);
-            }
-        }
-
-        function startTotpPolling() {
-            fetchTotp();
-            setInterval(fetchTotp, 1000);
-        }
+        // Removed TOTP polling to enforce manual entry from projector
 
         // Camera
         async function initCamera() {
@@ -907,7 +878,7 @@
                 faceDetected: true,
                 captchaAnswer: document.getElementById('captchaInput').value.trim(),
                 captchaId: document.getElementById('captchaId').value,
-                totpCode: document.getElementById('currentTotp').value,
+                totpCode: document.getElementById('totpInput').value,
                 deviceFingerprint: deviceFingerprint,
                 webauthnVerified: document.getElementById('webauthnVerified').value === 'true'
             };
