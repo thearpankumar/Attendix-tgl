@@ -29,12 +29,95 @@ This system is designed to handle **1000+ concurrent users** with the following 
 
 ---
 
+## 🛠️ Automated Setup
+
+### Using the Setup Script
+
+The project includes a comprehensive setup script (`setup.sh`) that automates the entire installation process:
+
+```bash
+# Make executable
+chmod +x setup.sh
+
+# Interactive menu mode (recommended for first-time setup)
+./setup.sh menu
+
+# Or use specific commands
+./setup.sh check     # Check system requirements
+./setup.sh install   # Install everything (Docker, Node.js, Dependencies)
+./setup.sh up        # Start Docker Compose
+./setup.sh down      # Stop Docker Compose
+./setup.sh logs      # View logs
+./setup.sh status    # Check service status
+./setup.sh reset     # Reset and remove all volumes
+./setup.sh help      # Show all options
+```
+
+### Setup Script Capabilities
+
+| Feature | Description |
+|---------|-------------|
+| **Cross-platform** | Works on Linux (Ubuntu/Debian) and macOS (Intel & Apple Silicon) |
+| **Docker Installation** | Installs Docker Engine (Linux) or Docker Desktop (macOS) |
+| **Node.js Installation** | Installs Node.js 22 LTS via NVM |
+| **Version Detection** | Detects existing installations and warns without overwriting |
+| **Dependency Installation** | Installs npm packages for backend and frontend |
+| **Environment Setup** | Copies .env.example to .env |
+| **Docker Management** | Start, stop, logs, status, reset operations |
+| **Development Servers** | Run backend (nodemon) and frontend (Vite) dev servers |
+| **Testing** | Run backend tests and linter |
+
+### Command Line Options
+
+```
+./setup.sh [option]
+
+Options:
+  check       Run system checks
+  install     Install all (Docker, Node.js, Dependencies)
+  docker      Install Docker only
+  node        Install Node.js only (via NVM)
+  deps        Install project dependencies only
+  env         Copy .env.example to .env
+  up          Start Docker Compose
+  down        Stop Docker Compose
+  logs        View Docker Compose logs
+  status      Show Docker Compose status
+  reset       Reset Docker (remove volumes)
+  test        Run backend tests
+  lint        Run backend linter
+  dev         Run backend dev server
+  menu        Show interactive menu (default)
+  help        Show help message
+```
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Docker & Docker Compose
 - 8GB RAM minimum
 - 4 vCPUs recommended
+
+### Option A: Automated Setup (Recommended)
+
+```bash
+# 1. Clone the repository
+git clone <repository-url>
+cd Attendence-GEOTAG-System
+
+# 2. Run automated setup
+./setup.sh install
+
+# 3. Configure environment (edit .env with your credentials)
+./setup.sh env
+
+# 4. Start the system
+./setup.sh up
+```
+
+### Option B: Manual Setup
 
 ### 1. Configure Environment
 

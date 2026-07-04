@@ -418,7 +418,35 @@ The system supports two storage backends, configurable via `STORAGE_PROVIDER` en
 ### Prerequisites
 
 - Docker and Docker Compose
+- Node.js 22+ (for local development)
 - Cloudinary account (free tier available) OR AWS account with S3 access
+
+### Automated Setup (Recommended)
+
+Use the provided setup script for a guided installation:
+
+```bash
+# Make the script executable
+chmod +x setup.sh
+
+# Run the interactive menu
+./setup.sh menu
+
+# Or use command-line options
+./setup.sh check     # Check system requirements
+./setup.sh install   # Install Docker, Node.js, and dependencies
+./setup.sh up        # Start Docker Compose
+./setup.sh help      # Show all available commands
+```
+
+**Setup Script Features:**
+- ✅ Cross-platform support (Linux Ubuntu/Debian & macOS Intel/Apple Silicon)
+- ✅ Installs Docker & Docker Compose (if not present)
+- ✅ Installs Node.js 22 LTS via NVM (if not present)
+- ✅ Detects existing versions and warns without overwriting
+- ✅ Installs project dependencies
+- ✅ Creates .env file from .env.example
+- ✅ Interactive menu and CLI options
 
 ### 1. Clone and Configure
 
