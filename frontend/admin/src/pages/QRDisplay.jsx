@@ -6,7 +6,7 @@ import QRCode from 'qrcode';
 const QR_WINDOW_SECONDS = 4;
 
 const QRDisplay = () => {
-  const { sessionId } = useParams();
+  const { id: sessionId } = useParams();
   const navigate = useNavigate();
   const [session, setSession] = useState(null);
   const [totpData, setTotpData] = useState(null);
