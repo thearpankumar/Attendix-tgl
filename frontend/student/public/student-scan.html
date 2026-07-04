@@ -365,61 +365,48 @@
                 <div class="expires" id="expiresAt">Session expires: --</div>
             </div>
 
-            <div class="totp-section">
-                <div class="totp-timer" style="font-weight: 500; color: #333;">Enter the 6-digit code shown on the projector:</div>
-                <input type="text" id="totpInput" class="totp-input" placeholder="------" maxlength="6" autocomplete="off" style="width: 100%; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; font-family: 'Courier New', monospace; text-align: center; border: 2px solid #ddd; border-radius: 8px; padding: 10px; margin: 10px 0; text-transform: uppercase;" required>
-            </div>
+            <!-- STEP 1: Gatekeeper -->
+            <div id="gatekeeperSection">
+                <form id="gatekeeperForm">
+                    <div class="form-group">
+                        <label for="rollNumberInput">Roll Number</label>
+                        <input type="text" id="rollNumberInput" required placeholder="Enter your roll number" style="text-transform: uppercase;">
+                    </div>
+                    
+                    <div class="totp-section">
+                        <div class="totp-timer" style="font-weight: 500; color: #333;">Enter the 6-digit code shown on the projector:</div>
+                        <input type="text" id="totpInput" class="totp-input" placeholder="------" maxlength="6" autocomplete="off" style="width: 100%; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; font-family: 'Courier New', monospace; text-align: center; border: 2px solid #ddd; border-radius: 8px; padding: 10px; margin: 10px 0; text-transform: uppercase;" required>
+                    </div>
 
-            <div id="errorMessage" class="error-message hidden"></div>
-            <div id="successMessage" class="success-message hidden"></div>
-
-            <!-- WebAuthn Check Section -->
-            <div id="webauthnCheckSection">
-                <div class="form-group">
-                    <label for="rollNumberInput">Roll Number</label>
-                    <input type="text" id="rollNumberInput" required placeholder="Enter your roll number" style="text-transform: uppercase;">
-                </div>
-                <button type="button" id="checkStatusBtn" class="webauthn-btn">
-                    <span class="icon">🔍</span>
-                    <span>Check Status</span>
-                </button>
-            </div>
-
-            <!-- WebAuthn Action Section -->
-            <div id="webauthnActionSection" class="hidden">
-                <div class="webauthn-section">
-                    <div class="webauthn-status" id="webauthnStatus"></div>
-                    <button type="button" id="webauthnActionBtn" class="webauthn-btn">
-                        <span class="icon">🔐</span>
-                        <span id="webauthnActionText">Verify Identity</span>
+                    <button type="submit" id="checkStatusBtn" class="webauthn-btn" style="width: 100%;">
+                        <span>Verify & Continue</span>
+                        <span class="icon">➔</span>
                     </button>
-                </div>
+                </form>
             </div>
 
-            <!-- Browser Not Supported Warning -->
-            <div id="browserWarning" class="warning-box hidden">
-                <strong>⚠️ Biometric authentication not supported</strong>
-                <p style="margin-top: 8px;">Your browser doesn't support WebAuthn. You can still submit attendance, but it will be flagged for manual verification.</p>
-                <button type="button" id="fallbackBtn" class="webauthn-btn fallback-btn">
-                    Continue Without Biometric
-                </button>
-            </div>
-
-            <!-- Attendance Form -->
+            <!-- STEP 2: Attendance Form -->
             <div id="attendanceFormSection" class="hidden">
                 <div class="location-status" id="locationStatus">
                     Getting your location...
                 </div>
 
-                <div class="info-box" id="deviceInfo">
-                    <strong>✓ Biometric Verified</strong><br>
+                <!-- Browser Not Supported Warning -->
+                <div id="browserWarning" class="warning-box hidden" style="margin-bottom: 15px;">
+                    <strong>⚠️ Biometric authentication not supported</strong>
+                    <p style="margin-top: 8px;">Your browser doesn't support WebAuthn. You can still submit attendance, but it will be flagged for manual verification.</p>
+                </div>
+
+                <div class="info-box" id="deviceInfo" class="hidden">
+                    <strong>✓ Identity Verified</strong><br>
                     <span id="verificationMethod"></span>
                 </div>
 
                 <form id="attendanceForm">
-                    <div class="form-group">
+                    <!-- Only shown if registering a new device -->
+                    <div class="form-group" id="nameFormGroup" class="hidden">
                         <label for="studentName">Full Name</label>
-                        <input type="text" id="studentName" required placeholder="Enter your full name">
+                        <input type="text" id="studentName" placeholder="Enter your full name">
                     </div>
 
                     <div class="form-group">
@@ -443,12 +430,11 @@
 
                     <input type="hidden" id="photoData">
                     <input type="hidden" id="captchaId">
-                    <input type="hidden" id="currentTotp">
                     <input type="hidden" id="deviceFingerprint">
-                    <input type="hidden" id="webauthnCredential">
-                    <input type="hidden" id="webauthnVerified" value="false">
-
-                    <button type="submit" class="submit-btn" id="submitBtn" disabled>Submit Attendance</button>
+                    
+                    <button type="button" class="submit-btn" id="mainSubmitBtn" disabled>
+                        <span class="icon">🔐</span> <span id="submitBtnText">Verify Identity & Submit</span>
+                    </button>
                 </form>
             </div>
         </div>
@@ -625,65 +611,112 @@
 
         document.getElementById('refreshCaptcha').addEventListener('click', loadCaptcha);
 
-        // Check enrollment status
-        document.getElementById('checkStatusBtn').addEventListener('click', async () => {
+        // Gatekeeper: Check TOTP and Enrollment status
+        document.getElementById('gatekeeperForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
             rollNumber = document.getElementById('rollNumberInput').value.trim().toUpperCase();
+            const totpCode = document.getElementById('totpInput').value.trim();
             
             if (!rollNumber) {
                 showError('Please enter your roll number');
                 return;
             }
+            if (!totpCode) {
+                showError('Please enter the 6-digit code shown on the projector');
+                return;
+            }
             
             try {
-                const res = await fetch(`${API_BASE}/s/${shortCode}/webauthn/status/${rollNumber}`);
+                showLoading('Verifying code...');
+                const res = await fetch(`${API_BASE}/s/${shortCode}/verify-gatekeeper`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rollNumber, totpCode })
+                });
+                
                 const data = await res.json();
+                hideLoading();
+                
+                if (!res.ok) {
+                    showError(data.message || 'Verification failed');
+                    return;
+                }
                 
                 if (data.alreadySubmitted) {
                     showSuccess(data.message || 'Attendance already submitted');
-                    document.getElementById('webauthnCheckSection').classList.add('hidden');
+                    document.getElementById('gatekeeperSection').classList.add('hidden');
                     return;
                 }
                 
                 isEnrolled = data.enrolled;
                 isSuspended = data.suspended;
                 
-                document.getElementById('webauthnCheckSection').classList.add('hidden');
-                document.getElementById('webauthnActionSection').classList.remove('hidden');
-                
                 if (isSuspended) {
-                    document.getElementById('webauthnStatus').innerHTML = `
-                        <strong style="color: #e74c3c;">⚠️ Your credential has been suspended</strong><br>
-                        Please contact admin for assistance.
-                    `;
-                    document.getElementById('webauthnActionBtn').disabled = true;
-                    document.getElementById('webauthnActionBtn').style.background = '#ccc';
-                } else if (isEnrolled) {
-                    document.getElementById('webauthnStatus').textContent = 'Your device is enrolled. Verify your identity to continue.';
-                    document.getElementById('webauthnActionText').textContent = '🔐 Verify Identity';
-                } else {
-                    document.getElementById('webauthnStatus').textContent = 'No device enrolled. Please register your biometric.';
-                    document.getElementById('webauthnActionText').textContent = '📱 Enroll Device';
+                    showError('Your credential has been suspended. Please contact admin.');
+                    return;
                 }
+                
+                // Hide gatekeeper, show main form
+                document.getElementById('gatekeeperSection').classList.add('hidden');
+                document.getElementById('attendanceFormSection').classList.remove('hidden');
+                document.getElementById('mainSubmitBtn').disabled = false;
+                
+                if (isEnrolled) {
+                    // Already enrolled: we just need to verify identity
+                    document.getElementById('submitBtnText').textContent = 'Verify Identity & Submit';
+                    if (data.studentName) {
+                        document.getElementById('studentName').value = data.studentName;
+                    }
+                } else {
+                    // Not enrolled: we need their name to register a new device
+                    document.getElementById('nameFormGroup').classList.remove('hidden');
+                    document.getElementById('submitBtnText').textContent = 'Enroll Device & Submit';
+                    if (data.studentName) {
+                        document.getElementById('studentName').value = data.studentName;
+                    }
+                }
+                
+                getLocation();
+                loadCaptcha();
+                
             } catch (error) {
-                showError('Failed to check status: ' + error.message);
+                hideLoading();
+                showError('Failed to verify: ' + error.message);
             }
         });
 
-        // WebAuthn Action
-        document.getElementById('webauthnActionBtn').addEventListener('click', async () => {
+        // Unified Submit Button
+        document.getElementById('mainSubmitBtn').addEventListener('click', async () => {
             if (isSuspended) return;
+            
+            if (!photoTaken) {
+                showError('Please take a photo first');
+                return;
+            }
+
+            const captchaAnswer = document.getElementById('captchaInput').value.trim();
+            if (!captchaAnswer) {
+                showError('Please enter the captcha code');
+                return;
+            }
+
+            let studentName = document.getElementById('studentName').value.trim();
+            if (!isEnrolled && !studentName) {
+                showError('Please enter your full name');
+                return;
+            }
             
             if (isEnrolled) {
                 await authenticateWithWebAuthn();
             } else {
-                await registerWithWebAuthn();
+                await registerWithWebAuthn(studentName);
             }
         });
 
         // Registration Flow
-        async function registerWithWebAuthn() {
-            const studentName = prompt('Enter your full name for registration:');
-            if (!studentName) return;
+        async function registerWithWebAuthn(studentName) {
+
             
             try {
                 showLoading('Starting registration...');
@@ -741,12 +774,13 @@
                 hideLoading();
                 showSuccess('Device enrolled successfully!');
                 
-                // Now proceed to attendance form
-                document.getElementById('studentName').value = studentName;
+                // Now proceed to attendance form submission
                 document.getElementById('webauthnVerified').value = 'true';
                 document.getElementById('verificationMethod').textContent = 'Device: ' + (result.credentialId?.substring(0, 8) || 'Enrolled');
+                document.getElementById('deviceInfo').classList.remove('hidden');
                 
-                showAttendanceForm();
+                // Immediately submit attendance
+                await submitAttendance(credential);
                 
             } catch (error) {
                 hideLoading();
@@ -806,8 +840,10 @@
                 showSuccess('Identity verified!');
                 document.getElementById('webauthnVerified').value = 'true';
                 document.getElementById('verificationMethod').textContent = 'Biometric verified';
+                document.getElementById('deviceInfo').classList.remove('hidden');
                 
-                showAttendanceForm();
+                // Immediately submit attendance
+                await submitAttendance(currentCredential);
                 
             } catch (error) {
                 hideLoading();
@@ -817,33 +853,11 @@
                 } else {
                     showError('Authentication failed: ' + error.message);
                 }
+                
+                // Re-enable button so they can try again
+                document.getElementById('mainSubmitBtn').disabled = false;
+                document.getElementById('submitBtnText').textContent = 'Verify Identity & Submit';
             }
-        }
-
-        // Fallback Mode (no WebAuthn)
-        document.getElementById('fallbackBtn').addEventListener('click', () => {
-            fallbackMode = true;
-            rollNumber = document.getElementById('rollNumberInput').value.trim().toUpperCase();
-            
-            if (!rollNumber) {
-                showError('Please enter your roll number first');
-                return;
-            }
-            
-            document.getElementById('webauthnCheckSection').classList.add('hidden');
-            document.getElementById('browserWarning').classList.add('hidden');
-            document.getElementById('webauthnVerified').value = 'false';
-            document.getElementById('verificationMethod').textContent = '⚠️ Manual verification required';
-            document.getElementById('deviceInfo').style.background = '#fff3cd';
-            
-            showAttendanceForm();
-        });
-
-        function showAttendanceForm() {
-            document.getElementById('webauthnActionSection').classList.add('hidden');
-            document.getElementById('attendanceFormSection').classList.remove('hidden');
-            getLocation();
-            loadCaptcha();
         }
 
         // Form validation
@@ -851,21 +865,19 @@
             const name = document.getElementById('studentName').value.trim();
             const captcha = document.getElementById('captchaInput').value.trim();
             
-            const valid = name && captcha && photoTaken;
-            document.getElementById('submitBtn').disabled = !valid;
+            const valid = captcha && photoTaken;
+            document.getElementById('mainSubmitBtn').disabled = !valid;
         }
 
         document.getElementById('studentName').addEventListener('input', checkFormValidity);
         document.getElementById('captchaInput').addEventListener('input', checkFormValidity);
 
-        // Submit
-        document.getElementById('attendanceForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
+        // Submit Attendance payload
+        async function submitAttendance(credential) {
+            document.getElementById('mainSubmitBtn').disabled = true;
+            document.getElementById('submitBtnText').textContent = 'Submitting...';
             
-            document.getElementById('submitBtn').disabled = true;
-            document.getElementById('submitBtn').textContent = 'Submitting...';
-            
-            const endpoint = currentCredential 
+            const endpoint = credential 
                 ? `${API_BASE}/s/${shortCode}/webauthn/authenticate/finish`
                 : `${API_BASE}/s/${shortCode}/submit`;
             
@@ -883,8 +895,8 @@
                 webauthnVerified: document.getElementById('webauthnVerified').value === 'true'
             };
             
-            if (currentCredential) {
-                data.credential = currentCredential;
+            if (credential) {
+                data.credential = credential;
             }
 
             try {
@@ -901,14 +913,22 @@
                 }
 
                 showSuccess(result.message);
-                document.getElementById('attendanceForm').classList.add('hidden');
+                document.getElementById('attendanceFormSection').classList.add('hidden');
+                // Ensure everything hides
+                document.getElementById('content').innerHTML = `
+                    <div style="text-align:center; padding: 40px 20px;">
+                        <div style="font-size: 64px; margin-bottom: 20px;">✅</div>
+                        <h2 style="color: #2ecc71; margin-bottom: 10px;">Attendance Submitted</h2>
+                        <p style="color: #555;">You can now close this tab.</p>
+                    </div>
+                `;
             } catch (error) {
                 showError(error.message);
-                document.getElementById('submitBtn').disabled = false;
-                document.getElementById('submitBtn').textContent = 'Submit Attendance';
+                document.getElementById('mainSubmitBtn').disabled = false;
+                document.getElementById('submitBtnText').textContent = isEnrolled ? 'Verify Identity & Submit' : 'Enroll Device & Submit';
                 loadCaptcha();
             }
-        });
+        }
 
         function showLoading(message) {
             document.getElementById('loadingScreen').classList.remove('hidden');
