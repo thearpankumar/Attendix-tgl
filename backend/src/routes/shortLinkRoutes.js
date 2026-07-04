@@ -541,7 +541,9 @@ router.get('/:shortCode', studentLimiter, async (req, res) => {
     shortLink.lastClickedAt = new Date();
     await shortLink.save();
 
-    const studentAppUrl = `/attend/${shortCode}`;
+    const { qrt } = req.query;
+    const qrtParam = qrt ? `?qrt=${encodeURIComponent(qrt)}` : '';
+    const studentAppUrl = `/attend/${shortCode}${qrtParam}`;
 
     res.redirect(studentAppUrl);
   } catch (error) {

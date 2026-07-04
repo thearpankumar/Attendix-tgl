@@ -55,13 +55,13 @@ const QRDisplay = () => {
       const qrToken = res.data.qrToken;
       if (qrToken && qrToken !== lastQrTokenRef.current && res.data.shortLink) {
         lastQrTokenRef.current = qrToken;
-        const qrUrl = `${window.location.origin}/attend/${res.data.shortLink}?qrt=${encodeURIComponent(qrToken)}`;
+        const qrUrl = `${window.location.origin}/s/${res.data.shortLink}?qrt=${encodeURIComponent(qrToken)}`;
         generateQR(qrUrl);
         // Reset QR countdown to full 4 seconds on each new token
         setQrCountdown(QR_WINDOW_SECONDS);
       } else if (!qrToken && res.data.shortLink) {
         // Fallback: no QRT support — use plain URL
-        const fallbackUrl = `${window.location.origin}/attend/${res.data.shortLink}`;
+        const fallbackUrl = `${window.location.origin}/s/${res.data.shortLink}`;
         if (fallbackUrl !== lastQrTokenRef.current) {
           lastQrTokenRef.current = fallbackUrl;
           generateQR(fallbackUrl);
@@ -191,7 +191,7 @@ const QRDisplay = () => {
   }
 
   const baseUrl = totpData?.shortLink
-    ? `${window.location.origin}/attend/${totpData.shortLink}`
+    ? `${window.location.origin}/s/${totpData.shortLink}`
     : '';
   const totpProgressPercent = ((totpData?.windowSeconds || 5) - totpCountdown) / (totpData?.windowSeconds || 5) * 100;
   const qrProgressPercent = ((QR_WINDOW_SECONDS - qrCountdown) / QR_WINDOW_SECONDS) * 100;
