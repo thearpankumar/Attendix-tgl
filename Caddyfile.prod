@@ -1,15 +1,9 @@
 # Caddy Configuration for Attendance System
-# Supports both development (localhost) and production (domain) modes
+# Production Mode - xenkrypt.in
 
 {
-  # Global settings
   email admin@xenkrypt.in
   
-  # Development mode - generates self-signed certs for localhost
-  # COMMENT OUT or REMOVE this line for production to use Let's Encrypt
-  # local_certs
-  
-  # Logging
   log {
     output stdout
     format json
@@ -32,13 +26,13 @@ xenkrypt.in {
     X-Content-Type-Options "nosniff"
     # XSS protection
     X-XSS-Protection "1; mode=block"
-    # Content Security Policy
-    Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+    # Content Security Policy (allows blob: for geolocation/camera APIs used in student frontend)
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; worker-src 'self' blob:;"
     # Referrer policy
     Referrer-Policy "strict-origin-when-cross-origin"
   }
   
-  # API routes - Load balanced across backend replicas
+  # API routes - proxied to backend
   handle /api/* {
     reverse_proxy backend:5000 {
       lb_policy round_robin
@@ -62,11 +56,6 @@ xenkrypt.in {
     reverse_proxy backend:5000
   }
   
-  # Storage info
-  handle /api/storage-info {
-    reverse_proxy backend:5000
-  }
-  
   # Admin panel (React app with client-side routing)
   handle /admin* {
     reverse_proxy admin-frontend:80
@@ -82,18 +71,20 @@ xenkrypt.in {
     reverse_proxy student-frontend:80
   }
   
+  # Student scan page (short link redirect target)
+  handle /student-scan.html {
+    reverse_proxy student-frontend:80
+  }
+  
   # Student app.js
   handle /app.js {
     reverse_proxy student-frontend:80
   }
   
-  # Short links
+  # Short links and WebAuthn routes
+  # NOTE: WebAuthn is mounted under /s/:shortCode/webauthn/* in server.js,
+  # so it is already served by this /s/* block — no separate /webauthn/* needed.
   handle /s/* {
-    reverse_proxy backend:5000
-  }
-  
-  # WebAuthn routes
-  handle /webauthn/* {
     reverse_proxy backend:5000
   }
   
@@ -110,7 +101,7 @@ xenkrypt.in {
 }
 
 # ============================================
-# DEVELOPMENT MODE (localhost)
+# DEVELOPMENT MODE (localhost / :80)
 # ============================================
 :80 {
   encode gzip
@@ -139,11 +130,6 @@ xenkrypt.in {
     reverse_proxy backend:5000
   }
   
-  # Storage info
-  handle /api/storage-info {
-    reverse_proxy backend:5000
-  }
-  
   # Admin panel (React app)
   handle /admin* {
     reverse_proxy admin-frontend:80
@@ -159,18 +145,20 @@ xenkrypt.in {
     reverse_proxy student-frontend:80
   }
   
+  # Student scan page (short link redirect target)
+  handle /student-scan.html {
+    reverse_proxy student-frontend:80
+  }
+  
   # Student app.js
   handle /app.js {
     reverse_proxy student-frontend:80
   }
   
-  # Short links
+  # Short links and WebAuthn routes
+  # NOTE: WebAuthn is mounted under /s/:shortCode/webauthn/* in server.js,
+  # so it is already served by this /s/* block — no separate /webauthn/* needed.
   handle /s/* {
-    reverse_proxy backend:5000
-  }
-  
-  # WebAuthn routes
-  handle /webauthn/* {
     reverse_proxy backend:5000
   }
   
