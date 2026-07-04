@@ -529,7 +529,7 @@ router.get('/:shortCode', studentLimiter, async (req, res) => {
     shortLink.lastClickedAt = new Date();
     await shortLink.save();
 
-    const studentAppUrl = `/student-scan.html?sl=${shortCode}&t=${Date.now()}`;
+    const studentAppUrl = `/attend/${shortCode}`;
 
     res.redirect(studentAppUrl);
   } catch (error) {
