@@ -259,9 +259,17 @@ const deleteSession = async (req, res) => {
 
     // Cascade: delete all attendance records then the session itself
     await Attendance.deleteMany({ sessionId: session._id });
+
+    // Detach any short links that pointed to this session so they can be reattached
+    await ShortLink.updateMany(
+      { sessionId: session._id },
+      { $set: { sessionId: null, isActive: false } }
+    );
+
     await Session.findByIdAndDelete(session._id);
 
     res.json({ message: 'Session and all attendance records deleted successfully' });
+
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
