@@ -1,5 +1,5 @@
 const API_BASE = window.location.origin;
-const token = window.location.pathname.split('/').pop();
+const shortCode = window.location.pathname.split('/').pop();
 
 // Helper for fetching from local API with ngrok warning bypass
 async function apiFetch(url, options = {}) {
@@ -23,8 +23,7 @@ let faceDetectedVal = true;
 async function loadFaceModel() {
     try {
         console.log('Loading face detection model (SSD MobileNet)...');
-        // Load SSD MobileNet V1 from local models directory via /attend route proxy
-        await faceapi.nets.ssdMobilenetv1.loadFromUri('/attend/models');
+        await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
         faceModelLoaded = true;
         console.log('Face detection model loaded successfully');
     } catch (err) {
@@ -59,7 +58,7 @@ let captchaId = '';
 async function loadCaptcha() {
     try {
         captchaSvgContainer.innerHTML = '<div style="font-size: 14px; color: #666;">Loading code...</div>';
-        const res = await apiFetch(`${API_BASE}/api/attend/${token}/captcha`);
+        const res = await apiFetch(`${API_BASE}/s/${shortCode}/captcha`);
         if (!res.ok) throw new Error('Failed to fetch captcha');
         const data = await res.json();
         
@@ -134,7 +133,7 @@ async function fetchPlaceName(lat, lon) {
 }
 
 async function init() {
-    if (!token || token.length !== 32 || !/^[a-f0-9]{32}$/.test(token)) {
+    if (!shortCode || !/^[a-zA-Z0-9_-]+$/.test(shortCode)) {
         showError('Invalid attendance link format');
         return;
     }
@@ -156,7 +155,7 @@ async function init() {
         const storageRes = await apiFetch(`${API_BASE}/api/storage-info`);
         storageInfo = await storageRes.json();
 
-        const res = await apiFetch(`${API_BASE}/api/attend/${token}`);
+        const res = await apiFetch(`${API_BASE}/s/${shortCode}/session`);
         const data = await res.json();
 
         if (!res.ok || !data.valid) {
@@ -440,7 +439,7 @@ function checkFormValidity() {
 
 async function uploadDirectToS3(blob) {
     try {
-        const uploadUrlRes = await apiFetch(`${API_BASE}/api/attend/${token}/upload-url`);
+        const uploadUrlRes = await apiFetch(`${API_BASE}/s/${shortCode}/upload-url`);
         const uploadUrlData = await uploadUrlRes.json();
         
         if (!uploadUrlRes.ok) {
@@ -510,7 +509,7 @@ submitBtn.addEventListener('click', async () => {
             };
         }
 
-        const res = await apiFetch(`${API_BASE}/api/attend/${token}`, {
+        const res = await apiFetch(`${API_BASE}/s/${shortCode}/submit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)

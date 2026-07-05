@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ClipboardCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'react-toastify';
 
@@ -26,6 +27,10 @@ const Login = () => {
   return (
     <div className="login-container">
       <div className="login-card">
+        <div className="login-brand">
+          <ClipboardCheck size={22} />
+          <span>Attendance System</span>
+        </div>
         <h2>Admin Login</h2>
         <form onSubmit={handleSubmit}>
           <div className="form-group">

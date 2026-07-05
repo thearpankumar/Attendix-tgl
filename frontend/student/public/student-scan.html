@@ -459,8 +459,7 @@
 
     <script>
         const API_BASE = window.location.origin;
-        const urlParams = new URLSearchParams(window.location.search);
-        const shortCode = urlParams.get('sl');
+        const shortCode = window.location.pathname.split('/').pop();
 
         let sessionData = null;
         let totpIntervalId = null;

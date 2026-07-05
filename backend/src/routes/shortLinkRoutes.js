@@ -20,6 +20,40 @@ const signCaptchaText = (text, timestamp) => {
     .digest('hex');
 };
 
+router.get('/:shortCode/upload-url', studentLimiter, async (req, res) => {
+  try {
+    const { shortCode } = req.params;
+
+    const shortLink = await ShortLink.findOne({
+      shortCode: shortCode.toLowerCase(),
+      isActive: true,
+    }).populate('sessionId');
+
+    if (!shortLink || !shortLink.sessionId) {
+      return res.status(404).json({ message: 'Invalid short link' });
+    }
+
+    const session = shortLink.sessionId;
+    if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
+      return res.status(400).json({ message: 'Session is not active' });
+    }
+
+    const storage = getStorageProvider();
+    const key = `${session._id}_${Date.now()}`;
+    const uploadInfo = await storage.getUploadUrl(key, 'image/jpeg');
+
+    res.json({
+      uploadUrl: uploadInfo.uploadUrl,
+      publicId: uploadInfo.publicId,
+      method: uploadInfo.method,
+      headers: uploadInfo.headers || {},
+      contentType: uploadInfo.contentType || 'image/jpeg',
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 router.get('/:shortCode/captcha', async (req, res) => {
   try {
     const captcha = svgCaptcha.create({
@@ -529,9 +563,7 @@ router.get('/:shortCode', studentLimiter, async (req, res) => {
     shortLink.lastClickedAt = new Date();
     await shortLink.save();
 
-    const studentAppUrl = `/student-scan.html?sl=${shortCode}&t=${Date.now()}`;
-
-    res.redirect(studentAppUrl);
+    res.redirect(`/attend/${shortCode}`);
   } catch (error) {
     console.error('Short link redirect error:', error);
     res.status(500).send(`

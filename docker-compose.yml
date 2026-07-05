@@ -6,10 +6,14 @@ services:
     volumes:
       - ./scripts/init-mongo-replicaset.js:/init-mongo.js:ro
     depends_on:
-      - mongo1
-      - mongo2
-      - mongo3
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
     entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]
+    restart: on-failure
     networks:
       - attendance-network
 

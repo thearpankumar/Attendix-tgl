@@ -1,5 +1,13 @@
 import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
+import { Fingerprint } from 'lucide-react';
+import PageHeader from '../components/ui/PageHeader';
+import StatTile from '../components/ui/StatTile';
+import DataTable from '../components/ui/DataTable';
+import Modal from '../components/ui/Modal';
+import Badge from '../components/ui/Badge';
+import EmptyState from '../components/ui/EmptyState';
+import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -31,16 +39,16 @@ function WebAuthnCredentials() {
         page: page.toString(),
         limit: '20',
       });
-      
+
       if (search) params.append('search', search);
       if (suspendedFilter !== 'all') params.append('suspended', suspendedFilter);
-      
+
       const res = await fetch(`${API_BASE}/api/admin/webauthn/credentials?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      
+
       const data = await res.json();
-      
+
       if (res.ok) {
         setCredentials(data.credentials);
         setPagination(data.pagination);
@@ -59,9 +67,9 @@ function WebAuthnCredentials() {
       const res = await fetch(`${API_BASE}/api/admin/webauthn/stats`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      
+
       const data = await res.json();
-      
+
       if (res.ok) {
         setStats(data);
       }
@@ -75,9 +83,9 @@ function WebAuthnCredentials() {
       toast.error('Please provide a reason');
       return;
     }
-    
+
     setActionLoading(true);
-    
+
     try {
       const res = await fetch(`${API_BASE}/api/admin/webauthn/reset`, {
         method: 'POST',
@@ -90,9 +98,9 @@ function WebAuthnCredentials() {
           reason: reason.trim(),
         }),
       });
-      
+
       const data = await res.json();
-      
+
       if (res.ok) {
         toast.success(data.message);
         setShowResetModal(false);
@@ -115,9 +123,9 @@ function WebAuthnCredentials() {
       toast.error('Please provide a reason');
       return;
     }
-    
+
     setActionLoading(true);
-    
+
     try {
       const endpoint = suspend ? 'suspend' : 'unsuspend';
       const res = await fetch(`${API_BASE}/api/admin/webauthn/${endpoint}`, {
@@ -131,9 +139,9 @@ function WebAuthnCredentials() {
           reason: reason.trim(),
         }),
       });
-      
+
       const data = await res.json();
-      
+
       if (res.ok) {
         toast.success(data.message);
         setShowSuspendModal(false);
@@ -151,144 +159,135 @@ function WebAuthnCredentials() {
     }
   };
 
-  const formatDate = (date) => {
-    return new Date(date).toLocaleString();
-  };
+  const formatDate = (date) => new Date(date).toLocaleString();
+
+  const deviceTypeEntries = stats ? Object.entries(stats.deviceTypes || {}) : [];
+  const maxDeviceCount = Math.max(1, ...deviceTypeEntries.map(([, count]) => count));
+
+  const columns = [
+    { key: 'studentId', label: 'Roll Number', priority: 1, render: (c) => <strong>{c.studentId}</strong> },
+    { key: 'device', label: 'Device', priority: 2, render: (c) => c.deviceLabel || 'Unknown' },
+    { key: 'enrolled', label: 'Enrolled', priority: 2, render: (c) => formatDate(c.enrolledAt) },
+    { key: 'lastUsed', label: 'Last Used', priority: 3, render: (c) => (c.lastUsedAt ? formatDate(c.lastUsedAt) : 'Never') },
+    {
+      key: 'status',
+      label: 'Status',
+      priority: 1,
+      render: (c) => <Badge tone={c.isSuspended ? 'danger' : 'success'}>{c.isSuspended ? 'Suspended' : 'Active'}</Badge>,
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      priority: 1,
+      render: (c) => (
+        <div className="actions-cell">
+          <button
+            className="btn btn-secondary btn-small"
+            onClick={() => {
+              setSelectedStudent(c);
+              setShowResetModal(true);
+            }}
+          >
+            Reset
+          </button>
+          <button
+            className={c.isSuspended ? 'btn btn-success btn-small' : 'btn btn-danger btn-small'}
+            onClick={() => {
+              setSelectedStudent(c);
+              setShowSuspendModal(true);
+            }}
+          >
+            {c.isSuspended ? 'Unsuspend' : 'Suspend'}
+          </button>
+        </div>
+      ),
+    },
+  ];
 
   return (
-    <div>
-      <h1 style={{ marginBottom: '20px' }}>Biometric Devices</h1>
-      
-      {/* Stats Cards */}
-      {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '30px' }}>
-          <div className="card" style={{ padding: '20px', textAlign: 'center' }}>
-            <h3 style={{ color: '#667eea', margin: 0 }}>{stats.totalEnrolled}</h3>
-            <p style={{ color: '#666', margin: '5px 0 0' }}>Total Enrolled</p>
+    <div className="container">
+      <PageHeader title="Biometric Devices" />
+
+      {loading && !stats ? (
+        <SkeletonTiles count={4} />
+      ) : stats ? (
+        <>
+          <div className="grid">
+            <StatTile label="Total Enrolled" value={stats.totalEnrolled} icon={Fingerprint} />
+            <StatTile label="Active" value={stats.active} tone="success" />
+            <StatTile label="Suspended" value={stats.suspended} tone="danger" />
+            <StatTile label="Enrolled (Last 7 Days)" value={stats.enrollmentTrends?.last7Days || 0} />
           </div>
-          <div className="card" style={{ padding: '20px', textAlign: 'center' }}>
-            <h3 style={{ color: '#28a745', margin: 0 }}>{stats.active}</h3>
-            <p style={{ color: '#666', margin: '5px 0 0' }}>Active</p>
-          </div>
-          <div className="card" style={{ padding: '20px', textAlign: 'center' }}>
-            <h3 style={{ color: '#dc3545', margin: 0 }}>{stats.suspended}</h3>
-            <p style={{ color: '#666', margin: '5px 0 0' }}>Suspended</p>
-          </div>
-          <div className="card" style={{ padding: '20px', textAlign: 'center' }}>
-            <h3 style={{ color: '#17a2b8', margin: 0 }}>{stats.enrollmentTrends?.last7Days || 0}</h3>
-            <p style={{ color: '#666', margin: '5px 0 0' }}>Last 7 Days</p>
-          </div>
-        </div>
-      )}
-      
-      {/* Filters */}
-      <div className="card" style={{ marginBottom: '20px', padding: '15px' }}>
-        <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <input
-            type="text"
-            placeholder="Search by roll number..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            style={{ padding: '10px', flex: 1, minWidth: '200px' }}
-          />
-          <select
-            value={suspendedFilter}
-            onChange={(e) => { setSuspendedFilter(e.target.value); setPage(1); }}
-            style={{ padding: '10px' }}
-          >
-            <option value="all">All Status</option>
-            <option value="false">Active Only</option>
-            <option value="true">Suspended Only</option>
-          </select>
-        </div>
+
+          {deviceTypeEntries.length > 0 && (
+            <div className="card chart-card">
+              <h4>Device Types</h4>
+              {deviceTypeEntries.map(([type, count]) => (
+                <div key={type} className="device-breakdown-row">
+                  <span className="device-breakdown-label">{type}</span>
+                  <div className="device-breakdown-track">
+                    <div
+                      className="device-breakdown-fill"
+                      style={{ width: `${(count / maxDeviceCount) * 100}%` }}
+                    />
+                  </div>
+                  <span className="device-breakdown-count">{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
+
+      <div className="card filter-bar">
+        <input
+          type="text"
+          placeholder="Search by roll number..."
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
+          style={{ flex: 1, minWidth: '200px', padding: '10px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)' }}
+        />
+        <select
+          value={suspendedFilter}
+          onChange={(e) => {
+            setSuspendedFilter(e.target.value);
+            setPage(1);
+          }}
+        >
+          <option value="all">All Status</option>
+          <option value="false">Active Only</option>
+          <option value="true">Suspended Only</option>
+        </select>
       </div>
-      
-      {/* Credentials Table */}
+
       <div className="card">
         {loading ? (
-          <p style={{ textAlign: 'center', padding: '20px' }}>Loading...</p>
+          <SkeletonRows count={4} />
         ) : credentials.length === 0 ? (
-          <p style={{ textAlign: 'center', padding: '20px', color: '#666' }}>No credentials found</p>
+          <EmptyState icon={Fingerprint} title="No credentials found" />
         ) : (
           <>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Roll Number</th>
-                  <th>Device</th>
-                  <th>Enrolled</th>
-                  <th>Last Used</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {credentials.map((cred) => (
-                  <tr key={cred._id}>
-                    <td><strong>{cred.studentId}</strong></td>
-                    <td>{cred.deviceLabel || 'Unknown'}</td>
-                    <td>{formatDate(cred.enrolledAt)}</td>
-                    <td>{cred.lastUsedAt ? formatDate(cred.lastUsedAt) : 'Never'}</td>
-                    <td>
-                      <span style={{
-                        padding: '5px 10px',
-                        borderRadius: '4px',
-                        fontSize: '12px',
-                        background: cred.isSuspended ? '#dc3545' : '#28a745',
-                        color: 'white',
-                      }}>
-                        {cred.isSuspended ? 'Suspended' : 'Active'}
-                      </span>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '5px' }}>
-                        <button
-                          className="btn btn-secondary btn-small"
-                          onClick={() => { setSelectedStudent(cred); setShowResetModal(true); }}
-                        >
-                          Reset
-                        </button>
-                        {cred.isSuspended ? (
-                          <button
-                            className="btn btn-small"
-                            style={{ background: '#28a745', color: 'white' }}
-                            onClick={() => { setSelectedStudent(cred); setShowSuspendModal(true); }}
-                          >
-                            Unsuspend
-                          </button>
-                        ) : (
-                          <button
-                            className="btn btn-small"
-                            style={{ background: '#dc3545', color: 'white' }}
-                            onClick={() => { setSelectedStudent(cred); setShowSuspendModal(true); }}
-                          >
-                            Suspend
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            
-            {/* Pagination */}
+            <DataTable columns={columns} rows={credentials} rowKey={(c) => c._id} />
+
             {pagination.pages > 1 && (
-              <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'center', gap: '5px' }}>
+              <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'center', gap: '5px', alignItems: 'center' }}>
                 <button
                   className="btn btn-secondary btn-small"
                   disabled={page === 1}
-                  onClick={() => setPage(p => p - 1)}
+                  onClick={() => setPage((p) => p - 1)}
                 >
                   Previous
                 </button>
-                <span style={{ padding: '10px' }}>
+                <span style={{ padding: '0 10px', fontSize: 'var(--text-sm)' }}>
                   Page {page} of {pagination.pages}
                 </span>
                 <button
                   className="btn btn-secondary btn-small"
                   disabled={page === pagination.pages}
-                  onClick={() => setPage(p => p + 1)}
+                  onClick={() => setPage((p) => p + 1)}
                 >
                   Next
                 </button>
@@ -297,76 +296,49 @@ function WebAuthnCredentials() {
           </>
         )}
       </div>
-      
-      {/* Reset Modal */}
-      {showResetModal && (
-        <div className="modal-overlay" onClick={() => setShowResetModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h3>Reset Biometric Credential</h3>
-            <p style={{ margin: '15px 0' }}>
-              This will delete the biometric credential for <strong>{selectedStudent?.studentId}</strong>.
-              The student will need to re-enroll their device.
-            </p>
-            <div className="form-group">
-              <label>Reason (required)</label>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Enter reason for reset..."
-                style={{ width: '100%', padding: '10px', minHeight: '80px' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary" onClick={() => setShowResetModal(false)}>
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleReset}
-                disabled={actionLoading}
-              >
-                {actionLoading ? 'Resetting...' : 'Reset Credential'}
-              </button>
-            </div>
-          </div>
+
+      <Modal open={showResetModal} onClose={() => setShowResetModal(false)} title="Reset Biometric Credential">
+        <p style={{ margin: '0 0 15px' }}>
+          This will delete the biometric credential for <strong>{selectedStudent?.studentId}</strong>. The student
+          will need to re-enroll their device.
+        </p>
+        <div className="form-group">
+          <label>Reason (required)</label>
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Enter reason for reset..." rows="3" />
         </div>
-      )}
-      
-      {/* Suspend/Unsuspend Modal */}
-      {showSuspendModal && (
-        <div className="modal-overlay" onClick={() => setShowSuspendModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h3>{selectedStudent?.isSuspended ? 'Unsuspend' : 'Suspend'} Credential</h3>
-            <p style={{ margin: '15px 0' }}>
-              {selectedStudent?.isSuspended
-                ? `This will unsuspend the credential for ${selectedStudent?.studentId}. They will be able to use biometric authentication again.`
-                : `This will suspend the credential for ${selectedStudent?.studentId}. They will not be able to use biometric authentication.`
-              }
-            </p>
-            <div className="form-group">
-              <label>Reason (required)</label>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Enter reason..."
-                style={{ width: '100%', padding: '10px', minHeight: '80px' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary" onClick={() => setShowSuspendModal(false)}>
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => handleSuspend(!selectedStudent?.isSuspended)}
-                disabled={actionLoading}
-              >
-                {actionLoading ? 'Processing...' : selectedStudent?.isSuspended ? 'Unsuspend' : 'Suspend'}
-              </button>
-            </div>
-          </div>
+        <div className="form-actions">
+          <button className="btn btn-primary" onClick={handleReset} disabled={actionLoading}>
+            {actionLoading ? 'Resetting...' : 'Reset Credential'}
+          </button>
+          <button className="btn btn-secondary" onClick={() => setShowResetModal(false)}>
+            Cancel
+          </button>
         </div>
-      )}
+      </Modal>
+
+      <Modal
+        open={showSuspendModal}
+        onClose={() => setShowSuspendModal(false)}
+        title={`${selectedStudent?.isSuspended ? 'Unsuspend' : 'Suspend'} Credential`}
+      >
+        <p style={{ margin: '0 0 15px' }}>
+          {selectedStudent?.isSuspended
+            ? `This will unsuspend the credential for ${selectedStudent?.studentId}. They will be able to use biometric authentication again.`
+            : `This will suspend the credential for ${selectedStudent?.studentId}. They will not be able to use biometric authentication.`}
+        </p>
+        <div className="form-group">
+          <label>Reason (required)</label>
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Enter reason..." rows="3" />
+        </div>
+        <div className="form-actions">
+          <button className="btn btn-primary" onClick={() => handleSuspend(!selectedStudent?.isSuspended)} disabled={actionLoading}>
+            {actionLoading ? 'Processing...' : selectedStudent?.isSuspended ? 'Unsuspend' : 'Suspend'}
+          </button>
+          <button className="btn btn-secondary" onClick={() => setShowSuspendModal(false)}>
+            Cancel
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

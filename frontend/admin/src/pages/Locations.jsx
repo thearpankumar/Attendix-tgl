@@ -1,6 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+import { MapPin, LocateFixed } from 'lucide-react';
+import PageHeader from '../components/ui/PageHeader';
+import DataTable from '../components/ui/DataTable';
+import Modal from '../components/ui/Modal';
+import EmptyState from '../components/ui/EmptyState';
+import Badge from '../components/ui/Badge';
+import { SkeletonRows } from '../components/ui/Skeleton';
 
 const Locations = () => {
   const [locations, setLocations] = useState([]);
@@ -124,7 +131,7 @@ const Locations = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!currentCoords) {
       toast.error('Please detect your location first');
       return;
@@ -199,229 +206,176 @@ const Locations = () => {
     setShowModal(true);
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  const columns = [
+    { key: 'name', label: 'Name', priority: 1, render: (loc) => loc.name },
+    {
+      key: 'coords',
+      label: 'Coordinates',
+      priority: 2,
+      render: (loc) => `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`,
+    },
+    { key: 'radius', label: 'Radius (m)', priority: 3, render: (loc) => loc.radiusMeters },
+    {
+      key: 'status',
+      label: 'Status',
+      priority: 1,
+      render: (loc) => <Badge tone={loc.isActive ? 'success' : 'danger'}>{loc.isActive ? 'Active' : 'Inactive'}</Badge>,
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      priority: 1,
+      render: (loc) => (
+        <div className="actions-cell">
+          <button className="btn btn-secondary btn-small" onClick={() => openEditModal(loc)}>
+            Edit
+          </button>
+          <button className="btn btn-danger btn-small" onClick={() => handleDelete(loc._id)}>
+            Delete
+          </button>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <div className="container">
-      <div className="row">
-        <h2>Locations</h2>
+      <PageHeader title="Locations">
         <button className="btn btn-primary" onClick={openNewModal}>
           Add Location
         </button>
-      </div>
+      </PageHeader>
 
-      {locations.length === 0 ? (
-        <div className="card">
-          <p>No locations found. Create your first location!</p>
-        </div>
+      {loading ? (
+        <SkeletonRows />
+      ) : locations.length === 0 ? (
+        <EmptyState icon={MapPin} title="No locations yet" message="Create your first location to get started." />
       ) : (
         <div className="card">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Coordinates</th>
-                <th>Radius (m)</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {locations.map((loc) => (
-                <tr key={loc._id}>
-                  <td>{loc.name}</td>
-                  <td>
-                    {loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}
-                  </td>
-                  <td>{loc.radiusMeters}</td>
-                  <td>
-                    <span
-                      className={`badge ${
-                        loc.isActive ? 'badge-success' : 'badge-danger'
-                      }`}
-                    >
-                      {loc.isActive ? 'Active' : 'Inactive'}
-                    </span>
-                  </td>
-                  <td>
-                    <button
-                      className="btn btn-secondary btn-small"
-                      onClick={() => openEditModal(loc)}
-                    >
-                      Edit
-                    </button>{' '}
-                    <button
-                      className="btn btn-danger btn-small"
-                      onClick={() => handleDelete(loc._id)}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DataTable columns={columns} rows={locations} rowKey={(loc) => loc._id} />
         </div>
       )}
 
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>{editingLocation ? 'Edit Location' : 'Add Location'}</h3>
-              <button className="modal-close" onClick={() => setShowModal(false)}>
-                &times;
-              </button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label>Location Name *</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) =>
-                    setFormData({ ...formData, name: e.target.value })
-                  }
-                  required
-                  placeholder="e.g., Main Lecture Hall"
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>Coordinates *</label>
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title={editingLocation ? 'Edit Location' : 'Add Location'}
+      >
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>Location Name *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              required
+              placeholder="e.g., Main Lecture Hall"
+            />
+          </div>
 
-                {/* Auto-detect button */}
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={getCurrentLocation}
-                  disabled={geoLoading}
-                  style={{ width: '100%', padding: '12px', marginBottom: '10px' }}
-                >
-                  {geoLoading ? '⏳ Detecting Location...' : '📍 Auto-Detect My Location'}
-                </button>
+          <div className="form-group">
+            <label>Coordinates *</label>
 
-                {/* Manual lat/lon inputs */}
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '12px', color: '#555', marginBottom: '4px', display: 'block' }}>Latitude</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={manualCoords.latitude}
-                      onChange={(e) => handleManualCoordChange('latitude', e.target.value)}
-                      onBlur={handleCoordBlur}
-                      placeholder="e.g., 12.9716"
-                      min="-90"
-                      max="90"
-                      style={{ padding: '8px', border: '1px solid #ddd', borderRadius: '4px', width: '100%', fontSize: '13px' }}
-                    />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '12px', color: '#555', marginBottom: '4px', display: 'block' }}>Longitude</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={manualCoords.longitude}
-                      onChange={(e) => handleManualCoordChange('longitude', e.target.value)}
-                      onBlur={handleCoordBlur}
-                      placeholder="e.g., 77.5946"
-                      min="-180"
-                      max="180"
-                      style={{ padding: '8px', border: '1px solid #ddd', borderRadius: '4px', width: '100%', fontSize: '13px' }}
-                    />
-                  </div>
-                </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={getCurrentLocation}
+              disabled={geoLoading}
+              style={{ width: '100%', marginBottom: '10px' }}
+            >
+              <LocateFixed size={16} />
+              {geoLoading ? 'Detecting Location...' : 'Auto-Detect My Location'}
+            </button>
 
-                {/* Place name display */}
-                {(placeNameLoading || placeName) && (
-                  <div style={{
-                    marginTop: '8px',
-                    padding: '8px 10px',
-                    borderRadius: '4px',
-                    fontSize: '13px',
-                    background: placeNameLoading ? '#f0f0f0' : '#e8f5e9',
-                    color: placeNameLoading ? '#666' : '#2e7d32',
-                    border: `1px solid ${placeNameLoading ? '#ddd' : '#c8e6c9'}`,
-                  }}>
-                    {placeNameLoading ? '🔍 Fetching place name...' : `📍 ${placeName}`}
-                  </div>
-                )}
-
-                {/* Accuracy badge when auto-detected */}
-                {currentCoords?.accuracy > 0 && (
-                  <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                    GPS Accuracy: ±{Math.round(currentCoords.accuracy)}m
-                  </div>
-                )}
-
-                {geoError && (
-                  <div style={{
-                    color: '#c62828',
-                    background: '#ffebee',
-                    padding: '8px 10px',
-                    borderRadius: '4px',
-                    marginTop: '8px',
-                    fontSize: '13px'
-                  }}>
-                    {geoError}
-                  </div>
-                )}
-
-                <small style={{ color: '#888', display: 'block', marginTop: '6px', fontSize: '11px' }}>
-                  Use auto-detect or enter coordinates manually. You can get coordinates from Google Maps by right-clicking a location.
-                </small>
-              </div>
-
-              <div className="form-group">
-                <label>Radius (meters) *</label>
+            <div className="form-row">
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Latitude</label>
                 <input
                   type="number"
-                  value={formData.radiusMeters}
-                  onChange={(e) =>
-                    setFormData({ ...formData, radiusMeters: e.target.value })
-                  }
-                  min="10"
-                  max="10000"
-                  required
-                />
-                <small style={{ color: '#666' }}>
-                  Students must be within this radius to mark attendance (min: 10m, max: 10000m)
-                </small>
-              </div>
-
-              <div className="form-group">
-                <label>Description (optional)</label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) =>
-                    setFormData({ ...formData, description: e.target.value })
-                  }
-                  rows="2"
-                  placeholder="e.g., Ground floor, Building A"
+                  step="any"
+                  value={manualCoords.latitude}
+                  onChange={(e) => handleManualCoordChange('latitude', e.target.value)}
+                  onBlur={handleCoordBlur}
+                  placeholder="e.g., 12.9716"
+                  min="-90"
+                  max="90"
                 />
               </div>
-
-              <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
-                <button 
-                  type="submit" 
-                  className="btn btn-primary"
-                  disabled={!currentCoords}
-                >
-                  {editingLocation ? 'Update Location' : 'Create Location'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowModal(false)}
-                >
-                  Cancel
-                </button>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Longitude</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={manualCoords.longitude}
+                  onChange={(e) => handleManualCoordChange('longitude', e.target.value)}
+                  onBlur={handleCoordBlur}
+                  placeholder="e.g., 77.5946"
+                  min="-180"
+                  max="180"
+                />
               </div>
-            </form>
+            </div>
+
+            {(placeNameLoading || placeName) && (
+              <div className={`geo-banner ${placeNameLoading ? 'geo-banner--info' : 'geo-banner--success'}`}>
+                {placeNameLoading ? (
+                  'Fetching place name...'
+                ) : (
+                  <>
+                    <MapPin size={13} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} />
+                    {placeName}
+                  </>
+                )}
+              </div>
+            )}
+
+            {currentCoords?.accuracy > 0 && (
+              <div className="geo-accuracy">GPS Accuracy: ±{Math.round(currentCoords.accuracy)}m</div>
+            )}
+
+            {geoError && <div className="geo-banner geo-banner--error">{geoError}</div>}
+
+            <small className="form-hint">
+              Use auto-detect or enter coordinates manually. You can get coordinates from Google Maps by
+              right-clicking a location.
+            </small>
           </div>
-        </div>
-      )}
+
+          <div className="form-group">
+            <label>Radius (meters) *</label>
+            <input
+              type="number"
+              value={formData.radiusMeters}
+              onChange={(e) => setFormData({ ...formData, radiusMeters: e.target.value })}
+              min="10"
+              max="10000"
+              required
+            />
+            <small className="form-hint">
+              Students must be within this radius to mark attendance (min: 10m, max: 10000m)
+            </small>
+          </div>
+
+          <div className="form-group">
+            <label>Description (optional)</label>
+            <textarea
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              rows="2"
+              placeholder="e.g., Ground floor, Building A"
+            />
+          </div>
+
+          <div className="form-actions">
+            <button type="submit" className="btn btn-primary" disabled={!currentCoords}>
+              {editingLocation ? 'Update Location' : 'Create Location'}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

@@ -142,8 +142,12 @@
     reverse_proxy student-frontend:80
   }
   
-  # Student app.js
+  # Student app.js and face detection models
   handle /app.js {
+    reverse_proxy student-frontend:80
+  }
+
+  handle /models/* {
     reverse_proxy student-frontend:80
   }
   

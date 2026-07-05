@@ -10,16 +10,18 @@ import ShortLinks from './pages/ShortLinks';
 import QRDisplay from './pages/QRDisplay';
 import FlaggedAttendance from './pages/FlaggedAttendance';
 import WebAuthnCredentials from './pages/WebAuthnCredentials';
-import Navbar from './components/Navbar';
+import AppShell from './components/layout/AppShell';
 
 const PrivateRoute = ({ children }) => {
   const { admin, loading } = useAuth();
-  
+
   if (loading) {
     return <div className="loading">Loading...</div>;
   }
-  
-  return admin ? children : <Navigate to="/login" />;
+
+  if (!admin) return <Navigate to="/login" />;
+
+  return <AppShell>{children}</AppShell>;
 };
 
 function App() {
@@ -27,7 +29,6 @@ function App() {
 
   return (
     <BrowserRouter basename="/admin">
-      {admin && <Navbar />}
       <Routes>
         <Route path="/login" element={admin ? <Navigate to="/" /> : <Login />} />
         <Route
@@ -65,9 +66,7 @@ function App() {
         <Route
           path="/sessions/:id/qr"
           element={
-            <PrivateRoute>
-              <QRDisplay />
-            </PrivateRoute>
+            admin ? <QRDisplay /> : <Navigate to="/login" />
           }
         />
         <Route

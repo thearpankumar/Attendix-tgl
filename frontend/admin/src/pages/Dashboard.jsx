@@ -2,6 +2,10 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
+import { MapPin, ClipboardList, Users } from 'lucide-react';
+import PageHeader from '../components/ui/PageHeader';
+import StatTile from '../components/ui/StatTile';
+import { SkeletonTiles } from '../components/ui/Skeleton';
 
 const Dashboard = () => {
   const [stats, setStats] = useState(null);
@@ -39,35 +43,40 @@ const Dashboard = () => {
     };
   }, [fetchStats]);
 
-  if (loading) return <div className="loading">Loading...</div>;
-
   return (
     <div className="container">
-      <h2 style={{ marginBottom: '20px' }}>Dashboard</h2>
-      <div className="grid">
-        <div className="stat-card">
-          <h3>Total Locations</h3>
-          <p>{stats?.totalLocations || 0}</p>
-          <Link to="/locations" className="btn btn-secondary btn-small">
-            Manage
-          </Link>
-        </div>
-        <div className="stat-card">
-          <h3>Active Sessions</h3>
-          <p>{stats?.activeSessions || 0}</p>
-          <Link to="/sessions" className="btn btn-secondary btn-small">
-            View
-          </Link>
-        </div>
-        <div className="stat-card">
-          <h3>Total Attendance</h3>
-          <p>{stats?.totalAttendance || 0}</p>
-        </div>
-      </div>
+      <PageHeader title="Dashboard" />
 
-      <div className="card" style={{ marginTop: '20px' }}>
+      {loading ? (
+        <SkeletonTiles count={3} />
+      ) : (
+        <div className="grid">
+          <StatTile
+            label="Total Locations"
+            value={stats?.totalLocations || 0}
+            icon={MapPin}
+            linkTo="/locations"
+            linkLabel="Manage"
+          />
+          <StatTile
+            label="Active Sessions"
+            value={stats?.activeSessions || 0}
+            icon={ClipboardList}
+            tone="success"
+            linkTo="/sessions"
+            linkLabel="View"
+          />
+          <StatTile
+            label="Total Attendance"
+            value={stats?.totalAttendance || 0}
+            icon={Users}
+          />
+        </div>
+      )}
+
+      <div className="card">
         <h3 style={{ marginBottom: '15px' }}>Quick Actions</h3>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           <Link to="/locations" className="btn btn-primary">
             Add Location
           </Link>
