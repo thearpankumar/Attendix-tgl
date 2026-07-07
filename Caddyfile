@@ -1,15 +1,11 @@
 # Caddy Configuration for Attendance System
-# Supports both development (localhost) and production (domain) modes
+# Development Mode - localhost
 
 {
-  # Global settings
   email admin@example.com
   
-  # Development mode - generates self-signed certs for localhost
-  # Remove this line for production to use Let's Encrypt
   local_certs
   
-  # Logging
   log {
     output stdout
     format json
@@ -17,88 +13,12 @@
 }
 
 # ============================================
-# PRODUCTION MODE (Uncomment when DNS is configured)
-# ============================================
-# {$DOMAIN} {
-#   encode gzip zstd
-#   
-#   # Security headers
-#   header {
-#     # Enable HSTS
-#     Strict-Transport-Security "max-age=31536000; include-subdomains; preload"
-#     # Prevent clickjacking
-#     X-Frame-Options "SAMEORIGIN"
-#     # Prevent MIME sniffing
-#     X-Content-Type-Options "nosniff"
-#     # XSS protection
-#     X-XSS-Protection "1; mode=block"
-#     # Content Security Policy
-#     Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
-#     # Referrer policy
-#     Referrer-Policy "strict-origin-when-cross-origin"
-#   }
-#   
-#   # API routes - Load balanced across backend replicas
-#   handle_path /api/* {
-#     reverse_proxy backend:5000 {
-#       lb_policy round_robin
-#       lb_try_duration 5s
-#       health_path /health
-#       health_interval 10s
-#       health_timeout 5s
-#       fail_duration 30s
-#     }
-#   }
-#   
-#   # Health check endpoint
-#   handle /health {
-#     reverse_proxy backend:5000
-#   }
-#   
-#   # Storage info endpoint
-#   handle /api/storage-info {
-#     reverse_proxy backend:5000
-#   }
-#   
-#   # Admin panel (React app with client-side routing)
-#   handle_path /admin* {
-#     reverse_proxy admin-frontend:80
-#   }
-#   
-#   # Student attendance page
-#   handle_path /attend/* {
-#     reverse_proxy student-frontend:80
-#   }
-#   
-#   # Short links redirect
-#   handle_path /s/* {
-#     reverse_proxy backend:5000
-#   }
-#   
-#   # WebAuthn routes
-#   handle_path /webauthn/* {
-#     reverse_proxy backend:5000
-#   }
-#   
-#   # 32-character hex token redirect to /attend/:token
-#   @tokenRegex path_regexp ^/([a-f0-9]{32})$
-#   handle @tokenRegex {
-#     redir https://{host}/attend{http.matchers.path_regexp.1} permanent
-#   }
-#   
-#   # Root redirect to admin
-#   handle / {
-#     redir https://{host}/admin permanent
-#   }
-# }
-
-# ============================================
 # DEVELOPMENT MODE (localhost)
 # ============================================
 :80 {
   encode gzip
   
-  # API routes - DO NOT strip /api prefix
+  # API routes
   handle /api/* {
     reverse_proxy backend:5000 {
       lb_policy round_robin
@@ -122,12 +42,7 @@
     reverse_proxy backend:5000
   }
   
-  # Storage info
-  handle /api/storage-info {
-    reverse_proxy backend:5000
-  }
-  
-  # Admin panel (React app)
+  # Admin panel
   handle /admin* {
     reverse_proxy admin-frontend:80
   }

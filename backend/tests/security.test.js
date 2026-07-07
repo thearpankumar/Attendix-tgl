@@ -3,6 +3,7 @@ const Session = require('../src/models/Session');
 const Admin = require('../src/models/Admin');
 const Location = require('../src/models/Location');
 const Attendance = require('../src/models/Attendance');
+const ShortLink = require('../src/models/ShortLink');
 const crypto = require('crypto');
 
 // MongoMemoryServer lifecycle is handled by globalSetup.js + dbSetup.js
@@ -17,6 +18,7 @@ beforeEach(async () => {
   await Admin.deleteMany({});
   await Location.deleteMany({});
   await Attendance.deleteMany({});
+  await ShortLink.deleteMany({});
 });
 
 describe('Security Tests', () => {
@@ -497,6 +499,62 @@ describe('Security Tests', () => {
       await request(app)
         .get(`/api/attend/${attendanceToken}`)
         .expect(404);
+    });
+
+    it('should detach short link when its session is deleted', async () => {
+      // Attach a short link to the session
+      const sl = await ShortLink.create({
+        shortCode: 'cascade-test',
+        sessionId: session._id,
+        createdBy: admin._id,
+        isActive: true,
+      });
+
+      // Delete the session (requires password)
+      const delRes = await request(app)
+        .delete(`/api/admin/sessions/${session._id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ password: 'SecurePass123!' });
+      expect(delRes.status).toBe(200);
+
+      // Short link must now be detached and inactive
+      const updated = await ShortLink.findById(sl._id);
+      expect(updated.sessionId).toBeNull();
+      expect(updated.isActive).toBe(false);
+    });
+
+    it('should allow short link reattachment after session is deleted', async () => {
+      // Attach a short link to the session
+      await ShortLink.create({
+        shortCode: 'reattach-test',
+        sessionId: session._id,
+        createdBy: admin._id,
+        isActive: true,
+      });
+
+      // Delete the session
+      await request(app)
+        .delete(`/api/admin/sessions/${session._id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ password: 'SecurePass123!' });
+
+      // Create a brand-new session to attach to
+      const newSessionRes = await request(app)
+        .post('/api/admin/sessions')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ locationId: location._id, durationMinutes: 30 });
+      expect(newSessionRes.status).toBe(201);
+
+      // Reattach — must succeed, not "already attached to another session"
+      const attachRes = await request(app)
+        .post('/api/admin/shortlinks/reattach-test/attach')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ sessionId: newSessionRes.body._id });
+      expect(attachRes.status).toBe(200);
+
+      const sl = await ShortLink.findOne({ shortCode: 'reattach-test' });
+      expect(sl.sessionId.toString()).toBe(newSessionRes.body._id);
+      expect(sl.isActive).toBe(true);
     });
   });
 

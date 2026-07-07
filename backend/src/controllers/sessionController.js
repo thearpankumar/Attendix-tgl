@@ -5,7 +5,7 @@ const Admin = require('../models/Admin');
 const ShortLink = require('../models/ShortLink');
 const Device = require('../models/Device');
 const { getStorageProvider } = require('../storage');
-const { generateTOTPWithTimestamp } = require('../utils/totpUtils');
+const { generateTOTPWithTimestamp, generateQRToken } = require('../utils/totpUtils');
 const { invalidateSessionCache } = require('../middleware/sessionCache');
 
 const createSession = async (req, res) => {
@@ -259,9 +259,17 @@ const deleteSession = async (req, res) => {
 
     // Cascade: delete all attendance records then the session itself
     await Attendance.deleteMany({ sessionId: session._id });
+
+    // Detach any short links that pointed to this session so they can be reattached
+    await ShortLink.updateMany(
+      { sessionId: session._id },
+      { $set: { sessionId: null, isActive: false } }
+    );
+
     await Session.findByIdAndDelete(session._id);
 
     res.json({ message: 'Session and all attendance records deleted successfully' });
+
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -297,6 +305,9 @@ const getSessionTOTP = async (req, res) => {
       windowSeconds: totpData.windowSeconds,
       shortLink: shortLink ? shortLink.shortCode : null,
       sessionActive: session.isActive,
+      // QR anti-sharing: 4-second rotating token for the QR URL
+      qrToken: shortLink ? generateQRToken(shortLink.shortCode, session.totpSecret) : null,
+      qrTokenWindowSeconds: 4,
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

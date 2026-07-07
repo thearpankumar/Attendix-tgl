@@ -50,9 +50,9 @@ const sessionSchema = new mongoose.Schema({
   },
   totpWindowSeconds: {
     type: Number,
-    default: 5,
+    default: 15,
     min: 5,
-    max: 30,
+    max: 60,
   },
   createdAt: {
     type: Date,

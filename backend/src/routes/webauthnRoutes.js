@@ -77,6 +77,86 @@ router.get('/:shortCode/webauthn/status/:rollNumber', async (req, res) => {
   }
 });
 
+router.post('/:shortCode/verify-gatekeeper', async (req, res) => {
+  try {
+    const { shortCode } = req.params;
+    const { rollNumber, totpCode } = req.body;
+    
+    if (!rollNumber) {
+      return res.status(400).json({ message: 'Roll number is required' });
+    }
+    
+    const shortLink = await ShortLink.findOne({
+      shortCode: shortCode.toLowerCase(),
+      isActive: true,
+    }).populate('sessionId');
+    
+    if (!shortLink || !shortLink.sessionId) {
+      return res.status(404).json({ message: 'Invalid session' });
+    }
+    
+    const session = shortLink.sessionId;
+    if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
+      return res.status(400).json({ message: 'Session expired' });
+    }
+
+    // Verify TOTP early
+    if (session.totpEnabled) {
+      if (!totpCode) {
+        return res.status(400).json({ 
+          message: 'This session requires a time-based code. Please enter the current code.',
+          totpRequired: true,
+        });
+      }
+      
+      const totpResult = validateTOTPCode(
+        totpCode,
+        session.totpSecret,
+        session._id.toString(),
+        session.totpWindowSeconds,
+        1
+      );
+      
+      if (!totpResult.valid) {
+        return res.status(400).json({ 
+          message: 'Invalid or expired code. Please get the current code from the projector.',
+          totpRequired: true,
+        });
+      }
+    }
+    
+    // Check WebAuthn status
+    const credential = await WebAuthnCredential.findOne({
+      studentId: rollNumber.toUpperCase(),
+    });
+    
+    const existingAttendance = await Attendance.findOne({
+      sessionId: session._id,
+      rollNumber: rollNumber.toUpperCase(),
+    });
+    
+    if (existingAttendance) {
+      return res.json({
+        valid: true,
+        enrolled: !!credential,
+        suspended: credential?.isSuspended || false,
+        alreadySubmitted: true,
+        message: 'Attendance already submitted',
+      });
+    }
+    
+    res.json({
+      valid: true,
+      enrolled: !!credential,
+      suspended: credential?.isSuspended || false,
+      alreadySubmitted: false,
+      studentName: credential?.deviceLabel || null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 router.post('/:shortCode/webauthn/register/start', async (req, res) => {
   try {
     const { shortCode } = req.params;
@@ -451,7 +531,7 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
     let networkOrg = 'Unknown';
     
     const ip = req.ip;
-    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
+    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);

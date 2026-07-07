@@ -1,0 +1,218 @@
+services:
+  
+  mongodb-init:
+    image: mongo:7.0
+    container_name: attendance-mongo-init
+    volumes:
+      - ./scripts/init-mongo-replicaset.js:/init-mongo.js:ro
+    depends_on:
+      - mongo1
+      - mongo2
+      - mongo3
+    entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]
+    networks:
+      - attendance-network
+
+  
+  mongo1:
+    image: mongo:7.0
+    container_name: attendance-mongo1
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo1_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - attendance-network
+
+  mongo2:
+    image: mongo:7.0
+    container_name: attendance-mongo2
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo2_data:/data/db
+    ports:
+      - "27018:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - attendance-network
+
+  mongo3:
+    image: mongo:7.0
+    container_name: attendance-mongo3
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo3_data:/data/db
+    ports:
+      - "27019:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - attendance-network
+
+  
+  redis:
+    image: redis:7-alpine
+    container_name: attendance-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - attendance-network
+
+  
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.pm2
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=5000
+      - MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/attendance-geotag?replicaSet=rs0
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRE=7d
+      - ADMIN_SECRET=${ADMIN_SECRET}
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-s3}
+      # Cloudinary
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      # AWS S3
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      # WebAuthn
+      - WEBAUTHN_RP_NAME=${WEBAUTHN_RP_NAME:-SentriX Attendance System}
+      - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-xenkrypt.in}
+      - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://xenkrypt.in}
+      # Database Pool
+      - MONGODB_POOL_MAX=${MONGODB_POOL_MAX:-300}
+      - MONGODB_POOL_MIN=${MONGODB_POOL_MIN:-20}
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - attendance-network
+
+  
+  admin-frontend:
+    build:
+      context: ./frontend/admin
+      args:
+        VITE_BASE_PATH: /admin
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    depends_on:
+      - backend
+    networks:
+      - attendance-network
+
+  
+  student-frontend:
+    build: ./frontend/student
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    depends_on:
+      - backend
+    networks:
+      - attendance-network
+
+  
+  caddy:
+    image: caddy:2-alpine
+    container_name: attendance-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-xenkrypt.in}
+    depends_on:
+      - backend
+      - admin-frontend
+      - student-frontend
+    networks:
+      - attendance-network
+
+volumes:
+  mongo1_data:
+  mongo2_data:
+  mongo3_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  attendance-network:
+    driver: bridge

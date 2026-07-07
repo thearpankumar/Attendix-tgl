@@ -38,8 +38,7 @@ async function createRegistrationOptions(userId, userName, displayName, excludeC
       transports: cred.transports || [],
     })),
     authenticatorSelection: {
-      authenticatorAttachment: 'platform',
-      userVerification: 'required',
+      userVerification: 'preferred',
       residentKey: 'preferred',
     },
     supportedAlgorithmIDs: [-7, -257],
@@ -71,7 +70,7 @@ async function createAuthenticationOptions(allowCredentials = []) {
       type: 'public-key',
       transports: cred.transports || [],
     })),
-    userVerification: 'required',
+    userVerification: 'preferred',
   });
   
   return options;

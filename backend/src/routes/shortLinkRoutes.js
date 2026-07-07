@@ -6,7 +6,7 @@ const Attendance = require('../models/Attendance');
 const Location = require('../models/Location');
 const Device = require('../models/Device');
 const { studentLimiter } = require('../middleware/rateLimiter');
-const { generateTOTPWithTimestamp, validateTOTPCode } = require('../utils/totpUtils');
+const { generateTOTPWithTimestamp, validateTOTPCode, validateQRToken } = require('../utils/totpUtils');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
 const svgCaptcha = require('svg-captcha');
@@ -293,7 +293,7 @@ router.post('/:shortCode/submit', studentLimiter, async (req, res) => {
     let networkOrg = 'Unknown';
 
     const ip = req.ip;
-    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
+    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -367,47 +367,7 @@ router.post('/:shortCode/submit', studentLimiter, async (req, res) => {
   }
 });
 
-router.get('/:shortCode/info', studentLimiter, async (req, res) => {
-  try {
-    const { shortCode } = req.params;
-    
-    const shortLink = await ShortLink.findOne({ 
-      shortCode: shortCode.toLowerCase(),
-      isActive: true,
-    }).populate('sessionId');
 
-    if (!shortLink) {
-      return res.status(404).json({ message: 'Short link not found' });
-    }
-
-    if (!shortLink.sessionId) {
-      return res.status(400).json({ message: 'No session attached to this link' });
-    }
-
-    const session = shortLink.sessionId;
-    
-    if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
-      return res.status(400).json({ message: 'Session is not active' });
-    }
-
-    const totpData = generateTOTPWithTimestamp(
-      session.totpSecret,
-      session._id.toString(),
-      session.totpWindowSeconds
-    );
-
-    res.json({
-      sessionId: session._id,
-      totpCode: totpData.code,
-      expiresAt: totpData.expiresAt,
-      windowSeconds: totpData.windowSeconds,
-      sessionActive: session.isActive,
-      sessionExpiresAt: session.expiresAt,
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
 
 router.get('/:shortCode/session', studentLimiter, async (req, res) => {
   try {
@@ -431,6 +391,18 @@ router.get('/:shortCode/session', studentLimiter, async (req, res) => {
     
     if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
       return res.status(400).json({ message: 'Session is not active' });
+    }
+
+    // QR anti-sharing validation: if ?qrt= is present, verify the 4-second rotating token
+    const { qrt } = req.query;
+    if (qrt) {
+      const qrtResult = validateQRToken(shortCode, session.totpSecret, qrt);
+      if (!qrtResult.valid) {
+        return res.status(403).json({
+          qrExpired: true,
+          message: 'QR code has expired. Please scan the current QR code shown on screen.',
+        });
+      }
     }
 
     res.json({
@@ -563,7 +535,11 @@ router.get('/:shortCode', studentLimiter, async (req, res) => {
     shortLink.lastClickedAt = new Date();
     await shortLink.save();
 
-    res.redirect(`/attend/${shortCode}`);
+    const { qrt } = req.query;
+    const qrtParam = qrt ? `?qrt=${encodeURIComponent(qrt)}` : '';
+    const studentAppUrl = `/attend/${shortCode}${qrtParam}`;
+
+    res.redirect(studentAppUrl);
   } catch (error) {
     console.error('Short link redirect error:', error);
     res.status(500).send(`

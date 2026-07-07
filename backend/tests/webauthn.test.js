@@ -167,8 +167,8 @@ describe('WebAuthn Registration Start', () => {
     expect(res.body.challenge).toBeDefined();
     expect(res.body.rp).toBeDefined();
     expect(res.body.user).toBeDefined();
-    expect(res.body.authenticatorSelection.authenticatorAttachment).toBe('platform');
-    expect(res.body.authenticatorSelection.userVerification).toBe('required');
+    expect(res.body.authenticatorSelection.authenticatorAttachment).toBeUndefined();
+    expect(res.body.authenticatorSelection.userVerification).toBe('preferred');
   });
 
   it('should create challenge in database', async () => {
@@ -253,7 +253,7 @@ describe('WebAuthn Authentication Start', () => {
     expect(res.body.challenge).toBeDefined();
     expect(res.body.allowCredentials).toBeDefined();
     expect(res.body.allowCredentials[0].id).toBe('test-cred-id');
-    expect(res.body.userVerification).toBe('required');
+    expect(res.body.userVerification).toBe('preferred');
   });
 
   it('should create authentication challenge', async () => {

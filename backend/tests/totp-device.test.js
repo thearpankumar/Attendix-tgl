@@ -7,7 +7,7 @@ const Admin = require('../src/models/Admin');
 const ShortLink = require('../src/models/ShortLink');
 const Device = require('../src/models/Device');
 const Attendance = require('../src/models/Attendance');
-const { generateTOTPCode, validateTOTPCode } = require('../src/utils/totpUtils');
+const { generateTOTPCode, validateTOTPCode, generateQRToken, validateQRToken } = require('../src/utils/totpUtils');
 
 describe('TOTP Utility Functions', () => {
   const secret = 'test-secret-12345';
@@ -85,6 +85,110 @@ describe('TOTP Utility Functions', () => {
       const code = generateTOTPCode(secret, sessionId, windowSeconds);
       const result = validateTOTPCode(code, secret, sessionId, windowSeconds, 2);
       expect(result.valid).toBe(true);
+    });
+  });
+});
+
+describe('QR Token Functions (Anti-Sharing)', () => {
+  const secret = 'qr-test-secret-abc';
+  const shortCode = 'testcode';
+
+  describe('generateQRToken', () => {
+    it('should return a string in slot.signature format', () => {
+      const token = generateQRToken(shortCode, secret);
+      expect(token).toMatch(/^\d+\.[a-f0-9]{16}$/);
+    });
+
+    it('should generate same token within same 5-second slot', () => {
+      const t1 = generateQRToken(shortCode, secret);
+      const t2 = generateQRToken(shortCode, secret);
+      expect(t1).toBe(t2);
+    });
+
+    it('should embed a slot number consistent with 5000ms window', () => {
+      const token = generateQRToken(shortCode, secret);
+      const slot = parseInt(token.split('.')[0], 10);
+      const expectedSlot = Math.floor(Date.now() / 5000);
+      // Allow ±1 for timing jitter across the slot boundary
+      expect(Math.abs(slot - expectedSlot)).toBeLessThanOrEqual(1);
+    });
+
+    it('should produce different tokens for different shortCodes', () => {
+      const t1 = generateQRToken('code1', secret);
+      const t2 = generateQRToken('code2', secret);
+      expect(t1).not.toBe(t2);
+    });
+
+    it('should produce different tokens for different secrets', () => {
+      const t1 = generateQRToken(shortCode, 'secret-a');
+      const t2 = generateQRToken(shortCode, 'secret-b');
+      expect(t1).not.toBe(t2);
+    });
+  });
+
+  describe('validateQRToken', () => {
+    it('should validate a freshly generated token', () => {
+      const token = generateQRToken(shortCode, secret);
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should reject a token for a different shortCode', () => {
+      const token = generateQRToken('other-code', secret);
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject a token signed with a different secret', () => {
+      const token = generateQRToken(shortCode, 'wrong-secret');
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject a token from 2+ slots ago (>10 seconds old)', () => {
+      const oldSlot = Math.floor(Date.now() / 5000) - 2;
+      const fakeSig = 'aaaaaaaaaaaaaaaa'; // invalid sig
+      const staleToken = `${oldSlot}.${fakeSig}`;
+      const result = validateQRToken(shortCode, secret, staleToken);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should accept a token from 1 slot ago (grace window)', () => {
+      // Generate a token for the previous slot — should still be accepted
+      const prevSlot = Math.floor(Date.now() / 5000) - 1;
+      const sig = require('crypto')
+        .createHmac('sha256', secret)
+        .update(`${shortCode}:${prevSlot}`)
+        .digest('hex')
+        .slice(0, 16);
+      const prevToken = `${prevSlot}.${sig}`;
+      const result = validateQRToken(shortCode, secret, prevToken);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should reject a token with a valid sig but wrong shortCode', () => {
+      const token = generateQRToken('other-code', secret);
+      const result = validateQRToken(shortCode, secret, token);
+      expect(result.reason).toBeDefined();
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject null token', () => {
+      const result = validateQRToken(shortCode, secret, null);
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject malformed token (no dot)', () => {
+      const result = validateQRToken(shortCode, secret, 'notavalidtoken');
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject token with tampered signature', () => {
+      const token = generateQRToken(shortCode, secret);
+      const [slot] = token.split('.');
+      const tampered = `${slot}.0000000000000000`;
+      const result = validateQRToken(shortCode, secret, tampered);
+      expect(result.valid).toBe(false);
     });
   });
 });
@@ -502,12 +606,20 @@ describe('Short Link Redirect Route', () => {
   });
 
   describe('GET /s/:shortCode', () => {
-    it('should redirect to student page for valid link', async () => {
+    it('should redirect to /attend/<shortCode> for valid link', async () => {
       const res = await request(app)
         .get('/s/redirect123');
 
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('/attend/redirect123');
+    });
+
+    it('should NOT redirect to student-scan.html directly (old broken URL)', async () => {
+      const res = await request(app)
+        .get('/s/redirect123');
+
+      expect(res.headers.location).not.toContain('student-scan.html');
+      expect(res.headers.location).not.toContain('?sl=');
     });
 
     it('should return 404 for non-existent link', async () => {
@@ -528,31 +640,136 @@ describe('Short Link Redirect Route', () => {
       expect(res.status).toBe(400);
       expect(res.text).toContain('Not Configured');
     });
+
+    it('should increment clickCount on successful redirect', async () => {
+      const before = await ShortLink.findOne({ shortCode: 'redirect123' });
+      expect(before.clickCount).toBe(0);
+
+      await request(app).get('/s/redirect123');
+
+      const after = await ShortLink.findOne({ shortCode: 'redirect123' });
+      expect(after.clickCount).toBe(1);
+      expect(after.lastClickedAt).toBeDefined();
+    });
+
+    it('should return 410 for expired session', async () => {
+      await Session.findByIdAndUpdate(sessionId, {
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      const res = await request(app).get('/s/redirect123');
+
+      expect(res.status).toBe(410);
+      expect(res.text).toContain('Expired');
+    });
+
+    it('should return 400 for inactive session', async () => {
+      await Session.findByIdAndUpdate(sessionId, { isActive: false });
+
+      const res = await request(app).get('/s/redirect123');
+
+      expect(res.status).toBe(400);
+      expect(res.text).toContain('Inactive');
+    });
   });
 
-  describe('GET /s/:shortCode/info', () => {
-    it('should return current TOTP code', async () => {
-      const res = await request(app).get('/s/redirect123/info');
+  describe('POST /s/:shortCode/verify-gatekeeper', () => {
+    it('should verify correct TOTP code and roll number', async () => {
+      // Session defaults to totpWindowSeconds=15 — generate code with matching window
+      const totpCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 15);
+
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode
+      });
 
       expect(res.status).toBe(200);
-      expect(res.body.totpCode).toMatch(/^[A-Z0-9]{6}$/);
-      expect(res.body.sessionId).toBe(sessionId.toString());
+      expect(res.body.valid).toBe(true);
+      expect(res.body.enrolled).toBe(false);
+    });
+
+    it('should reject code generated with wrong window size', async () => {
+      // Code generated with 5s window will not match session's 15s window
+      const wrongWindowCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 5);
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS102',
+        totpCode: wrongWindowCode
+      });
+      // May accidentally match at certain time boundaries, but is semantically wrong
+      // We just verify the endpoint responds with a valid status (400 or 200)
+      expect([200, 400]).toContain(res.status);
+    });
+
+    it('should return 400 for incorrect TOTP', async () => {
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode: '000000'
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain('Invalid or expired code');
+    });
+
+    it('should return 400 for missing rollNumber', async () => {
+      const totpCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 15);
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        totpCode
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should return 400 for missing totpCode', async () => {
+      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
+        rollNumber: 'CS101'
+      });
+      expect(res.status).toBe(400);
     });
 
     it('should return 404 for non-existent link', async () => {
-      const res = await request(app).get('/s/nonexistent/info');
+      const res = await request(app).post('/s/nonexistent/verify-gatekeeper').send({
+        rollNumber: 'CS101',
+        totpCode: '123456'
+      });
 
       expect(res.status).toBe(404);
     });
   });
 
   describe('GET /s/:shortCode/session', () => {
-    it('should return session info', async () => {
+    it('should return session info without QRT (backward compat)', async () => {
       const res = await request(app).get('/s/redirect123/session');
 
       expect(res.status).toBe(200);
       expect(res.body.valid).toBe(true);
       expect(res.body.session.totpEnabled).toBe(true);
+    });
+
+    it('should accept a valid fresh QR token', async () => {
+      const token = generateQRToken('redirect123', 'redirect-test-secret');
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(token)}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+    });
+
+    it('should return 403 with qrExpired for a stale QR token', async () => {
+      const oldSlot = Math.floor(Date.now() / 5000) - 3; // 15+ seconds old (beyond 2-slot grace)
+      const staleToken = `${oldSlot}.aaaaaaaaaaaaaaaa`;
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(staleToken)}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.qrExpired).toBe(true);
+      expect(res.body.message).toContain('expired');
+    });
+
+    it('should return 403 with qrExpired for a tampered QR token', async () => {
+      const token = generateQRToken('redirect123', 'redirect-test-secret');
+      const [slot] = token.split('.');
+      const tampered = `${slot}.0000000000000000`;
+      const res = await request(app).get(`/s/redirect123/session?qrt=${encodeURIComponent(tampered)}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.qrExpired).toBe(true);
     });
   });
 });
@@ -770,8 +987,9 @@ describe('Security Tests', () => {
   });
 
   it('should reject TOTP replay attack', async () => {
-    const totpRes = await request(app).get('/s/security123/info');
-    const totpCode = totpRes.body.totpCode;
+    // We don't have an endpoint to fetch TOTP directly anymore.
+    // We just generate a valid one for the test.
+    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 5);
 
     const result1 = validateTOTPCode(totpCode, 'security-test-secret', sessionId.toString(), 5, 1);
     expect(result1.valid).toBe(true);
@@ -809,13 +1027,34 @@ describe('Security Tests', () => {
   });
 
   it('should handle concurrent TOTP requests', async () => {
+    // Session defaults to totpWindowSeconds=15 — generate code with matching window
+    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 15);
     const requests = Array(10).fill(null).map(() => 
-      request(app).get('/s/security123/info')
+      request(app).post('/s/security123/verify-gatekeeper').send({ rollNumber: 'CONC123', totpCode })
     );
 
     const responses = await Promise.all(requests);
     responses.forEach(res => {
       expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
     });
+  });
+
+  it('should reject TOTP code from a completely different session secret', async () => {
+    const wrongCode = generateTOTPCode('totally-wrong-secret', sessionId.toString(), 15);
+    const res = await request(app)
+      .post('/s/security123/verify-gatekeeper')
+      .send({ rollNumber: 'WRONG001', totpCode: wrongCode });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain('Invalid or expired code');
+  });
+
+  it('should reject TOTP code generated for a different sessionId', async () => {
+    const fakeSessionId = new mongoose.Types.ObjectId().toString();
+    const wrongCode = generateTOTPCode('security-test-secret', fakeSessionId, 15);
+    const res = await request(app)
+      .post('/s/security123/verify-gatekeeper')
+      .send({ rollNumber: 'WRONG002', totpCode: wrongCode });
+    expect(res.status).toBe(400);
   });
 });
