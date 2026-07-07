@@ -79,7 +79,7 @@ async function validateDeviceFingerprint(req, res, next) {
 
     next();
   } catch (error) {
-    console.error('Device validation error:', error);
+    if (process.env.NODE_ENV !== 'test') console.error('Device validation error:', error);
     req.deviceValidation = {
       valid: true,
       warning: 'Device validation failed, allowing submission',
@@ -108,7 +108,7 @@ async function checkRapidSubmission(req, res, next) {
 
     next();
   } catch (error) {
-    console.error('Rapid submission check error:', error);
+    if (process.env.NODE_ENV !== 'test') console.error('Rapid submission check error:', error);
     next();
   }
 }

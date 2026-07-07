@@ -7,6 +7,7 @@ import PageHeader from '../components/ui/PageHeader';
 import StatTile from '../components/ui/StatTile';
 import { SkeletonTiles } from '../components/ui/Skeleton';
 import AttendanceChart from '../components/ui/AttendanceChart';
+import ErrorBoundary from '../components/ui/ErrorBoundary';
 
 interface DashboardStats {
   totalLocations: number;
@@ -27,11 +28,11 @@ const Dashboard = () => {
       const res = await axios.get<DashboardStats>('/api/admin/dashboard', { signal: abortRef.current.signal });
       setStats(res.data);
     } catch (error) {
-      if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch stats');
+      if (error instanceof Error && error.name !== 'CanceledError') toast.error('Failed to fetch stats');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, []); // abortRef is a mutable ref, so it doesn't need to be in the dependency array
 
   useEffect(() => {
     fetchStats();
@@ -54,8 +55,10 @@ const Dashboard = () => {
         </motion.div>
       )}
 
-      <div className="card" style={{ marginTop: 'var(--space-6)' }}>
-        <AttendanceChart />
+      <div className="card mt-6">
+        <ErrorBoundary fallback={<div className="chart-empty chart-error">Failed to render attendance chart.</div>}>
+          <AttendanceChart />
+        </ErrorBoundary>
       </div>
     </div>
   );

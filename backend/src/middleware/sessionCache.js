@@ -45,7 +45,7 @@ async function getCachedSession(tokenHash) {
     
     return session;
   } catch (error) {
-    console.error('Redis cache error:', error.message);
+    if (process.env.NODE_ENV !== 'test') console.error('Redis cache error:', error.message);
     
     return await Session.findOne({
       tokenHash,
@@ -67,7 +67,7 @@ async function invalidateSessionCache(tokenHash) {
     await redis.del(cacheKey);
     console.log(`Cache invalidated for token: ${tokenHash.substring(0, 8)}...`);
   } catch (error) {
-    console.error('Redis cache invalidation error:', error.message);
+    if (process.env.NODE_ENV !== 'test') console.error('Redis cache invalidation error:', error.message);
   }
 }
 

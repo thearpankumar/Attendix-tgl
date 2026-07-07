@@ -253,7 +253,7 @@ const deleteSession = async (req, res) => {
           attendanceWithPhotos.map((record) => storage.delete(record.photoPublicId))
         );
       } catch (storageError) {
-        console.error('Storage cleanup error (non-fatal):', storageError.message);
+        if (process.env.NODE_ENV !== 'test') console.error('Storage cleanup error (non-fatal):', storageError.message);
       }
     }
 

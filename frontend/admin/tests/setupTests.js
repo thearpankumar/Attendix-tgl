@@ -39,5 +39,34 @@ Object.defineProperty(global, 'localStorage', {
   configurable: true
 });
 
+import { vi } from 'vitest';
 
+vi.mock('axios', () => {
+  return {
+    default: {
+      get: vi.fn().mockResolvedValue({ data: {} }),
+      post: vi.fn().mockResolvedValue({ data: {} }),
+      put: vi.fn().mockResolvedValue({ data: {} }),
+      delete: vi.fn().mockResolvedValue({ data: {} }),
+      patch: vi.fn().mockResolvedValue({ data: {} }),
+      defaults: {
+        headers: {
+          common: {}
+        }
+      }
+    }
+  };
+});
+
+vi.mock('react-toastify', () => {
+  return {
+    toast: {
+      success: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warning: vi.fn(),
+    },
+    ToastContainer: () => null
+  };
+});
 

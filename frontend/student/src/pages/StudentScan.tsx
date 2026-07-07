@@ -67,13 +67,25 @@ export default function StudentScan() {
     setTimeout(() => setFlashMsg(null), 5000);
   };
 
+  const loadCaptcha = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/s/${shortCode}/captcha`);
+      const data = await res.json();
+      setCaptchaId(data.captchaId);
+      setCaptchaAnswer('');
+      setCaptchaSvg(data.captchaSvg);
+    } catch { /* ignore */ }
+  }, [shortCode, API]);
+
   // TOTP polling
   useEffect(() => {
+    const abortController = new AbortController();
     const poll = async () => {
       try {
-        const res = await fetch(`${API}/s/${shortCode}/info`);
+        const res = await fetch(`${API}/s/${shortCode}/info`, { signal: abortController.signal });
         if (!res.ok) return;
         const data: TotpData = await res.json();
+        if (abortController.signal.aborted) return;
         setTotpCode(data.totpCode);
         const remaining = Math.max(0, Math.ceil((new Date(data.expiresAt).getTime() - Date.now()) / 1000));
         setCountdown(remaining);
@@ -82,40 +94,62 @@ export default function StudentScan() {
     };
     poll();
     const id = setInterval(poll, 1000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      abortController.abort();
+    };
   }, [shortCode, API]);
 
-  // Init
   useEffect(() => {
+    const ac = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`${API}/s/${shortCode}/session`);
+        const res = await fetch(`${API}/s/${shortCode}/session`, { signal: ac.signal });
         if (!res.ok) throw new Error('Session not found or inactive');
         const data = await res.json();
+        if (ac.signal.aborted) return;
         setSession({ locationName: data.session.locationName, expiresAt: data.session.expiresAt });
         setStep('rollInput');
-        await initCamera();
+        await initCamera(ac.signal);
         await loadCaptcha();
         // fingerprint
         try {
           const fp = await FingerprintJS.load();
           const result = await fp.get();
-          fingerRef.current = result.visitorId;
+          if (!ac.signal.aborted) fingerRef.current = result.visitorId;
         } catch { /* ignore */ }
       } catch (err) {
-        setErrMsg((err as Error).message);
-        setStep('error');
+        if (!ac.signal.aborted) {
+          setErrMsg((err as Error).message);
+          setStep('error');
+        }
       }
     })();
-    return () => { streamRef.current?.getTracks().forEach(t => t.stop()); };
-  }, [shortCode, API]);
+    return () => { 
+      ac.abort();
+      streamRef.current?.getTracks().forEach(t => t.stop()); 
+    };
+  }, [shortCode, API, loadCaptcha]);
 
-  const initCamera = async () => {
+  const initCamera = async (signal?: AbortSignal) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      if (signal?.aborted) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
-    } catch { /* camera will show error when needed */ }
+    } catch (err) {
+      const e = err as { name: string; message: string };
+      const msgs: Record<string, string> = {
+        NotAllowedError: 'Camera permission denied. Enable camera in browser settings and refresh.',
+        NotFoundError: 'No camera found on this device.',
+        NotReadableError: 'Camera is in use by another app. Close it and refresh.',
+      };
+      setErrMsg(msgs[e.name] ?? `Camera error: ${e.message}`);
+      setStep('error');
+    }
   };
 
   // Attach the (pre-acquired) camera stream once the form pane's <video> mounts.
@@ -126,26 +160,17 @@ export default function StudentScan() {
     }
   }, [step]);
 
-  const loadCaptcha = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/s/${shortCode}/captcha`);
-      const data = await res.json();
-      setCaptchaId(data.captchaId);
-      setCaptchaAnswer('');
-      // Inject SVG safely
-      if (captchaContainerRef.current) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(data.captchaSvg, 'image/svg+xml');
-        const svg = doc.documentElement;
-        svg.removeAttribute('width'); svg.removeAttribute('height');
-        Object.assign(svg.style, { height: '40px', width: 'auto', display: 'block' });
-        captchaContainerRef.current.innerHTML = '';
-        captchaContainerRef.current.appendChild(svg);
-      } else {
-        setCaptchaSvg(data.captchaSvg);
-      }
-    } catch { /* ignore */ }
-  }, [shortCode, API]);
+  useEffect(() => {
+    if (step === 'form' && captchaSvg && captchaContainerRef.current) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(captchaSvg, 'image/svg+xml');
+      const svg = doc.documentElement;
+      svg.removeAttribute('width'); svg.removeAttribute('height');
+      Object.assign(svg.style, { height: '40px', width: 'auto', display: 'block' });
+      captchaContainerRef.current.innerHTML = '';
+      captchaContainerRef.current.appendChild(svg);
+    }
+  }, [step, captchaSvg]);
 
   const getLocation = useCallback(() => {
     if (!navigator.geolocation) { setLocStatus('denied'); return; }
@@ -180,7 +205,10 @@ export default function StudentScan() {
 
   const register = async () => {
     const name = prompt('Enter your full name for registration:');
-    if (!name) return;
+    if (!name || name.trim().length < 2) {
+      flash('Valid name required for registration.');
+      return;
+    }
     try {
       flash('Starting registration...');
       const startRes = await fetch(`${API}/s/${shortCode}/webauthn/register/start`, {
@@ -478,8 +506,7 @@ export default function StudentScan() {
                 <div className="attend-field">
                   <label>Captcha Verification</label>
                   <div className="attend-captcha">
-                    <div ref={captchaContainerRef} className="attend-captcha-svg"
-                      dangerouslySetInnerHTML={captchaSvg && !captchaContainerRef.current?.children.length ? { __html: captchaSvg } : undefined} />
+                    <div ref={captchaContainerRef} className="attend-captcha-svg" />
                     <button type="button" onClick={loadCaptcha} className="attend-icon-btn" aria-label="Refresh captcha">↻</button>
                   </div>
                   <input className="attend-input" placeholder="Enter the code shown" value={captchaAnswer} onChange={(e) => setCaptchaAnswer(e.target.value)} autoComplete="off" required />

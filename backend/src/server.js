@@ -81,7 +81,7 @@ app.use((req, res, _next) => {
 });
 
 app.use((err, req, res, _next) => {
-  console.error(err.stack);
+  if (process.env.NODE_ENV !== 'test') console.error(err.stack);
   const statusCode = err.statusCode || 500;
   res.status(statusCode).json({ 
     message: err.message || 'Something went wrong!',

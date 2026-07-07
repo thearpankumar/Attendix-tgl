@@ -1,4 +1,5 @@
-import { defineConfig } from 'vite';
+/// <reference types="vitest" />
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -18,4 +19,20 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'admin-assets',
   },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./tests/setupTests.js'],
+    globals: true,
+    css: true,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html', 'json-summary'],
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 70,
+        statements: 70,
+      },
+    },
+  }
 });

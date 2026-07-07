@@ -531,12 +531,13 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
     let networkOrg = 'Unknown';
     
     const ip = req.ip;
-    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
+    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
         
-        const ipRes = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,isp,org`, {
+        const ipApiUrl = process.env.IP_API_URL || 'http://ip-api.com/json/';
+        const ipRes = await fetch(`${ipApiUrl}${ip}?fields=status,message,isp,org`, {
           signal: controller.signal
         });
         clearTimeout(timeoutId);

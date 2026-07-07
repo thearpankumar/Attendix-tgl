@@ -168,21 +168,21 @@ const ShortLinks = () => {
       <Modal open={showModal} onClose={() => setShowModal(false)} title="Create Short Link">
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <input type="checkbox" style={{ width: 'auto', minHeight: 'unset' }} checked={autoGenerate} onChange={(e) => setAutoGenerate(e.target.checked)} />
+            <label htmlFor="autoGenerate" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input id="autoGenerate" type="checkbox" style={{ width: 'auto', minHeight: 'unset' }} checked={autoGenerate} onChange={(e) => setAutoGenerate(e.target.checked)} />
               Auto-generate short code
             </label>
           </div>
           {!autoGenerate && (
             <div className="form-group">
-              <label>Custom Short Code</label>
-              <input type="text" value={formData.shortCode} onChange={(e) => setFormData({ ...formData, shortCode: e.target.value })} placeholder="e.g., cs101-monday" pattern="[a-z0-9-]{3,20}" required />
+              <label htmlFor="shortCode">Custom Short Code</label>
+              <input id="shortCode" type="text" value={formData.shortCode} onChange={(e) => setFormData({ ...formData, shortCode: e.target.value })} placeholder="e.g., cs101-monday" pattern="[a-z0-9-]{3,20}" required />
               <small className="form-hint">3-20 characters: lowercase letters, numbers, hyphens only</small>
             </div>
           )}
           <div className="form-group">
-            <label>Attach to Session (optional)</label>
-            <select value={formData.sessionId} onChange={(e) => setFormData({ ...formData, sessionId: e.target.value })}>
+            <label htmlFor="sessionId">Attach to Session (optional)</label>
+            <select id="sessionId" value={formData.sessionId} onChange={(e) => setFormData({ ...formData, sessionId: e.target.value })}>
               <option value="">Create without attaching</option>
               {activeSessions.map((s) => <option key={s._id} value={s._id}>{s.description || 'Session'} - {s.locationId?.name || 'Unknown'}</option>)}
             </select>

@@ -46,6 +46,12 @@ export default function LegacyAttend() {
   const [photoTaken, setPhotoTaken] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [distanceInfo, setDistanceInfo] = useState('');
+  const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const flash = (text: string, ok = false) => {
+    setFlashMsg({ text, ok });
+    setTimeout(() => setFlashMsg(null), 3000);
+  };
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -60,19 +66,21 @@ export default function LegacyAttend() {
       const data = await res.json();
       setCaptchaId(data.captchaId);
       setCaptchaAnswer('');
-      if (captchaRef.current) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(data.captchaSvg, 'image/svg+xml');
-        const svg = doc.documentElement as unknown as HTMLElement;
-        svg.removeAttribute('width'); svg.removeAttribute('height');
-        Object.assign(svg.style, { height: '40px', width: 'auto', display: 'block' });
-        captchaRef.current.innerHTML = '';
-        captchaRef.current.appendChild(svg);
-      } else {
-        setCaptchaSvg(data.captchaSvg);
-      }
+      setCaptchaSvg(data.captchaSvg);
     } catch { /* ignore */ }
   }, [API, shortCode]);
+
+  useEffect(() => {
+    if (step === 'form' && captchaSvg && captchaRef.current) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(captchaSvg, 'image/svg+xml');
+      const svg = doc.documentElement as unknown as HTMLElement;
+      svg.removeAttribute('width'); svg.removeAttribute('height');
+      Object.assign(svg.style, { height: '40px', width: 'auto', display: 'block' });
+      captchaRef.current.innerHTML = '';
+      captchaRef.current.appendChild(svg);
+    }
+  }, [step, captchaSvg]);
 
   const getLocation = useCallback(() => {
     if (!navigator.geolocation) {
@@ -93,12 +101,17 @@ export default function LegacyAttend() {
     );
   }, []);
 
-  const initCamera = useCallback(async () => {
+  const initCamera = useCallback(async (signal?: AbortSignal) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      if (signal?.aborted) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
     } catch (err) {
+      if (signal?.aborted) return;
       const e = err as { name: string; message: string };
       const msgs: Record<string, string> = {
         NotAllowedError: 'Camera permission denied. Enable camera in browser settings and refresh.',
@@ -111,27 +124,34 @@ export default function LegacyAttend() {
   }, []);
 
   useEffect(() => {
+    const ac = new AbortController();
     (async () => {
       try {
         const [storRes, sessRes] = await Promise.all([
-          fetch(`${API}/api/storage-info`),
-          fetch(`${API}/s/${shortCode}/session`),
+          fetch(`${API}/api/storage-info`, { signal: ac.signal }),
+          fetch(`${API}/s/${shortCode}/session`, { signal: ac.signal }),
         ]);
         const stor: StorageInfo = await storRes.json();
         const sessData = await sessRes.json();
+        if (ac.signal.aborted) return;
         if (!sessRes.ok || !sessData.valid) throw new Error(sessData.message || 'Invalid or expired attendance link');
         if (new Date(sessData.session.expiresAt) < new Date()) throw new Error('This attendance session has expired');
         setStorageInfo(stor);
         setSession(sessData.session);
         setStep('form');
-        await Promise.all([loadCaptcha(), initCamera()]);
-        getLocation();
+        await Promise.all([loadCaptcha(), initCamera(ac.signal)]);
+        if (!ac.signal.aborted) getLocation();
       } catch (err) {
-        setErrMsg((err as Error).message);
-        setStep('error');
+        if (!ac.signal.aborted) {
+          setErrMsg((err as Error).message);
+          setStep('error');
+        }
       }
     })();
-    return () => { streamRef.current?.getTracks().forEach(t => t.stop()); };
+    return () => { 
+      ac.abort();
+      streamRef.current?.getTracks().forEach(t => t.stop()); 
+    };
   }, [shortCode, API, loadCaptcha, initCamera, getLocation]);
 
   // Attach the (pre-acquired) camera stream once the form's <video> mounts.
@@ -169,17 +189,17 @@ export default function LegacyAttend() {
         if (!faceModelLoaded) await loadFaceModel();
         const detections = await faceapi.detectAllFaces(canvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }));
         faceDetectedRef.current = detections.length > 0;
-        if (!faceDetectedRef.current) alert("Face not detected. Make sure your face is clearly visible before submitting.");
+        if (!faceDetectedRef.current) flash("Face not detected. Make sure your face is clearly visible before submitting.");
       } catch { faceDetectedRef.current = false; }
     } else {
       faceDetectedRef.current = false;
-      alert("Face verification engine not ready. Attendance will be flagged.");
+      flash("Face verification engine not ready. Attendance will be flagged.");
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loc) { alert('Location required. Please allow location access.'); return; }
+    if (!loc) { flash('Location required. Please allow location access.'); return; }
     setSubmitting(true);
     try {
       let body: Record<string, unknown>;
@@ -204,7 +224,7 @@ export default function LegacyAttend() {
       setDistanceInfo(`Distance: ${att.distanceFromLocation}m | ${att.verified ? 'VERIFIED - Within allowed area' : 'NOT VERIFIED - Outside allowed area'}`);
       setStep('success');
     } catch (err) {
-      alert((err as Error).message);
+      flash((err as Error).message);
       loadCaptcha();
       setSubmitting(false);
     }
@@ -281,6 +301,7 @@ export default function LegacyAttend() {
           {/* Right: form */}
           <div className="attend-form-pane">
             <div className="attend-pane-inner">
+              {flashMsg && <div className={`attend-flash ${flashMsg.ok ? 'ok' : 'err'}`} style={{ boxShadow: 'none' }}>{flashMsg.text}</div>}
               <div>
                 <h2>Confirm details</h2>
                 <p className="sub">Fill in your details to mark attendance</p>
@@ -307,8 +328,7 @@ export default function LegacyAttend() {
                 <div className="attend-field">
                   <label>Captcha</label>
                   <div className="attend-captcha">
-                    <div ref={captchaRef} className="attend-captcha-svg"
-                      dangerouslySetInnerHTML={captchaSvg && !captchaRef.current?.children.length ? { __html: captchaSvg } : undefined} />
+                    <div ref={captchaRef} className="attend-captcha-svg" />
                     <button type="button" onClick={loadCaptcha} className="attend-icon-btn" aria-label="Refresh captcha">↻</button>
                   </div>
                   <input className="attend-input" placeholder="Enter the code shown" value={captchaAnswer} onChange={(e) => setCaptchaAnswer(e.target.value)} autoComplete="off" required />

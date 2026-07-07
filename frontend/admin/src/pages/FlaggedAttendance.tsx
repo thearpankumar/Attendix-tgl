@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback } from 'react';
-import type { FormEvent } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { Flag } from 'lucide-react';

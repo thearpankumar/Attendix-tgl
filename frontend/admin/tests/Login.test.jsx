@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Login from './pages/Login';
+import Login from '../src/pages/Login';
 
 vi.mock('axios', () => ({
   default: {
@@ -16,7 +16,7 @@ vi.mock('axios', () => ({
 
 const mockLogin = vi.fn();
 
-vi.mock('./context/AuthContext', () => ({
+vi.mock('../src/context/AuthContext', () => ({
   useAuth: () => ({
     login: mockLogin,
     admin: null,

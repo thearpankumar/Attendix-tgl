@@ -359,6 +359,13 @@ code {
 .stat-tile-link { font-size: var(--text-sm); font-weight: 500; color: var(--color-primary); text-decoration: none; margin-top: auto; }
 .stat-tile-link:hover { text-decoration: underline; }
 
+/* ── Utilities ──────────────────────────────────────────── */
+.text-muted { color: var(--color-muted); }
+.text-danger { color: var(--color-danger); }
+.text-success { color: var(--color-success); }
+.text-center { text-align: center; }
+.mt-6 { margin-top: var(--space-6); }
+
 /* ── Badge ──────────────────────────────────────────────── */
 .badge {
   display: inline-flex;

@@ -18,10 +18,11 @@ async function createShortLink(req, res) {
     if (existingLink) {
       return res.status(400).json({ message: 'Short code already exists', shortCode: finalCode });
     }
+    let sessionObj = null;
     if (sessionId) {
-      const session = await Session.findById(sessionId);
-      if (!session) {
-        return res.status(404).json({ message: 'Session not found' });
+      sessionObj = await Session.findOne({ _id: sessionId, createdBy: req.admin._id });
+      if (!sessionObj) {
+        return res.status(404).json({ message: 'Session not found or unauthorized' });
       }
       const existingSessionLink = await ShortLink.findOne({ sessionId: sessionId, isActive: true });
       if (existingSessionLink) {
@@ -39,12 +40,9 @@ async function createShortLink(req, res) {
     });
     await shortLink.save();
 
-    if (sessionId) {
-      const session = await Session.findById(sessionId);
-      if (session) {
-        session.totpEnabled = true;
-        await session.save();
-      }
+    if (sessionObj) {
+      sessionObj.totpEnabled = true;
+      await sessionObj.save();
     }
 
     res.status(201).json(shortLink);
@@ -113,9 +111,9 @@ async function attachShortLinkToSession(req, res) {
         currentSessionId: shortLink.sessionId 
       });
     }
-    const session = await Session.findById(sessionId);
+    const session = await Session.findOne({ _id: sessionId, createdBy: req.admin._id });
     if (!session) {
-      return res.status(404).json({ message: 'Session not found' });
+      return res.status(404).json({ message: 'Session not found or unauthorized' });
     }
     const existingSessionLink = await ShortLink.findOne({ 
       sessionId: sessionId, 
@@ -170,7 +168,7 @@ async function deleteShortLink(req, res) {
 
 async function getAvailableSessions(req, res) {
   try {
-    const sessions = await Session.find({ isActive: true })
+    const sessions = await Session.find({ isActive: true, createdBy: req.admin._id })
       .select('_id description expiresAt createdAt')
       .sort({ createdAt: -1 });
     res.json(sessions);

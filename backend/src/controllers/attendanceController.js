@@ -205,7 +205,7 @@ const submitAttendance = async (req, res) => {
         photoUrl = uploadResult.url;
         photoPublicId = uploadResult.publicId;
       } catch (uploadError) {
-        console.error('Photo upload error details:', uploadError);
+        if (process.env.NODE_ENV !== 'test') console.error('Photo upload error details:', uploadError);
         return res.status(400).json({
           message: 'Failed to upload photo',
           error: uploadError.message,
@@ -230,12 +230,13 @@ const submitAttendance = async (req, res) => {
     let networkOrg = 'Unknown';
 
     const ip = req.ip;
-    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('172.')) {
+    if (ip && ip !== '::1' && ip !== '127.0.0.1' && !ip.startsWith('::ffff:') && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
         
-        const ipRes = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,isp,org`, {
+        const ipApiUrl = process.env.IP_API_URL || 'http://ip-api.com/json/';
+        const ipRes = await fetch(`${ipApiUrl}${ip}?fields=status,message,isp,org`, {
           signal: controller.signal
         });
         clearTimeout(timeoutId);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Calendar } from 'lucide-react';
 import Modal from './Modal';
@@ -85,6 +85,7 @@ const AttendanceChart = () => {
   const [liveSeries, setLiveSeries] = useState<Row[]>([]);
   const [liveLocations, setLiveLocations] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // date-drill state
   const [modalOpen, setModalOpen] = useState(false);
@@ -107,7 +108,8 @@ const AttendanceChart = () => {
         if (cancelled) return;
         setLiveSeries(seriesRes.data);
         setLiveLocations([...new Set(locRes.data.map((l) => l.name))]);
-      } catch { /* empty state */ } finally { if (!cancelled) setLoading(false); }
+        setError(null);
+      } catch { if (!cancelled) setError('Failed to load attendance data.'); } finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -147,7 +149,7 @@ const AttendanceChart = () => {
   const bars = mode === 'overview' ? overviewBars : dateBars;
 
   // ── Date modal loading ────────────────────────────────────
-  const loadSessions = async (d: string) => {
+  const loadSessions = useCallback(async (d: string) => {
     if (source === 'demo') {
       const gen = demoData.filter((r) => r.date === d).sort((a, b) => (a.time || '').localeCompare(b.time || ''))
         .map((r, i) => ({ ...r, sessionId: `${d}-${i}` } as Row & { sessionId: string }));
@@ -159,14 +161,15 @@ const AttendanceChart = () => {
       const res = await axios.get<(Row & { sessionId: string })[]>('/api/admin/dashboard/sessions-by-date', { params: { date: d } });
       setSessions(res.data); setChecked(new Set(res.data.map((s) => s.sessionId)));
     } catch { setSessions([]); setChecked(new Set()); } finally { setLoadingSessions(false); }
-  };
+  }, [source, demoData]);
+
   const sid = (s: Row) => (s as Row & { sessionId?: string }).sessionId ?? `${s.date}-${s.session}-${s.time}`;
-  const openModal = () => { setModalOpen(true); loadSessions(date); };
+  const openModal = useCallback(() => { setModalOpen(true); loadSessions(date); }, [date, loadSessions]);
   const onDateChange = (d: string) => { setDate(d); loadSessions(d); };
-  const toggleCheck = (id: string) => setChecked((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleCheck = (id: string) => setChecked((p) => { const n = new Set(p); if (n.has(id)) { n.delete(id); } else { n.add(id); } return n; });
   const checkNow = () => { setApplied({ date, sessions: sessions.filter((s) => checked.has(sid(s))) }); setLocationFilter('all'); setMode('date'); setModalOpen(false); };
-  const switchSource = (s: Source) => { setSource(s); setApplied(null); setLocationFilter('all'); };
-  const switchMode = (m: Mode) => { setMode(m); setLocationFilter('all'); if (m === 'date' && !applied) openModal(); };
+  const switchSource = useCallback((s: Source) => { setSource(s); setApplied(null); setLocationFilter('all'); }, []);
+  const switchMode = useCallback((m: Mode) => { setMode(m); setLocationFilter('all'); if (m === 'date' && !applied) openModal(); }, [applied, openModal]);
 
   // ── Geometry ──────────────────────────────────────────────
   const VBW = 760, VBH = 300;
@@ -196,11 +199,11 @@ const AttendanceChart = () => {
           <div className="chart-subtitle">{subtitle}{source === 'demo' && <span className="chart-demo-tag">demo data</span>}</div>
         </div>
         <div className="chart-controls">
-          <div className="seg">
-            {(['live', 'demo'] as Source[]).map((s) => <button key={s} className={source === s ? 'active' : ''} onClick={() => switchSource(s)}>{s === 'live' ? 'Live' : 'Demo'}</button>)}
+          <div className="seg" role="radiogroup">
+            {(['live', 'demo'] as Source[]).map((s) => <button key={s} role="radio" aria-checked={source === s} className={source === s ? 'active' : ''} onClick={() => switchSource(s)}>{s === 'live' ? 'Live' : 'Demo'}</button>)}
           </div>
-          <div className="seg">
-            {(['overview', 'date'] as Mode[]).map((m) => <button key={m} className={mode === m ? 'active' : ''} onClick={() => switchMode(m)}>{m === 'overview' ? 'Overview' : 'By date'}</button>)}
+          <div className="seg" role="radiogroup">
+            {(['overview', 'date'] as Mode[]).map((m) => <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? 'active' : ''} onClick={() => switchMode(m)}>{m === 'overview' ? 'Overview' : 'By date'}</button>)}
           </div>
           {mode === 'date' && <button className="btn btn-secondary btn-small" onClick={openModal}><Calendar size={14} /> {applied ? fmtDate(applied.date) : 'Pick date'}</button>}
           {(mode === 'overview' || applied) && (
@@ -222,14 +225,16 @@ const AttendanceChart = () => {
         </div>
       </div>
 
-      {source === 'live' && loading ? (
+      {error ? (
+        <div className="chart-empty chart-error">{error}</div>
+      ) : source === 'live' && loading ? (
         <div className="chart-empty">Loading attendance…</div>
       ) : n === 0 ? (
         <div className="chart-empty">{mode === 'date' && !applied ? 'Pick a date to load its sessions.' : 'No attendance recorded yet.'}</div>
       ) : (
         <>
           <div className="chart-plot" onMouseLeave={() => setHover(null)}>
-            <svg viewBox={`0 0 ${VBW} ${VBH}`} role="img" aria-label="Attendance bar chart">
+            <svg viewBox={`0 0 ${VBW} ${VBH}`} style={{ width: '100%', height: 'auto' }} role="img" aria-label="Attendance bar chart">
               <defs>
                 <filter id="barShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.16" /></filter>
               </defs>
