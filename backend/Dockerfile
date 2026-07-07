@@ -1,6 +1,6 @@
-FROM node:22-alpine
+FROM node:24-slim
 
-RUN apk add --no-cache curl
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

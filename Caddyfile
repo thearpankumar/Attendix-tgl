@@ -71,13 +71,8 @@
     reverse_proxy student-frontend:80
   }
   
-  # Short links
+  # Short links (and WebAuthn routes which are mounted under /s)
   handle /s/* {
-    reverse_proxy backend:5000
-  }
-  
-  # WebAuthn routes
-  handle /webauthn/* {
     reverse_proxy backend:5000
   }
   

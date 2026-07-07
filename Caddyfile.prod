@@ -62,7 +62,7 @@ xenkrypt.in {
   }
   
   # Admin assets
-  handle /assets/* {
+  handle /admin-assets/* {
     reverse_proxy admin-frontend:80
   }
   
@@ -71,13 +71,17 @@ xenkrypt.in {
     reverse_proxy student-frontend:80
   }
   
-  # Student scan page (short link redirect target)
-  handle /student-scan.html {
+  # Student assets
+  handle /attend-assets/* {
     reverse_proxy student-frontend:80
   }
   
-  # Student app.js
+  # Student app.js and face detection models
   handle /app.js {
+    reverse_proxy student-frontend:80
+  }
+  
+  handle /models/* {
     reverse_proxy student-frontend:80
   }
   
@@ -136,7 +140,7 @@ xenkrypt.in {
   }
   
   # Admin assets
-  handle /assets/* {
+  handle /admin-assets/* {
     reverse_proxy admin-frontend:80
   }
   
@@ -145,13 +149,17 @@ xenkrypt.in {
     reverse_proxy student-frontend:80
   }
   
-  # Student scan page (short link redirect target)
-  handle /student-scan.html {
+  # Student assets
+  handle /attend-assets/* {
     reverse_proxy student-frontend:80
   }
   
-  # Student app.js
+  # Student app.js and face detection models
   handle /app.js {
+    reverse_proxy student-frontend:80
+  }
+  
+  handle /models/* {
     reverse_proxy student-frontend:80
   }
   
