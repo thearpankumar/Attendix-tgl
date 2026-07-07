@@ -10,7 +10,7 @@ import { AuthProvider } from './context/AuthContext';
 // so it hits Caddy (:80). Harmless in prod, where these never reach this app.
 {
   const { pathname, search, protocol, hostname, port } = window.location;
-  if (port && (pathname.startsWith('/s/') || pathname.startsWith('/attend/'))) {
+  if (import.meta.env.DEV && port && (pathname.startsWith('/s/') || pathname.startsWith('/attend/'))) {
     window.location.replace(`${protocol}//${hostname}${pathname}${search}`);
   }
 }

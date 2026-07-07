@@ -81,8 +81,8 @@ const SessionDetail = () => {
     if (!window.confirm('Rotate token? The current link will stop working.')) return;
     try {
       const res = await axios.post<{ token: string }>(`/api/admin/sessions/${id}/rotate`);
-      const baseUrl = window.location.origin.replace(':5173', '');
-      const link = `${baseUrl}/attend/${res.data.token}`;
+      const { protocol, hostname } = window.location;
+      const link = `${protocol}//${hostname}/attend/${res.data.token}`;
       toast.success('Token rotated! New link copied.');
       navigator.clipboard.writeText(link);
       fetchData();

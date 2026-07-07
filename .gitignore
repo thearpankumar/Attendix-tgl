@@ -58,7 +58,7 @@ Thumbs.db
 .parcel-cache/
 .eslintcache/
 .stylelintcache/
-.tsbuildinfo
+*.tsbuildinfo
 
 # Temporary files
 tmp/

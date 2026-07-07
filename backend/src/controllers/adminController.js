@@ -90,11 +90,17 @@ const getAdminProfile = async (req, res) => {
 
 const getDashboardStats = async (req, res) => {
   try {
+    const adminSessions = await Session.find({ createdBy: req.admin._id }).select('_id');
+    const sessionIds = adminSessions.map((s) => s._id);
+
     const [totalLocations, activeSessions, totalAttendance, flaggedUnreviewed] = await Promise.all([
       Location.countDocuments({ createdBy: req.admin._id }),
       Session.countDocuments({ createdBy: req.admin._id, isActive: true, expiresAt: { $gt: new Date() } }),
-      Attendance.countDocuments(),
-      Flag.countDocuments({ isRead: false }),
+      Attendance.countDocuments({ sessionId: { $in: sessionIds } }),
+      Flag.countDocuments({
+        resolved: false,
+        $or: [{ adminId: req.admin._id }, { sessionId: { $in: sessionIds } }],
+      }),
     ]);
 
     res.json({ totalLocations, activeSessions, totalAttendance, flaggedUnreviewed });
@@ -105,7 +111,8 @@ const getDashboardStats = async (req, res) => {
 
 const getRecentActivity = async (req, res) => {
   try {
-    const records = await Attendance.find()
+    const adminSessionIds = await Session.find({ createdBy: req.admin._id }).distinct('_id');
+    const records = await Attendance.find({ sessionId: { $in: adminSessionIds } })
       .sort({ capturedAt: -1 })
       .limit(5)
       .populate({ path: 'sessionId', populate: { path: 'locationId', select: 'name' } })
@@ -137,7 +144,12 @@ const getAttendanceSeries = async (req, res) => {
     from.setHours(0, 0, 0, 0);
 
     const locationMatch = { 'location.createdBy': req.admin._id };
-    if (locationId) locationMatch['location._id'] = new mongoose.Types.ObjectId(locationId);
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(String(locationId))) {
+        return res.status(400).json({ message: 'Invalid locationId' });
+      }
+      locationMatch['location._id'] = new mongoose.Types.ObjectId(String(locationId));
+    }
 
     const rows = await Attendance.aggregate([
       { $match: { capturedAt: { $gte: from } } },

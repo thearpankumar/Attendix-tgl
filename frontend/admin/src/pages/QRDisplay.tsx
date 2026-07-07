@@ -3,12 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Copy } from 'lucide-react';
 
-// ponytail: no @types/qrcode installed — declare inline
+// ponytail: no @types/qrcode installed — minimal typing for the CJS module
 declare module 'qrcode' {
-  function toDataURL(text: string, options?: object): Promise<string>;
+  export function toDataURL(text: string, options?: object): Promise<string>;
 }
 
-import QRCode from 'qrcode';
+import * as QRCode from 'qrcode';
 
 interface Session { _id: string; description?: string; expiresAt: string; isActive: boolean; totpEnabled?: boolean; }
 interface TotpData { totpCode: string; shortLink: string; expiresAt: string; windowSeconds: number; }
@@ -36,7 +36,8 @@ const QRDisplay = () => {
       const res = await axios.get<TotpData>(`/api/admin/sessions/${sessionId}/totp`);
       setTotpData(res.data);
       setLoading(false);
-      const fullUrl = `${window.location.origin}/s/${res.data.shortLink}`;
+      const { protocol, hostname } = window.location;
+      const fullUrl = `${protocol}//${hostname}/s/${res.data.shortLink}`;
       generateQR(fullUrl);
       const remaining = Math.max(0, Math.ceil((new Date(res.data.expiresAt).getTime() - Date.now()) / 1000));
       setCountdown(remaining);
@@ -83,7 +84,7 @@ const QRDisplay = () => {
     </div>
   );
 
-  const fullUrl = totpData ? `${window.location.origin}/s/${totpData.shortLink}` : '';
+  const fullUrl = totpData ? `${window.location.protocol}//${window.location.hostname}/s/${totpData.shortLink}` : '';
   const progressPercent = ((totpData?.windowSeconds || 5) - countdown) / (totpData?.windowSeconds || 5) * 100;
   const isExpired = session && new Date(session.expiresAt) < new Date();
   const urgent = countdown <= 2;
