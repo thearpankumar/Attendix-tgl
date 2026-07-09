@@ -150,7 +150,15 @@ export default function StudentScan() {
   const getLocation = useCallback(() => {
     if (!navigator.geolocation) { setLocStatus('denied'); return; }
     navigator.geolocation.getCurrentPosition(
-      (pos) => { setLocData({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); setLocStatus('ok'); },
+      (pos) => { 
+        if (pos.coords.accuracy > 200) {
+          flash('GPS signal is too weak. Please step outside for better accuracy.', true);
+          setLocStatus('denied');
+          return;
+        }
+        setLocData({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); 
+        setLocStatus('ok'); 
+      },
       () => setLocStatus('denied'),
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -159,6 +167,7 @@ export default function StudentScan() {
   const handleCheckStatus = async () => {
     const roll = rollInput.trim().toUpperCase();
     if (!roll) { flash('Please enter your roll number'); return; }
+    if (!/^[A-Z0-9]{3,20}$/.test(roll)) { flash('Invalid roll number format'); return; }
     rollRef.current = roll;
     try {
       const res = await fetch(`${API}/s/${shortCode}/webauthn/status/${roll}`);

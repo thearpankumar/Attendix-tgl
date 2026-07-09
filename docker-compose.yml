@@ -15,7 +15,7 @@ services:
     entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]
     restart: on-failure
     networks:
-      - attendance-network
+      - db-net
 
   
   mongo1:
@@ -25,8 +25,8 @@ services:
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo1_data:/data/db
-    ports:
-      - "27017:27017"
+    expose:
+      - "27017"
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
@@ -34,7 +34,7 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - attendance-network
+      - db-net
 
   mongo2:
     image: mongo:7.0
@@ -43,8 +43,8 @@ services:
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo2_data:/data/db
-    ports:
-      - "27018:27017"
+    expose:
+      - "27017"
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
@@ -52,7 +52,7 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - attendance-network
+      - db-net
 
   mongo3:
     image: mongo:7.0
@@ -61,8 +61,8 @@ services:
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo3_data:/data/db
-    ports:
-      - "27019:27017"
+    expose:
+      - "27017"
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
@@ -70,16 +70,16 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - attendance-network
+      - db-net
 
   
   redis:
     image: redis:7-alpine
     container_name: attendance-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -89,19 +89,19 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - attendance-network
+      - db-net
 
   
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile.pm2
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       - NODE_ENV=${NODE_ENV:-development}
       - PORT=5000
       - MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/attendance-geotag?replicaSet=rs0
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRE=7d
       - ADMIN_SECRET=${ADMIN_SECRET}
@@ -137,7 +137,8 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - attendance-network
+      - db-net
+      - web-net
 
   
   admin-frontend:
@@ -152,7 +153,7 @@ services:
     depends_on:
       - backend
     networks:
-      - attendance-network
+      - web-net
 
   
   student-frontend:
@@ -164,7 +165,7 @@ services:
     depends_on:
       - backend
     networks:
-      - attendance-network
+      - web-net
 
   
   caddy:
@@ -188,7 +189,7 @@ services:
       student-frontend:
         condition: service_started
     networks:
-      - attendance-network
+      - web-net
 
 volumes:
   mongo1_data:
@@ -199,5 +200,7 @@ volumes:
   caddy_config:
 
 networks:
-  attendance-network:
+  db-net:
+    driver: bridge
+  web-net:
     driver: bridge

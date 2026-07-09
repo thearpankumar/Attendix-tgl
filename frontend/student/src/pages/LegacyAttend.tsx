@@ -89,6 +89,11 @@ export default function LegacyAttend() {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (pos.coords.accuracy > 200) {
+          flash('GPS signal is too weak.', true);
+          setLocMsg({ title: '⚠ Accuracy Too Low', detail: `Accuracy: ±${Math.round(pos.coords.accuracy)}m (> 200m). Please move outside.`, ok: false });
+          return;
+        }
         const coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy };
         setLoc(coords);
         setLocMsg({ title: '✓ Location Detected', detail: `${coords.latitude.toFixed(6)}, ${coords.longitude.toFixed(6)} (±${Math.round(coords.accuracy)}m)`, ok: true });
@@ -200,6 +205,8 @@ export default function LegacyAttend() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!loc) { flash('Location required. Please allow location access.'); return; }
+    const rollTrimmed = roll.trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,20}$/.test(rollTrimmed)) { flash('Invalid roll number format'); return; }
     setSubmitting(true);
     try {
       let body: Record<string, unknown>;
@@ -230,7 +237,7 @@ export default function LegacyAttend() {
     }
   };
 
-  const canSubmit = name.trim().length >= 2 && /^[a-zA-Z0-9]+$/.test(roll.trim()) && photoTaken && !!loc && captchaAnswer.trim().length >= 4;
+  const canSubmit = name.trim().length >= 2 && /^[A-Z0-9]{3,20}$/.test(roll.trim().toUpperCase()) && photoTaken && !!loc && captchaAnswer.trim().length >= 4;
 
   const Logo = (
     <div className="attend-pane-logo">
@@ -322,7 +329,7 @@ export default function LegacyAttend() {
                 </div>
                 <div className="attend-field">
                   <label>Roll Number</label>
-                  <input className="attend-input" placeholder="e.g. 21CS042" value={roll} onChange={(e) => setRoll(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} required pattern="[a-zA-Z0-9]+" />
+                  <input className="attend-input" placeholder="e.g. 21CS042" value={roll} onChange={(e) => setRoll(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} required pattern="[A-Z0-9]{3,20}" />
                 </div>
 
                 <div className="attend-field">

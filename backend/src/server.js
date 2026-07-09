@@ -27,7 +27,6 @@ try {
 }
 
 app.use(helmet({
-  contentSecurityPolicy: false,        // CSP on API JSON responses causes issues with browser module scripts behind ngrok
   hsts: false,                         // HSTS handled by ngrok/nginx, not needed from the API
 }));
 app.use(compression());

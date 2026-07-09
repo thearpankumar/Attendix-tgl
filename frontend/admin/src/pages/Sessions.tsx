@@ -9,6 +9,7 @@ import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Modal from '../components/ui/Modal';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
+import ConfirmModal from '../components/ui/ConfirmModal';
 import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
@@ -34,6 +35,7 @@ const Sessions = () => {
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [deactivateId, setDeactivateId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -86,9 +88,9 @@ const Sessions = () => {
   };
 
   const handleDeactivate = async (id: string) => {
-    if (!window.confirm('Deactivate this session?')) return;
     try { await axios.post(`/api/admin/sessions/${id}/deactivate`); toast.success('Session deactivated'); fetchData(); }
     catch { toast.error('Failed to deactivate session'); }
+    setDeactivateId(null);
   };
 
   const handleDelete = async (e: FormEvent) => {
@@ -117,7 +119,7 @@ const Sessions = () => {
     { key: 'actions',  label: 'Actions',    width: '32%', render: (s) => (
       <div className="actions-cell">
         <Link to={`/sessions/${s._id}`} className="btn btn-secondary btn-small">View</Link>
-        {s.isActive && !isExpired(s) && <Button variant="danger" size="sm" onClick={() => handleDeactivate(s._id)}>Deactivate</Button>}
+        {s.isActive && !isExpired(s) && <Button variant="danger" size="sm" onClick={() => setDeactivateId(s._id)}>Deactivate</Button>}
         <Button variant="delete" size="sm" onClick={() => { setDeleteModal({ open: true, sessionId: s._id, attendanceCount: s.attendanceCount, locationName: s.locationId?.name || 'Unknown' }); setDeletePassword(''); }}>Delete</Button>
       </div>
     )},
@@ -188,6 +190,15 @@ const Sessions = () => {
           <input type="password" value={deletePassword} onChange={(e) => setDeletePassword(e.target.value)} placeholder="Enter your admin password" autoFocus required />
         </div>
       </ConfirmDialog>
+
+      <ConfirmModal
+        isOpen={!!deactivateId}
+        title="Deactivate Session"
+        message="Are you sure you want to deactivate this session? Students will no longer be able to submit attendance."
+        confirmText="Deactivate"
+        onConfirm={() => deactivateId && handleDeactivate(deactivateId)}
+        onCancel={() => setDeactivateId(null)}
+      />
     </div>
   );
 };

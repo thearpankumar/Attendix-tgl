@@ -8,6 +8,7 @@ import StatTile from '../components/ui/StatTile';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Badge from '../components/ui/Badge';
+import ConfirmModal from '../components/ui/ConfirmModal';
 import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
 
 interface Session {
@@ -60,6 +61,7 @@ const SessionDetail = () => {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmAction, setConfirmAction] = useState<'rotate' | 'deactivate' | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -78,7 +80,6 @@ const SessionDetail = () => {
   useEffect(() => { fetchData(); const interval = setInterval(fetchData, 30000); return () => clearInterval(interval); }, [fetchData]);
 
   const handleRotateToken = async () => {
-    if (!window.confirm('Rotate token? The current link will stop working.')) return;
     try {
       const res = await axios.post<{ token: string }>(`/api/admin/sessions/${id}/rotate`);
       const { protocol, hostname } = window.location;
@@ -87,12 +88,13 @@ const SessionDetail = () => {
       navigator.clipboard.writeText(link);
       fetchData();
     } catch { toast.error('Failed to rotate token'); }
+    setConfirmAction(null);
   };
 
   const handleDeactivate = async () => {
-    if (!window.confirm('Deactivate this session?')) return;
     try { await axios.post(`/api/admin/sessions/${id}/deactivate`); toast.success('Session deactivated'); fetchData(); }
     catch { toast.error('Failed to deactivate session'); }
+    setConfirmAction(null);
   };
 
   const handleExportCSV = () => {
@@ -156,9 +158,9 @@ const SessionDetail = () => {
         <p><strong>Expires At:</strong> {new Date(session.expiresAt).toLocaleString()}</p>
         <p><strong>Rotations:</strong> {session.rotationCount}</p>
         <div className="form-actions">
-          <button className="btn btn-primary" onClick={handleRotateToken} disabled={!session.isActive}>Rotate Token</button>
+          <button className="btn btn-primary" onClick={() => setConfirmAction('rotate')} disabled={!session.isActive}>Rotate Token</button>
           {session.totpEnabled && <Link to={`/sessions/${id}/qr`} className="btn btn-success"><QrCode size={16} />View QR Display</Link>}
-          {session.isActive && !isExpired && <button className="btn btn-danger" onClick={handleDeactivate}>Deactivate Session</button>}
+          {session.isActive && !isExpired && <button className="btn btn-danger" onClick={() => setConfirmAction('deactivate')}>Deactivate Session</button>}
         </div>
       </div>
 
@@ -179,6 +181,15 @@ const SessionDetail = () => {
           <DataTable columns={columns} rows={attendance} rowKey={(a) => a._id} />
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={confirmAction !== null}
+        title={confirmAction === 'rotate' ? 'Rotate Token' : 'Deactivate Session'}
+        message={confirmAction === 'rotate' ? 'Rotate token? The current link will stop working.' : 'Are you sure you want to deactivate this session? Students will no longer be able to submit attendance.'}
+        confirmText={confirmAction === 'rotate' ? 'Rotate' : 'Deactivate'}
+        onConfirm={confirmAction === 'rotate' ? handleRotateToken : handleDeactivate}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   );
 };

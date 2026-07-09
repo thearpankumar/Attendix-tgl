@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
+import axios from 'axios';
 import { Fingerprint } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import StatTile from '../components/ui/StatTile';
@@ -10,7 +11,6 @@ import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
 
 interface Credential {
   _id: string;
@@ -45,7 +45,6 @@ function WebAuthnCredentials() {
   const [reason, setReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
 
-  const token = localStorage.getItem('token');
 
   useEffect(() => { fetchCredentials(); fetchStats(); }, [search, suspendedFilter, page]);
 
@@ -55,19 +54,20 @@ function WebAuthnCredentials() {
       const params = new URLSearchParams({ page: String(page), limit: '20' });
       if (search) params.append('search', search);
       if (suspendedFilter !== 'all') params.append('suspended', suspendedFilter);
-      const res = await fetch(`${API_BASE}/api/admin/webauthn/credentials?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      if (res.ok) { setCredentials(data.credentials); setPagination(data.pagination); }
-      else toast.error(data.message);
-    } catch { toast.error('Failed to fetch credentials'); }
+      const res = await axios.get<{ credentials: Credential[], pagination: Pagination }>(`/api/admin/webauthn/credentials?${params}`);
+      setCredentials(res.data.credentials);
+      setPagination(res.data.pagination);
+    } catch (error) { 
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to fetch credentials'); 
+    }
     finally { setLoading(false); }
   };
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/admin/webauthn/stats`, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      if (res.ok) setStats(data);
+      const res = await axios.get<Stats>('/api/admin/webauthn/stats');
+      setStats(res.data);
     } catch { /* silently fail */ }
   };
 
@@ -75,15 +75,20 @@ function WebAuthnCredentials() {
     if (!reason.trim()) { toast.error('Please provide a reason'); return; }
     setActionLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/admin/webauthn/reset`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ rollNumber: selectedStudent?.studentId, reason: reason.trim() }),
+      const res = await axios.post<{ message: string }>('/api/admin/webauthn/reset', { 
+        rollNumber: selectedStudent?.studentId, 
+        reason: reason.trim() 
       });
-      const data = await res.json();
-      if (res.ok) { toast.success(data.message); setShowResetModal(false); setSelectedStudent(null); setReason(''); fetchCredentials(); fetchStats(); }
-      else toast.error(data.message);
-    } catch { toast.error('Failed to reset credential'); }
+      toast.success(res.data.message); 
+      setShowResetModal(false); 
+      setSelectedStudent(null); 
+      setReason(''); 
+      fetchCredentials(); 
+      fetchStats();
+    } catch (error) { 
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to reset credential'); 
+    }
     finally { setActionLoading(false); }
   };
 
@@ -91,15 +96,20 @@ function WebAuthnCredentials() {
     if (!reason.trim()) { toast.error('Please provide a reason'); return; }
     setActionLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/admin/webauthn/${suspend ? 'suspend' : 'unsuspend'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ rollNumber: selectedStudent?.studentId, reason: reason.trim() }),
+      const res = await axios.post<{ message: string }>(`/api/admin/webauthn/${suspend ? 'suspend' : 'unsuspend'}`, { 
+        rollNumber: selectedStudent?.studentId, 
+        reason: reason.trim() 
       });
-      const data = await res.json();
-      if (res.ok) { toast.success(data.message); setShowSuspendModal(false); setSelectedStudent(null); setReason(''); fetchCredentials(); fetchStats(); }
-      else toast.error(data.message);
-    } catch { toast.error(`Failed to ${suspend ? 'suspend' : 'unsuspend'} credential`); }
+      toast.success(res.data.message); 
+      setShowSuspendModal(false); 
+      setSelectedStudent(null); 
+      setReason(''); 
+      fetchCredentials(); 
+      fetchStats();
+    } catch (error) { 
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || `Failed to ${suspend ? 'suspend' : 'unsuspend'} credential`); 
+    }
     finally { setActionLoading(false); }
   };
 

@@ -123,7 +123,7 @@ function getAuthenticatorAttachment(userAgent) {
     return 'platform';
   }
   
-  return 'platform';
+  return 'cross-platform';
 }
 
 module.exports = {

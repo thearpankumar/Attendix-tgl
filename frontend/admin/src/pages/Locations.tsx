@@ -7,9 +7,9 @@ import PageHeader from '../components/ui/PageHeader';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Modal from '../components/ui/Modal';
-import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
+import ConfirmModal from '../components/ui/ConfirmModal';
 import { SkeletonRows } from '../components/ui/Skeleton';
 
 interface Location {
@@ -36,6 +36,7 @@ const Locations = () => {
   const [placeNameLoading, setPlaceNameLoading] = useState(false);
   const [manualCoords, setManualCoords] = useState({ latitude: '', longitude: '' });
   const [formData, setFormData] = useState({ name: '', radiusMeters: 100, description: '' });
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const fetchLocations = useCallback(async () => {
     try {
@@ -143,12 +144,12 @@ const Locations = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete this location?')) return;
     try {
       await axios.delete(`/api/admin/locations/${id}`);
       toast.success('Location deleted');
       fetchLocations();
     } catch { toast.error('Failed to delete location'); }
+    setDeleteId(null);
   };
 
   const openEditModal = (loc: Location) => {
@@ -180,7 +181,7 @@ const Locations = () => {
     { key: 'actions', label: 'Actions',   width: '22%', render: (loc) => (
       <div className="actions-cell">
         <Button variant="secondary" size="sm" onClick={() => openEditModal(loc)}>Edit</Button>
-        <Button variant="delete"    size="sm" onClick={() => handleDelete(loc._id)}>Delete</Button>
+        <Button variant="delete"    size="sm" onClick={() => setDeleteId(loc._id)}>Delete</Button>
       </div>
     )},
   ];
@@ -253,6 +254,15 @@ const Locations = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmModal
+        isOpen={!!deleteId}
+        title="Delete Location"
+        message="Are you sure you want to delete this location? This action cannot be undone."
+        confirmText="Delete"
+        onConfirm={() => deleteId && handleDelete(deleteId)}
+        onCancel={() => setDeleteId(null)}
+      />
     </div>
   );
 };

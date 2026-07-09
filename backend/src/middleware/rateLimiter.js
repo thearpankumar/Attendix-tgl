@@ -8,7 +8,7 @@ const adminLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => isTest,
+  skip: isTest,
   message: {
     message: 'Too many requests, please try again later',
   },
@@ -20,7 +20,7 @@ const studentLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipFailedRequests: true,
-  skip: () => isTest,
+  skip: isTest,
   message: {
     message: 'Too many submissions, please wait',
   },
@@ -31,7 +31,7 @@ const loginLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => isTest,
+  skip: isTest,
   message: {
     message: 'Too many login attempts, please try again later',
   },

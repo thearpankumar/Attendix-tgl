@@ -7,9 +7,9 @@ import PageHeader from '../components/ui/PageHeader';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Modal from '../components/ui/Modal';
-import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
+import ConfirmModal from '../components/ui/ConfirmModal';
 import { SkeletonRows } from '../components/ui/Skeleton';
 
 interface Session {
@@ -36,6 +36,7 @@ const ShortLinks = () => {
   const [showModal, setShowModal] = useState(false);
   const [formData, setFormData] = useState({ shortCode: '', sessionId: '' });
   const [autoGenerate, setAutoGenerate] = useState(true);
+  const [confirmAction, setConfirmAction] = useState<{ type: 'detach' | 'delete'; shortCode: string } | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -78,15 +79,15 @@ const ShortLinks = () => {
   };
 
   const handleDetach = async (shortCode: string) => {
-    if (!window.confirm('Detach this short link?')) return;
     try { await axios.post(`/api/admin/shortlinks/${shortCode}/detach`); toast.success('Short link detached'); fetchData(); }
     catch { toast.error('Failed to detach'); }
+    setConfirmAction(null);
   };
 
   const handleDelete = async (shortCode: string) => {
-    if (!window.confirm('Delete this short link permanently?')) return;
     try { await axios.delete(`/api/admin/shortlinks/${shortCode}`); toast.success('Short link deleted'); fetchData(); }
     catch { toast.error('Failed to delete'); }
+    setConfirmAction(null);
   };
 
   const getFullUrl = (shortCode: string) => {
@@ -124,7 +125,7 @@ const ShortLinks = () => {
     { key: 'actions', label: 'Actions', width: '18%', render: (l) => (
       <div className="actions-cell">
         {l.sessionId ? (
-          <Button variant="secondary" size="sm" onClick={() => handleDetach(l.shortCode)}>Detach</Button>
+          <Button variant="secondary" size="sm" onClick={() => setConfirmAction({ type: 'detach', shortCode: l.shortCode })}>Detach</Button>
         ) : (
           <select
             className="btn btn-small btn-secondary"
@@ -135,7 +136,7 @@ const ShortLinks = () => {
             {activeSessions.map((s) => <option key={s._id} value={s._id}>{s.description || s.locationId?.name || 'Session'}</option>)}
           </select>
         )}
-        <Button variant="delete" size="sm" onClick={() => handleDelete(l.shortCode)}>Delete</Button>
+        <Button variant="delete" size="sm" onClick={() => setConfirmAction({ type: 'delete', shortCode: l.shortCode })}>Delete</Button>
       </div>
     )},
   ];
@@ -193,6 +194,18 @@ const ShortLinks = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmModal
+        isOpen={confirmAction !== null}
+        title={confirmAction?.type === 'detach' ? 'Detach Short Link' : 'Delete Short Link'}
+        message={confirmAction?.type === 'detach' ? 'Are you sure you want to detach this short link from its session?' : 'Are you sure you want to permanently delete this short link?'}
+        confirmText={confirmAction?.type === 'detach' ? 'Detach' : 'Delete'}
+        onConfirm={() => {
+          if (confirmAction?.type === 'detach') handleDetach(confirmAction.shortCode);
+          if (confirmAction?.type === 'delete') handleDelete(confirmAction.shortCode);
+        }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   );
 };
