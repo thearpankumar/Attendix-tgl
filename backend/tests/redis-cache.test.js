@@ -268,7 +268,7 @@ describe('Security Edge Cases', () => {
     const cachedSession = await getCachedSession(session.tokenHash);
     
     expect(cachedSession.tokenHash).toBeDefined();
-    expect(cachedSession.totpSecret).toBeDefined();
+    expect(cachedSession.tokenPrefix).toBeDefined();
   });
 
   it('should prevent accessing other users sessions', async () => {

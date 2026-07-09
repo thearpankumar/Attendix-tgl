@@ -385,7 +385,7 @@ describe('Security Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       res.body.forEach(session => {
-        expect(session.totpSecret).toBeUndefined();
+
         expect(session.createdBy).toBeDefined();
       });
     });
@@ -558,29 +558,7 @@ describe('Security Tests', () => {
     });
   });
 
-  describe('TOTP Security', () => {
-    it('should generate time-based codes', async () => {
-      const dbSession = await Session.findById(session._id);
-      
-      expect(dbSession.totpEnabled).toBeDefined();
-      
-      if (dbSession.totpEnabled) {
-        const code = dbSession.generateTOTP();
-        expect(code).toHaveLength(6);
-        expect(/^[A-Z0-9]{6}$/.test(code)).toBe(true);
-      }
-    });
 
-    it('should validate TOTP within tolerance', async () => {
-      const dbSession = await Session.findById(session._id);
-      
-      if (dbSession.totpEnabled) {
-        const code = dbSession.generateTOTP();
-        const validation = dbSession.validateTOTP(code);
-        expect(validation.valid).toBe(true);
-      }
-    });
-  });
 });
 
 describe('Redis Cache Security', () => {

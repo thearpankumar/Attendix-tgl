@@ -7,10 +7,9 @@ const WebAuthnCredential = require('../models/WebAuthnCredential');
 const WebAuthnChallenge = require('../models/WebAuthnChallenge');
 const Device = require('../models/Device');
 const { studentLimiter } = require('../middleware/rateLimiter');
+const { requireMobileDevice } = require('../middleware/mobileCheck');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
-const { validateTOTPCode } = require('../utils/totpUtils');
-const svgCaptcha = require('svg-captcha');
 const crypto = require('crypto');
 const config = require('../config');
 const {
@@ -30,7 +29,7 @@ const signCaptchaText = (text, timestamp) => {
     .digest('hex');
 };
 
-router.get('/:shortCode/webauthn/status/:rollNumber', async (req, res) => {
+router.get('/:shortCode/webauthn/status/:rollNumber', requireMobileDevice, async (req, res) => {
   try {
     const { shortCode, rollNumber } = req.params;
     
@@ -77,87 +76,8 @@ router.get('/:shortCode/webauthn/status/:rollNumber', async (req, res) => {
   }
 });
 
-router.post('/:shortCode/verify-gatekeeper', async (req, res) => {
-  try {
-    const { shortCode } = req.params;
-    const { rollNumber, totpCode } = req.body;
-    
-    if (!rollNumber) {
-      return res.status(400).json({ message: 'Roll number is required' });
-    }
-    
-    const shortLink = await ShortLink.findOne({
-      shortCode: shortCode.toLowerCase(),
-      isActive: true,
-    }).populate('sessionId');
-    
-    if (!shortLink || !shortLink.sessionId) {
-      return res.status(404).json({ message: 'Invalid session' });
-    }
-    
-    const session = shortLink.sessionId;
-    if (!session.isActive || (session.expiresAt && new Date() > session.expiresAt)) {
-      return res.status(400).json({ message: 'Session expired' });
-    }
 
-    // Verify TOTP early
-    if (session.totpEnabled) {
-      if (!totpCode) {
-        return res.status(400).json({ 
-          message: 'This session requires a time-based code. Please enter the current code.',
-          totpRequired: true,
-        });
-      }
-      
-      const totpResult = validateTOTPCode(
-        totpCode,
-        session.totpSecret,
-        session._id.toString(),
-        session.totpWindowSeconds,
-        1
-      );
-      
-      if (!totpResult.valid) {
-        return res.status(400).json({ 
-          message: 'Invalid or expired code. Please get the current code from the projector.',
-          totpRequired: true,
-        });
-      }
-    }
-    
-    // Check WebAuthn status
-    const credential = await WebAuthnCredential.findOne({
-      studentId: rollNumber.toUpperCase(),
-    });
-    
-    const existingAttendance = await Attendance.findOne({
-      sessionId: session._id,
-      rollNumber: rollNumber.toUpperCase(),
-    });
-    
-    if (existingAttendance) {
-      return res.json({
-        valid: true,
-        enrolled: !!credential,
-        suspended: credential?.isSuspended || false,
-        alreadySubmitted: true,
-        message: 'Attendance already submitted',
-      });
-    }
-    
-    res.json({
-      valid: true,
-      enrolled: !!credential,
-      suspended: credential?.isSuspended || false,
-      alreadySubmitted: false,
-      studentName: credential?.deviceLabel || null,
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.post('/:shortCode/webauthn/register/start', async (req, res) => {
+router.post('/:shortCode/webauthn/register/start', requireMobileDevice, async (req, res) => {
   try {
     const { shortCode } = req.params;
     const { rollNumber, studentName } = req.body;
@@ -218,7 +138,7 @@ router.post('/:shortCode/webauthn/register/start', async (req, res) => {
   }
 });
 
-router.post('/:shortCode/webauthn/register/finish', async (req, res) => {
+router.post('/:shortCode/webauthn/register/finish', requireMobileDevice, async (req, res) => {
   try {
     const { rollNumber, credential } = req.body;
     
@@ -280,7 +200,7 @@ router.post('/:shortCode/webauthn/register/finish', async (req, res) => {
   }
 });
 
-router.post('/:shortCode/webauthn/authenticate/start', async (req, res) => {
+router.post('/:shortCode/webauthn/authenticate/start', requireMobileDevice, async (req, res) => {
   try {
     const { shortCode } = req.params;
     const { rollNumber } = req.body;
@@ -345,7 +265,7 @@ router.post('/:shortCode/webauthn/authenticate/start', async (req, res) => {
   }
 });
 
-router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (req, res) => {
+router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, requireMobileDevice, async (req, res) => {
   try {
     const { shortCode } = req.params;
     const {
@@ -357,7 +277,6 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
       longitude,
       captchaAnswer,
       captchaId,
-      totpCode,
       deviceFingerprint,
     } = req.body;
     
@@ -459,33 +378,7 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
       }
     }
     
-    let totpValid = null;
-    if (session.totpEnabled) {
-      if (!totpCode) {
-        return res.status(400).json({
-          message: 'This session requires a time-based code.',
-          totpRequired: true,
-        });
-      }
-      
-      const totpResult = validateTOTPCode(
-        totpCode,
-        session.totpSecret,
-        session._id.toString(),
-        session.totpWindowSeconds,
-        1
-      );
-      
-      totpValid = totpResult.valid;
-      
-      if (!totpValid) {
-        return res.status(400).json({
-          message: 'Invalid or expired code.',
-          totpRequired: true,
-        });
-      }
-    }
-    
+
     const existingAttendance = await Attendance.findOne({
       sessionId: session._id,
       rollNumber: rollNumber.toUpperCase(),
@@ -554,18 +447,68 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
       }
     }
     
-    let deviceFingerprintHash = null;
-    if (deviceFingerprint) {
-      deviceFingerprintHash = Device.hashFingerprint(deviceFingerprint);
-    }
-    
-    const verificationMethod = getVerificationMethod(credential.response?.authenticatorData);
-    const authenticatorAttachment = getAuthenticatorAttachment(req.get('User-Agent'));
-    
     let deviceFlag = null;
     if (replayAttack) {
       deviceFlag = 'WEBAUTHN_REPLAY_ATTACK';
     }
+
+    let deviceFingerprintHash = null;
+    let deviceFirstSeen = false;
+    
+    if (deviceFingerprint) {
+      deviceFingerprintHash = Device.hashFingerprint(deviceFingerprint);
+      
+      const existingDevice = await Device.findOne({
+        fingerprintHash: deviceFingerprintHash,
+        sessionId: session._id,
+      });
+
+      if (existingDevice) {
+        existingDevice.lastSeenAt = new Date();
+        existingDevice.attendanceCount += 1;
+        
+        if (existingDevice.boundToStudent !== rollNumber.toUpperCase()) {
+          existingDevice.addFlag('MULTI_STUDENT_DEVICE', 
+            `Device previously used by ${existingDevice.boundToStudent}, now ${rollNumber}`,
+            session._id
+          );
+          if (!deviceFlag) deviceFlag = 'MULTI_STUDENT_DEVICE';
+        }
+        
+        await existingDevice.save();
+      } else {
+        const studentExistingDevice = await Device.findOne({
+          boundToStudent: rollNumber.toUpperCase(),
+          sessionId: session._id,
+        });
+
+        if (studentExistingDevice && studentExistingDevice.fingerprintHash !== deviceFingerprintHash) {
+          if (!deviceFlag) deviceFlag = 'STUDENT_DEVICE_SWITCHED';
+        }
+
+        const newDevice = new Device({
+          fingerprintHash: deviceFingerprintHash,
+          boundToStudent: rollNumber.toUpperCase(),
+          sessionId: session._id,
+          firstSeenAt: new Date(),
+          lastSeenAt: new Date(),
+          attendanceCount: 1,
+          metadata: {
+            userAgent: req.get('User-Agent'),
+          },
+        });
+
+        if (deviceFlag) {
+          newDevice.addFlag(deviceFlag, `Detected during webauthn attendance submission`, session._id);
+        }
+
+        await newDevice.save();
+        deviceFirstSeen = true;
+      }
+    }
+    
+    const verificationMethod = getVerificationMethod(credential.response?.authenticatorData);
+    const authenticatorAttachment = getAuthenticatorAttachment(req.get('User-Agent'));
     
     const attendance = await Attendance.create({
       sessionId: session._id,
@@ -584,9 +527,7 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
       faceDetected: true,
       deviceFingerprint,
       deviceFingerprintHash,
-      deviceFirstSeen: false,
-      totpCode: totpCode || null,
-      totpValid,
+      deviceFirstSeen,
       deviceFlag,
       webauthnCredentialId: storedCredential.credentialId,
       webauthnVerified: true,
@@ -620,30 +561,5 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, async (r
   }
 });
 
-router.get('/:shortCode/captcha', async (req, res) => {
-  try {
-    const captcha = svgCaptcha.create({
-      size: 4,
-      noise: 2,
-      color: true,
-      background: '#f1f1f1',
-    });
-    
-    const timestamp = Date.now();
-    const signature = signCaptchaText(captcha.text, timestamp);
-    const captchaId = `${timestamp}.${signature}`;
-    
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    
-    res.json({
-      captchaSvg: captcha.data,
-      captchaId: captchaId,
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error generating captcha', error: error.message });
-  }
-});
 
 module.exports = router;

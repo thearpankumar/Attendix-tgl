@@ -145,18 +145,7 @@ body {
 }
 .attend-capture-btn.retake:hover { background: var(--color-bg-subtle); }
 
-/* light info panel (session / totp) */
-.attend-panel {
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-.attend-panel-label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--color-muted); margin-bottom: 4px; }
-.attend-panel-value { font-size: 14px; font-weight: 600; color: var(--color-text); }
-.attend-totp-code { font-size: 32px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; margin: 6px 0; color: var(--color-brand-dark); }
-.attend-totp-track { height: 6px; background: var(--color-border); border-radius: 999px; overflow: hidden; }
-.attend-totp-fill { height: 100%; background: linear-gradient(90deg, var(--color-brand), #7c74f0); border-radius: 999px; transition: width .5s linear; }
+
 
 /* ── Form elements ────────────────────────────────────────── */
 .attend-form-pane h2 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: var(--color-text); }

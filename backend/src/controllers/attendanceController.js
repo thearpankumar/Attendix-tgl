@@ -1,8 +1,8 @@
 const Session = require('../models/Session');
 const Attendance = require('../models/Attendance');
+const WebAuthnCredential = require('../models/WebAuthnCredential');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
-const { validateTOTPCode } = require('../utils/totpUtils');
 const { getCachedSession } = require('../middleware/sessionCache');
 const svgCaptcha = require('svg-captcha');
 const crypto = require('crypto');
@@ -93,8 +93,8 @@ const submitAttendance = async (req, res) => {
       faceDetected,
       captchaAnswer,
       captchaId,
-      totpCode,
       deviceFingerprint,
+      webauthnVerified = false,
     } = req.body;
 
     // Verify Captcha (bypass in testing)
@@ -144,34 +144,7 @@ const submitAttendance = async (req, res) => {
       });
     }
 
-    // TOTP validation for sessions with TOTP enabled
-    let totpValid = null;
-    if (session.totpEnabled) {
-      if (!totpCode) {
-        return res.status(400).json({ 
-          message: 'This session requires a time-based code. Please scan the QR code or enter the current code.',
-          totpRequired: true,
-        });
-      }
-      
-      const totpResult = validateTOTPCode(
-        totpCode,
-        session.totpSecret,
-        session._id.toString(),
-        session.totpWindowSeconds,
-        1 // 1 window tolerance
-      );
-      
-      totpValid = totpResult.valid;
-      
-      if (!totpValid) {
-        return res.status(400).json({ 
-          message: 'Invalid or expired code. Please get the current code and try again.',
-          totpRequired: true,
-          totpValid: false,
-        });
-      }
-    }
+
 
     // Device fingerprint validation
     const deviceValidation = req.deviceValidation || { valid: true, firstSeen: false };
@@ -186,6 +159,34 @@ const submitAttendance = async (req, res) => {
       return res.status(400).json({
         message: 'Attendance already submitted for this roll number',
       });
+    }
+
+    // WebAuthn Security Enforcement
+    const credential = await WebAuthnCredential.findOne({ studentId: rollNumber.toUpperCase() });
+    let actualWebauthnVerified = false;
+
+    if (credential) {
+      if (webauthnVerified) {
+        const enrolledRecently = (Date.now() - credential.enrolledAt.getTime()) < 15 * 60 * 1000;
+        if (enrolledRecently) {
+          actualWebauthnVerified = true;
+        } else {
+          return res.status(403).json({ 
+            message: 'Security policy requires biometric authentication. Please refresh and verify your identity.' 
+          });
+        }
+      } else {
+        return res.status(403).json({ 
+          message: 'Security policy requires biometric authentication. Please refresh and verify your identity.' 
+        });
+      }
+    } else {
+      if (webauthnVerified) {
+        return res.status(403).json({ 
+          message: 'Invalid WebAuthn state. No credential found.' 
+        });
+      }
+      actualWebauthnVerified = false;
     }
 
     let photoUrl = '';
@@ -272,8 +273,7 @@ const submitAttendance = async (req, res) => {
       deviceFingerprintHash: deviceFingerprintHash,
       deviceFirstSeen: deviceValidation.firstSeen,
       deviceFlag: deviceValidation.deviceFlag || null,
-      totpCode: totpCode || null,
-      totpValid: totpValid,
+      webauthnVerified: actualWebauthnVerified,
       flagReviewed: false,
     });
 

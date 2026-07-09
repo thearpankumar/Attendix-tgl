@@ -7,7 +7,7 @@ declare const FingerprintJS: { load(): Promise<{ get(): Promise<{ visitorId: str
 type Step = 'loading' | 'error' | 'rollInput' | 'webauthnAction' | 'form' | 'success';
 
 interface SessionInfo { locationName: string; expiresAt: string; }
-interface TotpData { totpCode: string; expiresAt: string; windowSeconds: number; }
+
 
 const toB64url = (buf: ArrayBuffer) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -30,10 +30,7 @@ export default function StudentScan() {
   const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
 
-  // TOTP display
-  const [totpCode, setTotpCode] = useState('------');
-  const [totpPct, setTotpPct] = useState(100);
-  const [countdown, setCountdown] = useState(0);
+
 
   // Roll input step
   const [rollInput, setRollInput] = useState('');
@@ -77,28 +74,6 @@ export default function StudentScan() {
     } catch { /* ignore */ }
   }, [shortCode, API]);
 
-  // TOTP polling
-  useEffect(() => {
-    const abortController = new AbortController();
-    const poll = async () => {
-      try {
-        const res = await fetch(`${API}/s/${shortCode}/info`, { signal: abortController.signal });
-        if (!res.ok) return;
-        const data: TotpData = await res.json();
-        if (abortController.signal.aborted) return;
-        setTotpCode(data.totpCode);
-        const remaining = Math.max(0, Math.ceil((new Date(data.expiresAt).getTime() - Date.now()) / 1000));
-        setCountdown(remaining);
-        setTotpPct((remaining / data.windowSeconds) * 100);
-      } catch { /* ignore */ }
-    };
-    poll();
-    const id = setInterval(poll, 1000);
-    return () => {
-      clearInterval(id);
-      abortController.abort();
-    };
-  }, [shortCode, API]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -335,7 +310,6 @@ export default function StudentScan() {
         faceDetected: true,
         captchaAnswer: captchaAnswer.trim(),
         captchaId,
-        totpCode,
         deviceFingerprint: fingerRef.current,
         webauthnVerified,
       };
@@ -360,13 +334,6 @@ export default function StudentScan() {
     </div>
   );
 
-  const TotpBanner = session ? (
-    <div className="attend-panel" style={{ width: '100%', maxWidth: 440 }}>
-      <div className="attend-panel-label">{session.locationName} · code expires in {countdown}s</div>
-      <div className="attend-totp-code">{totpCode}</div>
-      <div className="attend-totp-track"><div className="attend-totp-fill" style={{ width: `${totpPct}%` }} /></div>
-    </div>
-  ) : null;
 
   const CameraPane = (
     <div className="attend-camera-pane">
@@ -387,11 +354,6 @@ export default function StudentScan() {
         <button type="button" className={`attend-capture-btn${photoTaken ? ' retake' : ''}`} onClick={handleCapture}>
           {photoTaken ? '↺  Retake photo' : '◉  Capture photo'}
         </button>
-        <div className="attend-panel">
-          <div className="attend-panel-label">One-time code · expires in {countdown}s</div>
-          <div className="attend-totp-code" style={{ fontSize: 28 }}>{totpCode}</div>
-          <div className="attend-totp-track"><div className="attend-totp-fill" style={{ width: `${totpPct}%` }} /></div>
-        </div>
       </div>
     </div>
   );
@@ -415,7 +377,6 @@ export default function StudentScan() {
 
       {(step === 'rollInput' || step === 'webauthnAction' || step === 'success') && (
         <div className="attend-stack">
-          {TotpBanner}
           {flashMsg && <div className={`attend-flash ${flashMsg.ok ? 'ok' : 'err'}`}>{flashMsg.text}</div>}
           <div className="attend-card">
             <div className="attend-form-pane">

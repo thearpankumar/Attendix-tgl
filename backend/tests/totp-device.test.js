@@ -7,87 +7,7 @@ const Admin = require('../src/models/Admin');
 const ShortLink = require('../src/models/ShortLink');
 const Device = require('../src/models/Device');
 const Attendance = require('../src/models/Attendance');
-const { generateTOTPCode, validateTOTPCode, generateQRToken, validateQRToken } = require('../src/utils/totpUtils');
-
-describe('TOTP Utility Functions', () => {
-  const secret = 'test-secret-12345';
-  const sessionId = '507f1f77bcf86cd799439011';
-  const windowSeconds = 5;
-
-  describe('generateTOTPCode', () => {
-    it('should generate a 6-character uppercase code', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      expect(code).toMatch(/^[A-Z0-9]{6}$/);
-    });
-
-    it('should generate same code within same time window', () => {
-      const code1 = generateTOTPCode(secret, sessionId, windowSeconds);
-      const code2 = generateTOTPCode(secret, sessionId, windowSeconds);
-      expect(code1).toBe(code2);
-    });
-
-    it('should generate different codes for different secrets', () => {
-      const code1 = generateTOTPCode(secret, sessionId, windowSeconds);
-      const code2 = generateTOTPCode('different-secret', sessionId, windowSeconds);
-      expect(code1).not.toBe(code2);
-    });
-
-    it('should generate different codes for different sessionIds', () => {
-      const code1 = generateTOTPCode(secret, sessionId, windowSeconds);
-      const code2 = generateTOTPCode(secret, '507f1f77bcf86cd799439012', windowSeconds);
-      expect(code1).not.toBe(code2);
-    });
-  });
-
-  describe('validateTOTPCode', () => {
-    it('should validate correct code', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      const result = validateTOTPCode(code, secret, sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(true);
-    });
-
-    it('should reject invalid code format', () => {
-      const result = validateTOTPCode('123', secret, sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('Invalid code format');
-    });
-
-    it('should reject empty code', () => {
-      const result = validateTOTPCode('', secret, sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(false);
-    });
-
-    it('should reject null code', () => {
-      const result = validateTOTPCode(null, secret, sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(false);
-    });
-
-    it('should reject code with wrong secret', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      const result = validateTOTPCode(code, 'wrong-secret', sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('Code expired or invalid');
-    });
-
-    it('should reject code with wrong sessionId', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      const result = validateTOTPCode(code, secret, '507f1f77bcf86cd799439099', windowSeconds, 1);
-      expect(result.valid).toBe(false);
-    });
-
-    it('should accept lowercase code', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      const result = validateTOTPCode(code.toLowerCase(), secret, sessionId, windowSeconds, 1);
-      expect(result.valid).toBe(true);
-    });
-
-    it('should work with tolerance windows', () => {
-      const code = generateTOTPCode(secret, sessionId, windowSeconds);
-      const result = validateTOTPCode(code, secret, sessionId, windowSeconds, 2);
-      expect(result.valid).toBe(true);
-    });
-  });
-});
+const { generateQRToken, validateQRToken } = require('../src/utils/totpUtils');
 
 describe('QR Token Functions (Anti-Sharing)', () => {
   const secret = 'qr-test-secret-abc';
@@ -503,16 +423,6 @@ describe('ShortLink API Endpoints', () => {
       expect(res.body).toBeDefined();
     });
 
-    it('should enable TOTP on session when attached', async () => {
-      await request(app)
-        .post('/api/admin/shortlinks/attach-test/attach')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ sessionId });
-
-      const session = await Session.findById(sessionId);
-      expect(session.totpEnabled).toBe(true);
-    });
-
     it('should reject non-existent short link', async () => {
       const res = await request(app)
         .post('/api/admin/shortlinks/nonexistent/attach')
@@ -590,10 +500,9 @@ describe('Short Link Redirect Route', () => {
     const session = await Session.create({
       locationId: location._id,
       tokenHash: 'redirect-test-token-hash',
-      tokenPrefix: 'redt',
+      tokenPrefix: 'rdir',
       createdBy: adminId,
       expiresAt: new Date(Date.now() + 3600000),
-      totpEnabled: true,
       totpSecret: 'redirect-test-secret',
     });
     sessionId = session._id;
@@ -673,67 +582,6 @@ describe('Short Link Redirect Route', () => {
     });
   });
 
-  describe('POST /s/:shortCode/verify-gatekeeper', () => {
-    it('should verify correct TOTP code and roll number', async () => {
-      // Session defaults to totpWindowSeconds=15 — generate code with matching window
-      const totpCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 15);
-
-      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
-        rollNumber: 'CS101',
-        totpCode
-      });
-
-      expect(res.status).toBe(200);
-      expect(res.body.valid).toBe(true);
-      expect(res.body.enrolled).toBe(false);
-    });
-
-    it('should reject code generated with wrong window size', async () => {
-      // Code generated with 5s window will not match session's 15s window
-      const wrongWindowCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 5);
-      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
-        rollNumber: 'CS102',
-        totpCode: wrongWindowCode
-      });
-      // May accidentally match at certain time boundaries, but is semantically wrong
-      // We just verify the endpoint responds with a valid status (400 or 200)
-      expect([200, 400]).toContain(res.status);
-    });
-
-    it('should return 400 for incorrect TOTP', async () => {
-      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
-        rollNumber: 'CS101',
-        totpCode: '000000'
-      });
-
-      expect(res.status).toBe(400);
-      expect(res.body.message).toContain('Invalid or expired code');
-    });
-
-    it('should return 400 for missing rollNumber', async () => {
-      const totpCode = generateTOTPCode('redirect-test-secret', sessionId.toString(), 15);
-      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
-        totpCode
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it('should return 400 for missing totpCode', async () => {
-      const res = await request(app).post('/s/redirect123/verify-gatekeeper').send({
-        rollNumber: 'CS101'
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it('should return 404 for non-existent link', async () => {
-      const res = await request(app).post('/s/nonexistent/verify-gatekeeper').send({
-        rollNumber: 'CS101',
-        totpCode: '123456'
-      });
-
-      expect(res.status).toBe(404);
-    });
-  });
 
   describe('GET /s/:shortCode/session', () => {
     it('should return session info without QRT (backward compat)', async () => {
@@ -741,7 +589,6 @@ describe('Short Link Redirect Route', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.valid).toBe(true);
-      expect(res.body.session.totpEnabled).toBe(true);
     });
 
     it('should accept a valid fresh QR token', async () => {
@@ -859,89 +706,7 @@ describe('Device Fingerprint Validation', () => {
   });
 });
 
-describe('Session TOTP API', () => {
-  let adminToken, adminId, sessionId, locationId;
 
-  beforeEach(async () => {
-    const admin = await Admin.create({
-      username: 'totptest',
-      email: 'totp@test.com',
-      password: 'password123',
-    });
-    adminId = admin._id;
-
-    const loginRes = await request(app)
-      .post('/api/admin/login')
-      .send({ username: 'totptest', password: 'password123' });
-    adminToken = loginRes.body.token;
-
-    const location = await Location.create({
-      name: 'TOTP Test Location',
-      latitude: 40.7128,
-      longitude: -74.0060,
-      radiusMeters: 100,
-      createdBy: adminId,
-    });
-    locationId = location._id;
-  });
-
-  it('should create session with TOTP fields', async () => {
-    const res = await request(app)
-      .post('/api/admin/sessions')
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({
-        locationId: locationId,
-        durationMinutes: 30,
-      });
-
-    expect(res.status).toBe(201);
-    expect(res.body.totpEnabled).toBe(false);
-    sessionId = res.body._id;
-  });
-
-  it('should get TOTP for session', async () => {
-    const session = await Session.create({
-      locationId,
-      tokenHash: 'totp-test-hash',
-      tokenPrefix: 'totp',
-      createdBy: adminId,
-      expiresAt: new Date(Date.now() + 3600000),
-      totpEnabled: true,
-      totpSecret: 'test-secret',
-    });
-    sessionId = session._id;
-
-    await ShortLink.create({
-      shortCode: 'totp-test-link',
-      sessionId,
-      createdBy: adminId,
-    });
-
-    const res = await request(app)
-      .get(`/api/admin/sessions/${sessionId}/totp`)
-      .set('Authorization', `Bearer ${adminToken}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.totpCode).toMatch(/^[A-Z0-9]{6}$/);
-  });
-
-  it('should return 400 when TOTP not enabled', async () => {
-    const newSession = await Session.create({
-      locationId,
-      tokenHash: 'no-totp-token-hash',
-      tokenPrefix: 'notp',
-      createdBy: adminId,
-      expiresAt: new Date(Date.now() + 3600000),
-      totpEnabled: false,
-    });
-
-    const res = await request(app)
-      .get(`/api/admin/sessions/${newSession._id}/totp`)
-      .set('Authorization', `Bearer ${adminToken}`);
-
-    expect(res.status).toBe(400);
-  });
-});
 
 describe('Security Tests', () => {
   let adminToken, adminId, sessionId, locationId, shortLink;
@@ -974,8 +739,6 @@ describe('Security Tests', () => {
       tokenPrefix: 'sect',
       createdBy: adminId,
       expiresAt: new Date(Date.now() + 3600000),
-      totpEnabled: true,
-      totpSecret: 'security-test-secret',
     });
     sessionId = session._id;
 
@@ -986,20 +749,7 @@ describe('Security Tests', () => {
     });
   });
 
-  it('should reject TOTP replay attack', async () => {
-    // We don't have an endpoint to fetch TOTP directly anymore.
-    // We just generate a valid one for the test.
-    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 5);
 
-    const result1 = validateTOTPCode(totpCode, 'security-test-secret', sessionId.toString(), 5, 1);
-    expect(result1.valid).toBe(true);
-  });
-
-  it('should reject expired TOTP codes', async () => {
-    const oldCode = '123456';
-    const result = validateTOTPCode(oldCode, 'security-test-secret', sessionId.toString(), 5, 1);
-    expect(result.valid).toBe(false);
-  });
 
   it('should require authentication for admin endpoints', async () => {
     const res = await request(app)
@@ -1026,35 +776,4 @@ describe('Security Tests', () => {
     expect([400, 500]).toContain(res.status);
   });
 
-  it('should handle concurrent TOTP requests', async () => {
-    // Session defaults to totpWindowSeconds=15 — generate code with matching window
-    const totpCode = generateTOTPCode('security-test-secret', sessionId.toString(), 15);
-    const requests = Array(10).fill(null).map(() => 
-      request(app).post('/s/security123/verify-gatekeeper').send({ rollNumber: 'CONC123', totpCode })
-    );
-
-    const responses = await Promise.all(requests);
-    responses.forEach(res => {
-      expect(res.status).toBe(200);
-      expect(res.body.valid).toBe(true);
-    });
-  });
-
-  it('should reject TOTP code from a completely different session secret', async () => {
-    const wrongCode = generateTOTPCode('totally-wrong-secret', sessionId.toString(), 15);
-    const res = await request(app)
-      .post('/s/security123/verify-gatekeeper')
-      .send({ rollNumber: 'WRONG001', totpCode: wrongCode });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toContain('Invalid or expired code');
-  });
-
-  it('should reject TOTP code generated for a different sessionId', async () => {
-    const fakeSessionId = new mongoose.Types.ObjectId().toString();
-    const wrongCode = generateTOTPCode('security-test-secret', fakeSessionId, 15);
-    const res = await request(app)
-      .post('/s/security123/verify-gatekeeper')
-      .send({ rollNumber: 'WRONG002', totpCode: wrongCode });
-    expect(res.status).toBe(400);
-  });
 });

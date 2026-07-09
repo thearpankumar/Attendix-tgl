@@ -12,6 +12,9 @@ describe('AttendanceChart Component', () => {
     (axios.get as any).mockResolvedValue({ data: [] });
     render(<AttendanceChart />);
     
+    // Wait for initial useEffect fetch to complete
+    await waitFor(() => expect(axios.get).toHaveBeenCalled());
+    
     // Switch to Overview and Daily (default)
     expect(screen.getByText('Overview')).toBeInTheDocument();
     
@@ -37,7 +40,8 @@ describe('AttendanceChart Component', () => {
     });
 
     render(<AttendanceChart />);
-    
+    await waitFor(() => expect(axios.get).toHaveBeenCalled());
+
     // Switch to live
     fireEvent.click(screen.getByText('Live'));
     await waitFor(() => {
@@ -54,7 +58,8 @@ describe('AttendanceChart Component', () => {
     });
 
     render(<AttendanceChart />);
-    
+    await waitFor(() => expect(axios.get).toHaveBeenCalled());
+
     // Switch to live
     fireEvent.click(screen.getByText('Live'));
     

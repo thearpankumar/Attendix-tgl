@@ -4,13 +4,15 @@ const attendanceController = require('../controllers/attendanceController');
 const { validateAttendance } = require('../middleware/validators');
 const { studentLimiter } = require('../middleware/rateLimiter');
 const { validateDeviceFingerprint, checkRapidSubmission } = require('../middleware/deviceCheck');
+const { requireMobileDevice } = require('../middleware/mobileCheck');
 
-router.get('/:token', attendanceController.validateToken);
-router.get('/:token/status', attendanceController.checkAttendanceStatus);
-router.get('/:token/upload-url', attendanceController.getUploadUrl);
-router.get('/:token/captcha', attendanceController.getCaptcha);
+router.get('/:token', requireMobileDevice, attendanceController.validateToken);
+router.get('/:token/status', requireMobileDevice, attendanceController.checkAttendanceStatus);
+router.get('/:token/upload-url', requireMobileDevice, attendanceController.getUploadUrl);
+router.get('/:token/captcha', requireMobileDevice, attendanceController.getCaptcha);
 router.post('/:token', 
   studentLimiter, 
+  requireMobileDevice,
   validateAttendance, 
   validateDeviceFingerprint, 
   checkRapidSubmission, 
