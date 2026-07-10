@@ -31,7 +31,13 @@ const Sessions = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [formData, setFormData] = useState({ locationId: '', durationMinutes: 30, description: '' });
+  const [formData, setFormData] = useState({ 
+    locationId: '', 
+    durationMinutes: 30, 
+    description: '',
+    autoGenerateShortlink: true,
+    customShortCode: ''
+  });
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -73,13 +79,26 @@ const Sessions = () => {
       const duration = parseInt(String(formData.durationMinutes));
       if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
       const res = await axios.post<{ _id: string }>('/api/admin/sessions', { ...formData, durationMinutes: duration });
-      const slRes = await axios.post<{ shortCode: string }>('/api/admin/shortlinks', { sessionId: res.data._id });
-      const { protocol, hostname } = window.location;
-      const link = `${protocol}//${hostname}/s/${slRes.data.shortCode}`;
-      await navigator.clipboard.writeText(link).catch(() => {});
-      toast.success('Session created! Link copied to clipboard.');
+      
+      let successMessage = 'Session created successfully!';
+      
+      const shouldCreateLink = formData.autoGenerateShortlink || formData.customShortCode.trim() !== '';
+      
+      if (shouldCreateLink) {
+        const payload = { 
+          sessionId: res.data._id, 
+          shortCode: formData.autoGenerateShortlink ? undefined : formData.customShortCode.trim() 
+        };
+        const slRes = await axios.post<{ shortCode: string }>('/api/admin/shortlinks', payload);
+        const { protocol, hostname } = window.location;
+        const link = `${protocol}//${hostname}/s/${slRes.data.shortCode}`;
+        await navigator.clipboard.writeText(link).catch(() => {});
+        successMessage = `Session created! Link (/s/${slRes.data.shortCode}) copied to clipboard.`;
+      }
+      
+      toast.success(successMessage);
       setShowModal(false);
-      setFormData({ locationId: '', durationMinutes: 30, description: '' });
+      setFormData({ locationId: '', durationMinutes: 30, description: '', autoGenerateShortlink: true, customShortCode: '' });
       fetchData();
     } catch (error) {
       const err = error as { response?: { data?: { message?: string } } };
@@ -160,6 +179,31 @@ const Sessions = () => {
             <label>Description (optional)</label>
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} placeholder="e.g., Morning attendance for CS101" />
           </div>
+          <div className="form-group" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', marginBottom: '1rem' }}>
+            <input 
+              type="checkbox" 
+              id="autoGenerateShortlink"
+              checked={formData.autoGenerateShortlink} 
+              onChange={(e) => setFormData({ ...formData, autoGenerateShortlink: e.target.checked })} 
+              style={{ width: 'auto', minHeight: 'auto', margin: 0 }}
+            />
+            <label htmlFor="autoGenerateShortlink" style={{ margin: 0, cursor: 'pointer' }}>Automatically generate shortlink</label>
+          </div>
+          {!formData.autoGenerateShortlink && (
+            <div className="form-group">
+              <label>Custom Short Code</label>
+              <input 
+                type="text" 
+                value={formData.customShortCode} 
+                onChange={(e) => setFormData({ ...formData, customShortCode: e.target.value })} 
+                placeholder="e.g., CS101" 
+                maxLength={20}
+                pattern="[a-zA-Z0-9_-]+"
+                title="Only letters, numbers, hyphens, and underscores allowed"
+              />
+              <small style={{ color: 'var(--color-muted)' }}>Leave blank if you don't want to create a shortlink.</small>
+            </div>
+          )}
           <div className="form-actions">
             <button type="submit" className="btn btn-success">Create Session</button>
             <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>

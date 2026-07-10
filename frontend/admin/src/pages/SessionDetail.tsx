@@ -105,8 +105,13 @@ const SessionDetail = () => {
       const res = await axios.get(`/api/admin/sessions/${id}/export`, { responseType: 'blob' });
       const url = URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
+      const now = new Date();
+      const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      const sessionName = session?.description || session?.locationId?.name || 'Session';
+      const safeSessionName = sessionName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      
       a.href = url; 
-      a.download = `Attendance_Export_${id}.xlsx`;
+      a.download = `TGL-attendix-${safeSessionName}-time${timeStr}.xlsx`;
       a.click(); 
       URL.revokeObjectURL(url);
       toast.success('Export downloaded successfully!');

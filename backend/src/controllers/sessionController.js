@@ -207,7 +207,12 @@ const exportSessionAttendance = async (req, res) => {
       return res.status(404).json({ message: 'Session not found' });
     }
 
-    const safeFilename = `Attendance_Export_${req.params.id}.xlsx`;
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const sessionName = session.description || (session.locationId && session.locationId.name) || 'Session';
+    const safeSessionName = sessionName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    
+    const safeFilename = `TGL-attendix-${safeSessionName}-time${timeStr}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
