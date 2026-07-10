@@ -28,8 +28,8 @@ const webAuthnCredentialSchema = new mongoose.Schema({
   },
   deviceType: {
     type: String,
-    enum: ['single_device', 'multi_device'],
-    default: 'multi_device',
+    enum: ['single_device', 'multi_device', 'singleDevice', 'multiDevice'],
+    default: 'multiDevice',
   },
   transports: [{
     type: String,
