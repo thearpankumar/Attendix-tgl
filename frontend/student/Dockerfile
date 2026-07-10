@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+ARG VITE_BYPASS_MOBILE_CHECK
+ENV VITE_BYPASS_MOBILE_CHECK=$VITE_BYPASS_MOBILE_CHECK
 RUN npm run build
 
 FROM nginx:alpine

@@ -157,7 +157,10 @@ services:
 
   
   student-frontend:
-    build: ./frontend/student
+    build:
+      context: ./frontend/student
+      args:
+        VITE_BYPASS_MOBILE_CHECK: ${VITE_BYPASS_MOBILE_CHECK:-false}
     container_name: attendance-student
     restart: unless-stopped
     ports:
