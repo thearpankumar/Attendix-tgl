@@ -95,13 +95,16 @@ describe('ShortLinks', () => {
     });
     (axios.post as any).mockResolvedValue({});
     
-    // Mock window.confirm
-    vi.spyOn(window, 'confirm').mockImplementation(() => true);
-
     renderComponent();
-    await waitFor(() => expect(screen.getByText('Detach')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Detach')[0]).toBeInTheDocument());
     
-    fireEvent.click(screen.getByText('Detach'));
+    fireEvent.click(screen.getAllByText('Detach')[0]);
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Detach Short Link/i })).toBeInTheDocument());
+    
+    // The modal has a Detach button
+    const modalDetachBtn = screen.getAllByText('Detach')[1]; // The second one is in the modal
+    fireEvent.click(modalDetachBtn);
+
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/admin/shortlinks/TEST1/detach'));
   });
 
@@ -128,12 +131,16 @@ describe('ShortLinks', () => {
     });
     (axios.delete as any).mockResolvedValue({});
     
-    vi.spyOn(window, 'confirm').mockImplementation(() => true);
-
     renderComponent();
-    await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Delete')[0]).toBeInTheDocument());
     
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Delete Short Link/i })).toBeInTheDocument());
+    
+    // The modal has a Delete button
+    const modalDeleteBtn = screen.getAllByText('Delete')[1]; // The second one is in the modal
+    fireEvent.click(modalDeleteBtn);
+    
     await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/admin/shortlinks/TEST1'));
   });
 });

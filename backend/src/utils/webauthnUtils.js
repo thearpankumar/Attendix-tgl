@@ -122,7 +122,6 @@ function getVerificationMethod(authenticatorData) {
   const UV_FLAG = 0x04;
   const UP_FLAG = 0x01;
   const BE_FLAG = 0x08;
-  const BS_FLAG = 0x10;
   
   if (flags & UV_FLAG && flags & UP_FLAG) {
     return 'biometric_verified';

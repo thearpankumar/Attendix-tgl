@@ -6,8 +6,9 @@ import MobileDeviceRequired from './components/MobileDeviceRequired';
 
 function App() {
   const isMobile = useIsMobile();
+  const bypassMobileCheck = import.meta.env.VITE_BYPASS_MOBILE_CHECK === 'true';
 
-  if (!isMobile) {
+  if (!isMobile && !bypassMobileCheck) {
     return <MobileDeviceRequired />;
   }
 

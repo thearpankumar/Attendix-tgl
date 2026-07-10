@@ -17,7 +17,7 @@ async function computePerceptualHash(imageBuffer) {
     
     return createHash('sha256').update(hash).digest('hex');
   } catch (error) {
-    throw new Error(`Failed to compute photo hash: ${error.message}`);
+    throw new Error(`Failed to compute photo hash: ${error.message}`, { cause: error });
   }
 }
 
@@ -49,7 +49,7 @@ async function validateImage(imageBuffer) {
         error.message.includes('format')) {
       throw error;
     }
-    throw new Error('Invalid or corrupted image');
+    throw new Error('Invalid or corrupted image', { cause: error });
   }
 }
 
@@ -62,7 +62,7 @@ async function sanitizeImage(imageBuffer) {
       .jpeg({ quality: 85, mozjpeg: true })
       .toBuffer();
   } catch (error) {
-    throw new Error(`Failed to sanitize image: ${error.message}`);
+    throw new Error(`Failed to sanitize image: ${error.message}`, { cause: error });
   }
 }
 

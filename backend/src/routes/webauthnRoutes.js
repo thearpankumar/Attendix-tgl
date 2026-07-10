@@ -603,6 +603,7 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, requireM
       }
     }
     
+    const replayAttack = false;
     let deviceFlag = null;
     if (replayAttack) {
       deviceFlag = 'WEBAUTHN_REPLAY_ATTACK';

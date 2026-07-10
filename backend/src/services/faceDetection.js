@@ -1,4 +1,4 @@
-const Flag = require('../models/Flag');
+
 
 let faceDetectionLib = null;
 let initialized = false;
@@ -13,7 +13,7 @@ async function initializeFaceDetection() {
     
     initialized = true;
     return true;
-  } catch (error) {
+  } catch (_error) {
     if (process.env.NODE_ENV !== 'test') {
       console.warn('Face detection library not available, using mock detection');
     }
