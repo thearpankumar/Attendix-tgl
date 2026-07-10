@@ -92,7 +92,7 @@ export default function StudentScan() {
         setSession({ locationName: data.session.locationName, expiresAt: data.session.expiresAt });
         setDevBypassEnabled(!!data.devBypassEnabled);
         setStep('rollInput');
-        await initCamera(ac.signal);
+        await initCamera(ac.signal, !!data.devBypassEnabled);
         await loadCaptcha();
         // fingerprint
         try {
@@ -113,7 +113,7 @@ export default function StudentScan() {
     };
   }, [shortCode, API, loadCaptcha]);
 
-  const initCamera = async (signal?: AbortSignal) => {
+  const initCamera = async (signal?: AbortSignal, bypassFlag?: boolean) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
       if (signal?.aborted) {
@@ -123,7 +123,8 @@ export default function StudentScan() {
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
     } catch (err) {
-      if (devBypassEnabled) {
+      const isBypassed = bypassFlag !== undefined ? bypassFlag : devBypassEnabled;
+      if (isBypassed) {
         flash('Camera error, but DEV bypass is available.', true);
         return;
       }

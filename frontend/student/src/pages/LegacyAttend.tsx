@@ -118,7 +118,7 @@ export default function LegacyAttend() {
     setLocMsg({ title: '✓ Location Bypassed (DEV)', detail: 'Using mock coordinates', ok: true });
   };
 
-  const initCamera = useCallback(async (signal?: AbortSignal) => {
+  const initCamera = useCallback(async (signal?: AbortSignal, bypassFlag?: boolean) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
       if (signal?.aborted) {
@@ -128,7 +128,8 @@ export default function LegacyAttend() {
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
     } catch (err) {
-      if (devBypassEnabled) {
+      const isBypassed = bypassFlag !== undefined ? bypassFlag : devBypassEnabled;
+      if (isBypassed) {
         flash('Camera error, but DEV bypass is available.', true);
         return;
       }
@@ -142,7 +143,7 @@ export default function LegacyAttend() {
       setErrMsg(msgs[e.name] ?? `Camera error: ${e.message}`);
       setStep('error');
     }
-  }, []);
+  }, [devBypassEnabled]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -161,7 +162,7 @@ export default function LegacyAttend() {
         setSession(sessData.session);
         setDevBypassEnabled(!!sessData.devBypassEnabled);
         setStep('form');
-        await Promise.all([loadCaptcha(), initCamera(ac.signal)]);
+        await Promise.all([loadCaptcha(), initCamera(ac.signal, !!sessData.devBypassEnabled)]);
         if (!ac.signal.aborted) getLocation();
       } catch (err) {
         if (!ac.signal.aborted) {
