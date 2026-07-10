@@ -204,6 +204,7 @@ router.post('/:shortCode/webauthn/register/finish', registrationLimiter, require
       message: 'Device enrolled successfully',
     });
   } catch (error) {
+    if (process.env.NODE_ENV !== 'test') console.error('WebAuthn /register/finish error:', error);
     const errorMessage = config.nodeEnv === 'production' ? undefined : error.message;
     res.status(500).json({ message: 'Server error', error: errorMessage });
   }
@@ -731,6 +732,7 @@ router.post('/:shortCode/webauthn/authenticate/finish', studentLimiter, requireM
       replayAttack,
     });
   } catch (error) {
+    if (process.env.NODE_ENV !== 'test') console.error('WebAuthn /authenticate/finish error:', error);
     const errorMessage = config.nodeEnv === 'production' ? undefined : error.message;
     res.status(500).json({ message: 'Server error', error: errorMessage });
   }

@@ -35,7 +35,7 @@ module.exports = {
   jwtExpire: process.env.JWT_EXPIRE || '7d',
   adminSecret: process.env.NODE_ENV === 'production' ? process.env.ADMIN_SECRET : (process.env.ADMIN_SECRET || 'dev-admin-secret'),
   nodeEnv: process.env.NODE_ENV || 'development',
-  corsOrigin: process.env.NODE_ENV === 'production' ? process.env.CORS_ORIGIN : (process.env.CORS_ORIGIN || '*'),
+  corsOrigin: process.env.NODE_ENV === 'production' ? (process.env.CORS_ORIGIN || 'https://attendix.talenciaglobal.com') : (process.env.CORS_ORIGIN || '*'),
   
   storage: {
     provider: storageProvider,
@@ -67,7 +67,7 @@ module.exports = {
   
   webauthn: {
     rpName: process.env.WEBAUTHN_RP_NAME || 'Attendix Attendance System',
-    rpID: process.env.WEBAUTHN_RP_ID || (process.env.NODE_ENV === 'production' ? process.env.DOMAIN : 'localhost'),
-    origin: process.env.NODE_ENV === 'production' ? process.env.WEBAUTHN_ORIGIN : (process.env.WEBAUTHN_ORIGIN || 'http://localhost:5000'),
+    rpID: process.env.WEBAUTHN_RP_ID || (process.env.NODE_ENV === 'production' ? (process.env.DOMAIN || 'attendix.talenciaglobal.com') : 'localhost'),
+    origin: process.env.NODE_ENV === 'production' ? (process.env.WEBAUTHN_ORIGIN || 'https://attendix.talenciaglobal.com') : (process.env.WEBAUTHN_ORIGIN || 'http://localhost:5000'),
   },
 };

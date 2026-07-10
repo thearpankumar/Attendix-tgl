@@ -264,6 +264,8 @@ export default function StudentScan() {
             rawId: toB64url(credential.rawId),
             response: { attestationObject: toB64url(resp.attestationObject), clientDataJSON: toB64url(resp.clientDataJSON) },
             type: credential.type,
+            clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+            authenticatorAttachment: credential.authenticatorAttachment,
           },
         }),
       });
@@ -308,6 +310,8 @@ export default function StudentScan() {
           userHandle: resp.userHandle ? toB64url(resp.userHandle) : null,
         },
         type: assertion.type,
+        clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
+        authenticatorAttachment: assertion.authenticatorAttachment,
       };
 
       setWebauthnVerified(true);
@@ -367,6 +371,8 @@ export default function StudentScan() {
           userHandle: resp.userHandle ? toB64url(resp.userHandle) : null,
         },
         type: assertion.type,
+        clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
+        authenticatorAttachment: assertion.authenticatorAttachment,
       };
       
       setWebauthnVerified(true);

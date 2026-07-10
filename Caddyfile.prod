@@ -1,8 +1,8 @@
 # Caddy Configuration for Attendance System
-# Production Mode - xenkrypt.in
+# Production Mode - attendix.talenciaglobal.com
 
 {
-  email admin@xenkrypt.in
+  email admin@attendix.talenciaglobal.com
   
   log {
     output stdout
@@ -11,9 +11,9 @@
 }
 
 # ============================================
-# PRODUCTION MODE (Active - xenkrypt.in)
+# PRODUCTION MODE (Active - attendix.talenciaglobal.com)
 # ============================================
-xenkrypt.in {
+attendix.talenciaglobal.com {
   encode gzip zstd
   
   # Security headers
@@ -27,7 +27,7 @@ xenkrypt.in {
     # XSS protection
     X-XSS-Protection "1; mode=block"
     # Content Security Policy (allows blob: for geolocation/camera APIs used in student frontend)
-    Content-Security-Policy "default-src 'self'; img-src 'self' data: https: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; worker-src 'self' blob:;"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https:; worker-src 'self' blob:;"
     # Referrer policy
     Referrer-Policy "strict-origin-when-cross-origin"
   }
