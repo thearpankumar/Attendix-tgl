@@ -3,9 +3,17 @@
 
 {
   email admin@example.com
-  
+
   local_certs
-  
+
+  # Admin API bound to all interfaces (not published to the host — only
+  # reachable by other containers on web-net, e.g. Prometheus) so
+  # /metrics can be scraped as caddy:2019/metrics.
+  admin 0.0.0.0:2019
+  servers {
+    metrics
+  }
+
   log {
     output stdout
     format json
@@ -17,7 +25,16 @@
 # ============================================
 :80 {
   encode gzip
-  
+
+  log {
+    output file /var/log/caddy/access.log {
+      roll_size 50MiB
+      roll_keep 10
+      roll_keep_for 720h
+    }
+    format json
+  }
+
   # API routes
   handle /api/* {
     reverse_proxy backend:5000 {
@@ -42,14 +59,19 @@
     reverse_proxy backend:5000
   }
   
-  # Admin panel
-  handle /admin* {
+  # Admin panel (React app with client-side routing)
+  handle_path /owner-of-attendix-xyz* {
     reverse_proxy admin-frontend:80
   }
-  
-  # Admin assets
-  handle /admin-assets/* {
-    reverse_proxy admin-frontend:80
+
+  # Grafana (logs + metrics dashboards). NOT handle_path: with
+  # GF_SERVER_SERVE_FROM_SUB_PATH=true, Grafana's own router expects the
+  # full prefixed path — it does its own internal stripping.
+  # Prometheus is intentionally NOT routed here — it has no login of its
+  # own, so it stays internal-only (reachable only as prometheus:9090 by
+  # Grafana, over monitoring-net).
+  handle /logging-grafana-main* {
+    reverse_proxy grafana:3000
   }
 
   # Student attendance page
@@ -82,8 +104,9 @@
     redir /attend{http.matchers.path_regexp.1} permanent
   }
   
-  # Root redirect to admin
-  handle / {
-    redir /admin permanent
+  # Home page (catch-all: matches / plus whatever asset paths the landing
+  # page's build emits — every other route above is more specific and wins).
+  handle {
+    reverse_proxy home-frontend:3000
   }
 }

@@ -146,7 +146,7 @@ services:
     build:
       context: ./frontend/admin
       args:
-        VITE_BASE_PATH: /admin
+        VITE_BASE_PATH: /owner-of-attendix-xyz/
     container_name: attendance-admin
     restart: unless-stopped
     ports:
@@ -171,7 +171,18 @@ services:
     networks:
       - web-net
 
-  
+
+  home-frontend:
+    build:
+      context: ./frontend/home
+    container_name: attendance-home
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    networks:
+      - web-net
+
+
   caddy:
     image: caddy:2-alpine
     container_name: attendance-caddy
@@ -183,6 +194,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      - caddy_logs:/var/log/caddy
     environment:
       - DOMAIN=${DOMAIN:-localhost}
     depends_on:
@@ -192,8 +204,29 @@ services:
         condition: service_started
       student-frontend:
         condition: service_started
+      home-frontend:
+        condition: service_started
     networks:
       - web-net
+
+  # ponytail: only bans anything on a real Linux Docker host (needs the host
+  # firewall via DOCKER-USER) — inert but harmless on Docker Desktop dev.
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: attendance-fail2ban
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - TZ=UTC
+      - F2B_LOG_TARGET=STDOUT
+    volumes:
+      - ./fail2ban:/data
+      - caddy_logs:/var/log/caddy:ro
+    depends_on:
+      - caddy
 
 volumes:
   mongo1_data:
@@ -202,6 +235,7 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  caddy_logs:
 
 networks:
   db-net:
