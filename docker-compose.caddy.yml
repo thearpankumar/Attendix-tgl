@@ -1,0 +1,57 @@
+# Reverse proxy + brute-force ban layer for production. Kept in its own file
+# so routine app work on docker-compose.prod.yml never has the proxy/security
+# config in view. fail2ban is bundled here (not the app file) since it only
+# watches Caddy's own log volume and depends_on: caddy.
+#
+# Always run together with the other prod files:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: attendance-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    environment:
+      - DOMAIN=${DOMAIN:-xenkrypt.in}
+    depends_on:
+      - backend
+      - admin-frontend
+      - student-frontend
+    networks:
+      - web-net
+
+  # ponytail: only bans anything on a real Linux Docker host (needs the host
+  # firewall via DOCKER-USER) — inert but harmless on Docker Desktop dev.
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: attendance-fail2ban
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - TZ=UTC
+      - F2B_LOG_TARGET=STDOUT
+    volumes:
+      - ./fail2ban:/data
+      - caddy_logs:/var/log/caddy:ro
+    depends_on:
+      - caddy
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+networks:
+  web-net:
+    driver: bridge

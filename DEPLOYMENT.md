@@ -144,7 +144,7 @@ docker-compose ps
 
 | Service | URL |
 |---------|-----|
-| **Admin Panel** | http://localhost/admin |
+| **Admin Panel** | http://localhost/owner-of-attendix-xyz |
 | **Student Page** | http://localhost/attend/\<token\> |
 | **API Health** | http://localhost/health |
 | **Direct Backend** | http://localhost:5000 |
@@ -180,6 +180,27 @@ docker-compose ps
 - **Load Balancing**: Round-robin
 - **Health Checks**: ✅
 - **Ports**: 80, 443
+- **Access logging**: JSON, `/var/log/caddy/access.log` (shared `caddy_logs`
+  volume), watched by the `fail2ban` service below
+
+### fail2ban
+- Watches Caddy's access log for repeated failed `/api/admin/login` and
+  `/api/admin/register` attempts and bans the source IP at the host firewall
+  (config in `fail2ban/jail.d`, `fail2ban/filter.d`).
+- **Only effective on a real Linux Docker host.** It bans via the host's
+  `iptables` `DOCKER-USER` chain (`network_mode: host` + `NET_ADMIN`/`NET_RAW`)
+  — on Docker Desktop (Mac/Windows) it runs but can't reach the host firewall,
+  so it's a no-op in local dev.
+- This is a backstop behind the app's own per-IP rate limiter and per-account
+  lockout — verify it's actually working on first production deploy:
+  ```bash
+  docker compose logs fail2ban          # confirm the jail loaded, no filter errors
+  docker compose exec fail2ban fail2ban-client status attendix-admin-login
+  ```
+  If the filter regex doesn't match a real log line's field layout, the jail
+  silently never bans anyone — check a live log line
+  (`docker compose exec caddy tail -f /var/log/caddy/access.log`) against
+  `fail2ban/filter.d/attendix-admin-login.conf` if `status` never leaves 0.
 
 ---
 
@@ -207,6 +228,16 @@ docker-compose ps
    docker-compose down
    docker-compose up -d --build
    ```
+
+> **Note:** `docker-compose.prod.yml` (the fuller prod stack with a MongoDB
+> replica set, resource limits, and per-service replicas) is a separate,
+> currently-unused config. Its MongoDB and Caddy/fail2ban services live in
+> their own files on purpose — `docker-compose.mongo.yml` and
+> `docker-compose.caddy.yml` — so routine app changes never have the DB or
+> reverse-proxy config in view. Run all three together:
+> ```bash
+> docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+> ```
 
 ---
 

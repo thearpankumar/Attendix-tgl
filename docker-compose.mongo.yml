@@ -1,0 +1,85 @@
+# MongoDB replica set for production. Kept in its own file so routine app
+# work on docker-compose.prod.yml never has the DB config in view.
+#
+# Always run together with the other prod files:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+services:
+
+  mongodb-init:
+    image: mongo:7.0
+    container_name: attendance-mongo-init
+    volumes:
+      - ./scripts/init-mongo-replicaset.js:/init-mongo.js:ro
+    depends_on:
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]
+    networks:
+      - db-net
+
+  mongo1:
+    image: mongo:7.0
+    container_name: attendance-mongo1
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo1_data:/data/db
+    expose:
+      - "27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - db-net
+
+  mongo2:
+    image: mongo:7.0
+    container_name: attendance-mongo2
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo2_data:/data/db
+    expose:
+      - "27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - db-net
+
+  mongo3:
+    image: mongo:7.0
+    container_name: attendance-mongo3
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo3_data:/data/db
+    expose:
+      - "27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - db-net
+
+volumes:
+  mongo1_data:
+  mongo2_data:
+  mongo3_data:
+
+networks:
+  db-net:
+    driver: bridge
