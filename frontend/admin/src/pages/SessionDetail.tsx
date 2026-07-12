@@ -133,21 +133,28 @@ const SessionDetail = () => {
   attendance.forEach((a) => { if (a.ipAddress) ipCounts[a.ipAddress] = (ipCounts[a.ipAddress] || 0) + 1; });
 
   const columns: Column<AttendanceRecord>[] = [
-    { key: 'rollNumber', label: 'Roll No.', render: (a) => a.rollNumber },
-    { key: 'name',       label: 'Name',     render: (a) => a.studentName },
-    { key: 'photo',      label: 'Photo',    render: (a) => <img src={a.photoUrl} alt="Student" style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} /> },
-    { key: 'distance',   label: 'Distance', render: (a) => `${a.distanceFromLocation}m` },
-    { key: 'time',       label: 'Time',     render: (a) => new Date(a.capturedAt).toLocaleTimeString() },
-    { key: 'status',     label: 'Status',   render: (a) => <Badge tone={a.verified ? 'success' : 'danger'}>{a.verified ? 'Verified' : 'Unverified'}</Badge> },
-    { key: 'ip', label: 'IP Address', render: (a) => (
+    { key: 'rollNumber', label: 'Roll No.', width: '90px', render: (a) => a.rollNumber },
+    { key: 'name', label: 'Name', width: '180px', render: (a) => (
+      <span
+        title={a.studentName}
+        style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {a.studentName}
+      </span>
+    )},
+    { key: 'photo', label: 'Photo', width: '64px', render: (a) => <img src={a.photoUrl} alt="Student" style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} /> },
+    { key: 'distance', label: 'Distance', width: '90px', render: (a) => <span style={{ whiteSpace: 'nowrap' }}>{a.distanceFromLocation}m</span> },
+    { key: 'time', label: 'Time', width: '100px', render: (a) => <span style={{ whiteSpace: 'nowrap' }}>{new Date(a.capturedAt).toLocaleTimeString()}</span> },
+    { key: 'status', label: 'Status', width: '110px', render: (a) => <Badge tone={a.verified ? 'success' : 'danger'}>{a.verified ? 'Verified' : 'Unverified'}</Badge> },
+    { key: 'ip', label: 'IP Address', width: '160px', render: (a) => (
       <div>
-        <div style={{ fontWeight: 500 }}>{a.ipAddress || 'N/A'}</div>
-        {a.networkProvider && <div style={{ fontSize: '11px', color: 'var(--color-muted)', marginTop: '2px' }}>{a.networkProvider}</div>}
+        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{a.ipAddress || 'N/A'}</div>
+        {a.networkProvider && <div style={{ fontSize: '11px', color: 'var(--color-muted)', marginTop: '2px', whiteSpace: 'nowrap' }}>{a.networkProvider}</div>}
         {a.ipAddress && ipCounts[a.ipAddress] > 1 && <Badge tone="danger">Shared ({ipCounts[a.ipAddress]})</Badge>}
       </div>
     )},
-    { key: 'device', label: 'Device',     render: (a) => <span title={a.userAgent}>{parseUA(a.userAgent)}</span> },
-    { key: 'face',   label: 'Face Check', render: (a) => <Badge tone={a.faceDetected !== false ? 'success' : 'danger'}>{a.faceDetected !== false ? 'Detected' : 'No Face'}</Badge> },
+    { key: 'device', label: 'Device', width: '140px', render: (a) => <span title={a.userAgent}>{parseUA(a.userAgent)}</span> },
+    { key: 'face', label: 'Face Check', width: '110px', render: (a) => <Badge tone={a.faceDetected !== false ? 'success' : 'danger'}>{a.faceDetected !== false ? 'Detected' : 'No Face'}</Badge> },
   ];
 
   return (
@@ -158,23 +165,25 @@ const SessionDetail = () => {
 
       <PageHeader title="Session Details" />
 
-      <div className="card">
-        <h3 style={{ marginBottom: 'var(--space-3)' }}>Session Info</h3>
-        <p><strong>Location:</strong> {session.locationId?.name || 'Unknown'}</p>
-        <p style={{ margin: '6px 0' }}><strong>Status:</strong> <Badge tone={statusTone}>{statusLabel}</Badge></p>
-        <p><strong>Expires At:</strong> {new Date(session.expiresAt).toLocaleString()}</p>
-        <p><strong>Rotations:</strong> {session.rotationCount}</p>
-        <div className="form-actions">
-          <button className="btn btn-primary" onClick={() => setConfirmAction('rotate')} disabled={!session.isActive}>Rotate Token</button>
-          {session.totpEnabled && <Link to={`/sessions/${id}/qr`} className="btn btn-success"><QrCode size={16} />View QR Display</Link>}
-          {session.isActive && !isExpired && <button className="btn btn-danger" onClick={() => setConfirmAction('deactivate')}>Deactivate Session</button>}
+      <div className="session-overview">
+        <div className="card">
+          <h3 style={{ marginBottom: 'var(--space-3)' }}>Session Info</h3>
+          <p><strong>Location:</strong> {session.locationId?.name || 'Unknown'}</p>
+          <p style={{ margin: '6px 0' }}><strong>Status:</strong> <Badge tone={statusTone}>{statusLabel}</Badge></p>
+          <p><strong>Expires At:</strong> {new Date(session.expiresAt).toLocaleString()}</p>
+          <p><strong>Rotations:</strong> {session.rotationCount}</p>
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={() => setConfirmAction('rotate')} disabled={!session.isActive}>Rotate Token</button>
+            {session.totpEnabled && <Link to={`/sessions/${id}/qr`} className="btn btn-success"><QrCode size={16} />View QR Display</Link>}
+            {session.isActive && !isExpired && <button className="btn btn-danger" onClick={() => setConfirmAction('deactivate')}>Deactivate Session</button>}
+          </div>
         </div>
-      </div>
 
-      <div className="grid">
-        <StatTile label="Total Attendance" value={stats?.totalAttendance ?? 0} />
-        <StatTile label="Verified"   value={stats?.verifiedAttendance ?? 0} tone="success" />
-        <StatTile label="Unverified" value={(stats?.totalAttendance ?? 0) - (stats?.verifiedAttendance ?? 0)} tone="danger" />
+        <div className="stat-stack">
+          <StatTile label="Total Attendance" value={stats?.totalAttendance ?? 0} />
+          <StatTile label="Verified"   value={stats?.verifiedAttendance ?? 0} tone="success" />
+          <StatTile label="Unverified" value={(stats?.totalAttendance ?? 0) - (stats?.verifiedAttendance ?? 0)} tone="danger" />
+        </div>
       </div>
 
       <div className="card card-table">

@@ -308,6 +308,8 @@ code {
 
 /* ── Grid ───────────────────────────────────────────────── */
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-4); }
+.session-overview { display: grid; grid-template-columns: minmax(0, 2fr) minmax(200px, 1fr); gap: var(--space-4); align-items: stretch; }
+.stat-stack { display: flex; flex-direction: column; gap: var(--space-4); }
 
 /* ── Card ───────────────────────────────────────────────── */
 .card {
@@ -765,6 +767,7 @@ code {
   .app-main  { grid-column: 1; }
   .container { padding: var(--space-4); gap: var(--space-4); }
   .grid      { grid-template-columns: repeat(2, 1fr); }
+  .session-overview { grid-template-columns: 1fr; }
   .modal-content { padding: var(--space-4); }
 }
 @media (max-width: 480px) {
