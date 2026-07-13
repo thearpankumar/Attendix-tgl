@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
-import { ClipboardList } from 'lucide-react';
+import { ClipboardList, Sparkles, Link as LinkIcon, Pencil } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
@@ -16,6 +16,8 @@ import Button from '../components/ui/Button';
 import { SkeletonRows } from '../components/ui/Skeleton';
 
 interface Location { _id: string; name: string; radiusMeters: number; }
+interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; }
+type ShortlinkMode = 'auto' | 'custom' | 'existing';
 interface Session {
   _id: string;
   locationId?: Location;
@@ -31,13 +33,15 @@ const Sessions = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [formData, setFormData] = useState({ 
-    locationId: '', 
-    durationMinutes: 30, 
+  const [formData, setFormData] = useState({
+    locationId: '',
+    durationMinutes: 30,
     description: '',
-    autoGenerateShortlink: true,
-    customShortCode: ''
+    shortlinkMode: 'auto' as ShortlinkMode,
+    customShortCode: '',
+    existingShortCode: '',
   });
+  const [freeShortLinks, setFreeShortLinks] = useState<ShortLink[]>([]);
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -48,12 +52,14 @@ const Sessions = () => {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     try {
-      const [sessionsRes, locationsRes] = await Promise.all([
+      const [sessionsRes, locationsRes, shortLinksRes] = await Promise.all([
         axios.get<Session[]>('/api/admin/sessions', { signal: abortRef.current.signal }),
         axios.get<Location[]>('/api/admin/locations', { signal: abortRef.current.signal }),
+        axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { signal: abortRef.current.signal }),
       ]);
       setSessions(sessionsRes.data);
       setLocations(locationsRes.data);
+      setFreeShortLinks((shortLinksRes.data.shortLinks ?? []).filter((l) => !l.sessionId && l.isActive));
     } catch (error) {
       if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch data');
     } finally { setLoading(false); }
@@ -78,27 +84,40 @@ const Sessions = () => {
     try {
       const duration = parseInt(String(formData.durationMinutes));
       if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
-      const res = await axios.post<{ _id: string }>('/api/admin/sessions', { ...formData, durationMinutes: duration });
-      
+      if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
+        toast.error('Please select an existing short link, or switch to a different mode.');
+        return;
+      }
+      const res = await axios.post<{ _id: string }>('/api/admin/sessions', {
+        locationId: formData.locationId,
+        durationMinutes: duration,
+        description: formData.description,
+      });
+
+      const sessionId = res.data._id;
+      const { protocol, hostname } = window.location;
       let successMessage = 'Session created successfully!';
-      
-      const shouldCreateLink = formData.autoGenerateShortlink || formData.customShortCode.trim() !== '';
-      
-      if (shouldCreateLink) {
-        const payload = { 
-          sessionId: res.data._id, 
-          shortCode: formData.autoGenerateShortlink ? undefined : formData.customShortCode.trim() 
-        };
-        const slRes = await axios.post<{ shortCode: string }>('/api/admin/shortlinks', payload);
-        const { protocol, hostname } = window.location;
+
+      if (formData.shortlinkMode === 'auto') {
+        const slRes = await axios.post<{ shortCode: string }>('/api/admin/shortlinks', { sessionId });
         const link = `${protocol}//${hostname}/s/${slRes.data.shortCode}`;
         await navigator.clipboard.writeText(link).catch(() => {});
         successMessage = `Session created! Link (/s/${slRes.data.shortCode}) copied to clipboard.`;
+      } else if (formData.shortlinkMode === 'custom' && formData.customShortCode.trim()) {
+        const slRes = await axios.post<{ shortCode: string }>('/api/admin/shortlinks', { sessionId, shortCode: formData.customShortCode.trim() });
+        const link = `${protocol}//${hostname}/s/${slRes.data.shortCode}`;
+        await navigator.clipboard.writeText(link).catch(() => {});
+        successMessage = `Session created! Link (/s/${slRes.data.shortCode}) copied to clipboard.`;
+      } else if (formData.shortlinkMode === 'existing' && formData.existingShortCode) {
+        await axios.post(`/api/admin/shortlinks/${formData.existingShortCode}/attach`, { sessionId });
+        const link = `${protocol}//${hostname}/s/${formData.existingShortCode}`;
+        await navigator.clipboard.writeText(link).catch(() => {});
+        successMessage = `Session created! Link (/s/${formData.existingShortCode}) copied to clipboard.`;
       }
-      
+
       toast.success(successMessage);
       setShowModal(false);
-      setFormData({ locationId: '', durationMinutes: 30, description: '', autoGenerateShortlink: true, customShortCode: '' });
+      setFormData({ locationId: '', durationMinutes: 30, description: '', shortlinkMode: 'auto', customShortCode: '', existingShortCode: '' });
       fetchData();
     } catch (error) {
       const err = error as { response?: { data?: { message?: string } } };
@@ -165,8 +184,8 @@ const Sessions = () => {
       <Modal open={showModal} onClose={() => setShowModal(false)} title="Create Attendance Session">
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label>Location</label>
-            <select value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
+            <label htmlFor="session-location">Location</label>
+            <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
               <option value="">Select a location</option>
               {locations.map((loc) => <option key={loc._id} value={loc._id}>{loc.name} (Radius: {loc.radiusMeters}m)</option>)}
             </select>
@@ -179,29 +198,78 @@ const Sessions = () => {
             <label>Description (optional)</label>
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} placeholder="e.g., Morning attendance for CS101" />
           </div>
-          <div className="form-group" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', marginBottom: '1rem' }}>
-            <input 
-              type="checkbox" 
-              id="autoGenerateShortlink"
-              checked={formData.autoGenerateShortlink} 
-              onChange={(e) => setFormData({ ...formData, autoGenerateShortlink: e.target.checked })} 
-              style={{ width: 'auto', minHeight: 'auto', margin: 0 }}
-            />
-            <label htmlFor="autoGenerateShortlink" style={{ margin: 0, cursor: 'pointer' }}>Automatically generate shortlink</label>
+          {/* ── Short Link mode selector ── */}
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <label>Short Link</label>
+            <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
+              {(['auto', 'existing', 'custom'] as ShortlinkMode[]).map((mode) => (
+                <label key={mode} style={{
+                  flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
+                  borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                  border: `1.5px solid ${
+                    formData.shortlinkMode === mode ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'
+                  }`,
+                  background: formData.shortlinkMode === mode ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                  color: formData.shortlinkMode === mode ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                  transition: 'all 0.15s',
+                  userSelect: 'none',
+                }}>
+                  <input type="radio" name="shortlinkMode" value={mode}
+                    checked={formData.shortlinkMode === mode}
+                    onChange={() => setFormData({ ...formData, shortlinkMode: mode })}
+                    style={{ display: 'none' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                    {mode === 'auto' && <Sparkles size={14} />}
+                    {mode === 'existing' && <LinkIcon size={14} />}
+                    {mode === 'custom' && <Pencil size={14} />}
+                    <span>{mode === 'auto' ? 'Auto-generate' : mode === 'existing' ? 'Attach existing' : 'Custom code'}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
           </div>
-          {!formData.autoGenerateShortlink && (
+
+          {formData.shortlinkMode === 'auto' && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
+              A random 6-character link will be created and copied to your clipboard.
+            </p>
+          )}
+
+          {formData.shortlinkMode === 'existing' && (
+            <div className="form-group">
+              {freeShortLinks.length === 0 ? (
+                <div style={{
+                  padding: '0.75rem', borderRadius: '6px', fontSize: '0.82rem',
+                  background: 'var(--color-warning-subtle, #fffbeb)',
+                  border: '1px solid var(--color-warning, #f59e0b)',
+                }}>
+                  ⚠️ No unassigned short links available.{' '}
+                  <a href="/admin/shortlinks" style={{ color: 'var(--color-primary, #4f46e5)' }}>Create one on the Short Links page →</a>
+                </div>
+              ) : (
+                <>
+                  <label htmlFor="existing-link">Select existing link</label>
+                  <select id="existing-link" value={formData.existingShortCode}
+                    onChange={(e) => setFormData({ ...formData, existingShortCode: e.target.value })} required>
+                    <option value="">Pick a short link…</option>
+                    {freeShortLinks.map((l) => (
+                      <option key={l.shortCode} value={l.shortCode}>/s/{l.shortCode}</option>
+                    ))}
+                  </select>
+                  <small style={{ color: 'var(--color-muted)' }}>This link will be re-activated and pointed at the new session.</small>
+                </>
+              )}
+            </div>
+          )}
+
+          {formData.shortlinkMode === 'custom' && (
             <div className="form-group">
               <label>Custom Short Code</label>
-              <input 
-                type="text" 
-                value={formData.customShortCode} 
-                onChange={(e) => setFormData({ ...formData, customShortCode: e.target.value })} 
-                placeholder="e.g., CS101" 
-                maxLength={20}
-                pattern="[a-zA-Z0-9_-]+"
-                title="Only letters, numbers, hyphens, and underscores allowed"
-              />
-              <small style={{ color: 'var(--color-muted)' }}>Leave blank if you don't want to create a shortlink.</small>
+              <input type="text" value={formData.customShortCode}
+                onChange={(e) => setFormData({ ...formData, customShortCode: e.target.value })}
+                placeholder="e.g., CS101" maxLength={20}
+                pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, hyphens, and underscores allowed" />
+              <small style={{ color: 'var(--color-muted)' }}>Leave blank to create the session without a short link.</small>
             </div>
           )}
           <div className="form-actions">

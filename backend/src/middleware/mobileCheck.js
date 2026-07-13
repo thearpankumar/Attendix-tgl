@@ -4,6 +4,9 @@ function requireMobileDevice(req, res, next) {
   if (process.env.NODE_ENV === 'test' && req.headers['x-test-mobile-check'] !== 'true') {
     return next();
   }
+  if (process.env.DEV_BYPASS_ALL === 'true') {
+    return next();
+  }
 
   const userAgent = req.headers['user-agent'] || '';
   

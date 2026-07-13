@@ -162,7 +162,7 @@ describe('StudentScan', () => {
     fireEvent.click(screen.getByText(/Continue without biometric/i));
 
     await waitFor(() => {
-      expect(screen.getByText(/Location denied/i)).toBeInTheDocument();
+      expect(screen.getByText(/Location permission blocked/i)).toBeInTheDocument();
     });
   });
 });

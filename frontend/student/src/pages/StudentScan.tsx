@@ -31,13 +31,67 @@ const Spinner = () => (
   </div>
 );
 
+const LockIcon = ({ size = 16 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+    <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
+const AlertTriangleIcon = ({ size = 16 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
+const LoaderIcon = ({ size = 16, className }: { size?: number; className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={{ display: 'block' }}>
+    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+  </svg>
+);
+
+const CheckIcon = ({ size = 16 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+const RotateCwIcon = ({ size = 14 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.72 2.78L21 8" />
+    <polyline points="21 3 21 8 16 8" />
+  </svg>
+);
+
+const WrenchIcon = ({ size = 14 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </svg>
+);
+
+const AndroidIcon = ({ size = 14, style }: { size?: number; style?: React.CSSProperties }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', ...style }}>
+    <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+    <path d="M12 18h.01" />
+  </svg>
+);
+
+const AppleIcon = ({ size = 14, style }: { size?: number; style?: React.CSSProperties }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', ...style }}>
+    <path d="M12 20.94c1.88-2.2 4-2.2 4-6 0-3.5-2.5-6-5-6s-5 2.5-5 6c0 3.8 2.12 3.8 4 6Z" />
+    <path d="M12 8.94c-.5-1.5 0-3 1.5-3.5a3.5 3.5 0 0 1-1.5 3.5Z" />
+  </svg>
+);
+
 export default function StudentScan() {
   const { shortCode } = useParams<{ shortCode: string }>();
   const API = window.location.origin;
 
   const [step, setStep] = useState<Step>('loading');
   const [errMsg, setErrMsg] = useState('');
-  const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [flashMsg, setFlashMsg] = useState<{ text: React.ReactNode; ok: boolean } | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [devBypassEnabled, setDevBypassEnabled] = useState(false);
   const isMobile = useIsMobile();
@@ -55,11 +109,12 @@ export default function StudentScan() {
   const [captchaId, setCaptchaId] = useState('');
   const [captchaSvg, setCaptchaSvg] = useState('');
   const [captchaAnswer, setCaptchaAnswer] = useState('');
-  const [locStatus, setLocStatus] = useState<'pending' | 'ok' | 'denied'>('pending');
+  const [locStatus, setLocStatus] = useState<'pending' | 'ok' | 'denied' | 'blocked' | 'retrying'>('pending');
+  const [locErrMsg, setLocErrMsg] = useState('');
   const [locData, setLocData] = useState<{ latitude: number; longitude: number } | null>(null);
   const [photoTaken, setPhotoTaken] = useState(false);
   const [webauthnVerified, setWebauthnVerified] = useState(false);
-  const [verifyMethod, setVerifyMethod] = useState('');
+  const [verifyMethod, setVerifyMethod] = useState<React.ReactNode>('');
   const [submitting, setSubmitting] = useState(false);
   const [usedDevBypassCamera, setUsedDevBypassCamera] = useState(false);
   const [usedDevBypassGps, setUsedDevBypassGps] = useState(false);
@@ -74,7 +129,7 @@ export default function StudentScan() {
   const conditionalUiAbortRef = useRef<AbortController | null>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
 
-  const flash = (text: string, ok = false) => {
+  const flash = (text: React.ReactNode, ok = false) => {
     setFlashMsg({ text, ok });
     setTimeout(() => setFlashMsg(null), 5000);
   };
@@ -196,21 +251,83 @@ export default function StudentScan() {
   }, [step, captchaSvg]);
 
   const getLocation = useCallback(() => {
-    if (!navigator.geolocation) { setLocStatus('denied'); return; }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => { 
-        if (pos.coords.accuracy > 200) {
-          flash('GPS signal is too weak. Please step outside for better accuracy.', true);
-          setLocStatus('denied');
-          return;
-        }
-        setLocData({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); 
-        setLocStatus('ok'); 
-      },
-      () => setLocStatus('denied'),
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+    if (!navigator.geolocation) {
+      setLocStatus('blocked');
+      setLocErrMsg('Geolocation is not supported by this browser.');
+      return;
+    }
+    setLocStatus('pending');
+    setLocErrMsg('');
+
+    const onSuccess = (pos: GeolocationPosition) => {
+      setLocData({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+      setLocStatus('ok');
+      if (pos.coords.accuracy > 500) {
+        flash(<span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><AlertTriangleIcon size={14} /> Weak signal (±{Math.round(pos.coords.accuracy)}m) — location recorded.</span>, true);
+      }
+    };
+
+    const onFinalFail = (err: GeolocationPositionError) => {
+      if (err.code === 1) {
+        setLocStatus('blocked');
+        setLocErrMsg('Permission denied. Tap the lock icon in your browser URL bar and allow Location.');
+      } else {
+        setLocStatus('denied');
+        setLocErrMsg(
+          err.code === 2
+            ? 'No location signal. Enable Wi-Fi or move near a window, then tap Retry.'
+            : 'Location timed out. Move near a window, then tap Retry.'
+        );
+      }
+    };
+
+    // Pass 1: high-accuracy GPS (8s). Fails indoors → pass 2 network fallback.
+    navigator.geolocation.getCurrentPosition(onSuccess, (err) => {
+      if (err.code === 1) { onFinalFail(err); return; }
+      // Pass 2: Wi-Fi / cell-based — fast indoors, works without GPS lock
+      setLocStatus('retrying');
+      navigator.geolocation.getCurrentPosition(onSuccess, onFinalFail, {
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 60000,
+      });
+    }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
   }, []);
+
+  // Auto-trigger location + fresh captcha the moment the form step activates
+  useEffect(() => {
+    if (step === 'form') {
+      getLocation();
+      loadCaptcha();
+    }
+  }, [step]);
+
+  // Re-check location when user returns from phone Settings (covers iOS Safari + Android)
+  useEffect(() => {
+    if (step !== 'form' || locStatus === 'ok') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') getLocation();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [step, locStatus, getLocation]);
+
+  // Permissions API onchange — auto-retry when OS grants permission (Chrome Android)
+  useEffect(() => {
+    if (step !== 'form' || locStatus === 'ok') return;
+    if (!navigator.permissions) return;
+    let permStatus: PermissionStatus | null = null;
+    navigator.permissions
+      .query({ name: 'geolocation' as PermissionName })
+      .then((status) => {
+        permStatus = status;
+        status.onchange = () => {
+          if (status.state === 'granted') getLocation();
+        };
+      })
+      .catch(() => {});
+    return () => { if (permStatus) permStatus.onchange = null; };
+  }, [step, locStatus, getLocation]);
 
   const handleDevBypassGps = () => {
     setUsedDevBypassGps(true);
@@ -242,20 +359,26 @@ export default function StudentScan() {
   };
 
   const handleFallback = () => {
+    const roll = rollInput.trim().toUpperCase();
+    if (!roll) { flash('Enter your roll number first', true); return; }
+    rollRef.current = roll;
     setWebauthnVerified(false);
-    setVerifyMethod('⚠️ Manual verification required');
+    setVerifyMethod(<span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><AlertTriangleIcon size={12} /> Manual verification required</span>);
+    setLocStatus('pending');
+    setLocErrMsg('');
     setStep('form');
-    getLocation();
-    loadCaptcha();
   };
 
   const handleDevBypassWebAuthn = () => {
+    const roll = rollInput.trim().toUpperCase();
+    if (!roll) { flash('Enter your roll number first', true); return; }
+    rollRef.current = roll;
     setWebauthnVerified(true);
     setVerifyMethod('Bypassed (DEV)');
     flash('Identity bypassed in DEV mode!', true);
+    setLocStatus('pending');
+    setLocErrMsg('');
     setStep('form');
-    getLocation();
-    loadCaptcha();
   };
 
   const register = async () => {
@@ -299,9 +422,9 @@ export default function StudentScan() {
       setWebauthnVerified(true);
       setVerifyMethod('Device: ' + (result.credentialId?.substring(0, 8) || 'Enrolled'));
       flash('Device enrolled!', true);
+      setLocStatus('pending');
+      setLocErrMsg('');
       setStep('form');
-      getLocation();
-      loadCaptcha();
     } catch (err) {
       flash('Registration failed: ' + (err as Error).message);
     }
@@ -341,9 +464,9 @@ export default function StudentScan() {
       setWebauthnVerified(true);
       setVerifyMethod('Biometric verified');
       flash('Identity verified!', true);
+      setLocStatus('pending');
+      setLocErrMsg('');
       setStep('form');
-      getLocation();
-      loadCaptcha();
     } catch (err) {
       const e = err as { name?: string; message?: string };
       if (e.name === 'NotAllowedError') flash('Authentication cancelled. Please try again.');
@@ -402,9 +525,9 @@ export default function StudentScan() {
       setWebauthnVerified(true);
       setVerifyMethod('Passkey verified');
       flash('Identity verified with passkey!', true);
+      setLocStatus('pending');
+      setLocErrMsg('');
       setStep('form');
-      getLocation();
-      loadCaptcha();
     } catch (err) {
       const e = err as { name?: string; message?: string };
       // Ignore background errors for conditional UI
@@ -672,17 +795,138 @@ export default function StudentScan() {
                 <p className="sub">Fill in your details to mark attendance</p>
               </div>
 
-              <div className={`attend-status ${locStatus === 'ok' ? 'ok' : locStatus === 'denied' ? 'err' : 'pending'}`}>
-                <span>
-                  <strong>{locStatus === 'ok' ? 'Location acquired' : locStatus === 'denied' ? 'Location denied' : 'Getting location…'}</strong>
-                  {locStatus === 'ok' && <div className="detail">{locData?.latitude.toFixed(5)}, {locData?.longitude.toFixed(5)}</div>}
-                  {locStatus === 'denied' && <div className="detail">Attendance may be unverified.</div>}
-                  {devBypassEnabled && locStatus !== 'ok' && (
-                    <button type="button" className="attend-btn-ghost" onClick={handleDevBypassGps} style={{ width: 'auto', padding: '2px 8px', marginTop: 4 }}>
-                      🛠️ Mock Location
+              <div className={`attend-status-card ${locStatus === 'ok' ? 'ok' : (locStatus === 'blocked' || locStatus === 'denied') ? 'err' : 'pending'}`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  padding: '16px',
+                  borderRadius: '12px',
+                  border: '1px solid',
+                  fontSize: '13px',
+                  lineHeight: '1.5',
+                  transition: 'all 0.2s ease',
+                  background: locStatus === 'ok' ? 'var(--color-success-bg)' : (locStatus === 'blocked' || locStatus === 'denied') ? 'var(--color-danger-bg)' : 'var(--color-bg-subtle)',
+                  borderColor: locStatus === 'ok' ? 'rgba(2, 122, 72, 0.15)' : (locStatus === 'blocked' || locStatus === 'denied') ? 'rgba(180, 35, 24, 0.15)' : 'var(--color-border)',
+                  color: locStatus === 'ok' ? 'var(--color-success)' : (locStatus === 'blocked' || locStatus === 'denied') ? 'var(--color-danger)' : 'var(--color-muted)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600 }}>
+                  {locStatus === 'ok' && <CheckIcon size={18} />}
+                  {locStatus === 'blocked' && <LockIcon size={18} />}
+                  {locStatus === 'denied' && <AlertTriangleIcon size={18} />}
+                  {locStatus === 'retrying' && <LoaderIcon size={18} className="animate-spin" />}
+                  {locStatus === 'pending' && <LoaderIcon size={18} className="animate-spin" />}
+                  
+                  <span>
+                    {locStatus === 'ok'       && 'Location acquired'}
+                    {locStatus === 'blocked'  && 'Location permission blocked'}
+                    {locStatus === 'denied'   && 'Location unavailable'}
+                    {locStatus === 'retrying' && 'Retrying with network location…'}
+                    {locStatus === 'pending'  && 'Getting location…'}
+                  </span>
+                </div>
+
+                {locStatus === 'ok' && (
+                  <div style={{ fontSize: '12px', opacity: 0.8, marginLeft: '26px' }}>
+                    {locData?.latitude.toFixed(5)}, {locData?.longitude.toFixed(5)}
+                  </div>
+                )}
+
+                {(locStatus === 'denied' || locStatus === 'blocked') && locErrMsg && (
+                  <div style={{ fontSize: '12px', opacity: 0.8, marginLeft: '26px' }}>
+                    {locErrMsg}
+                  </div>
+                )}
+
+                {locStatus === 'blocked' && (
+                  <div style={{ 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '8px', 
+                    fontSize: '12px', 
+                    marginLeft: '26px', 
+                    marginTop: '4px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'rgba(180, 35, 24, 0.04)',
+                    border: '1px solid rgba(180, 35, 24, 0.08)'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <AndroidIcon size={14} style={{ marginTop: '2px', flexShrink: 0 }} />
+                      <div>
+                        <strong>Android (Chrome):</strong> Settings → Apps → Chrome → Permissions → Location → Allow
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <AppleIcon size={14} style={{ marginTop: '2px', flexShrink: 0 }} />
+                      <div>
+                        <strong>iOS (Safari):</strong> Settings → Privacy → Location Services → Safari → While Using
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {(locStatus === 'denied' || locStatus === 'blocked') && (
+                  <div style={{ display: 'flex', gap: '8px', marginLeft: '26px', marginTop: '4px' }}>
+                    <button type="button" onClick={getLocation}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        border: '1px solid var(--color-danger)',
+                        background: 'transparent',
+                        color: 'var(--color-danger)',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(180, 35, 24, 0.06)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <RotateCwIcon size={12} />
+                      Retry Location
                     </button>
-                  )}
-                </span>
+
+                    {devBypassEnabled && (
+                      <button type="button" onClick={handleDevBypassGps}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          border: '1px solid rgba(180, 35, 24, 0.4)',
+                          background: 'transparent',
+                          color: 'var(--color-danger)',
+                          opacity: 0.8,
+                          transition: 'all 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'rgba(180, 35, 24, 0.06)';
+                          e.currentTarget.style.opacity = '1';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'transparent';
+                          e.currentTarget.style.opacity = '0.8';
+                        }}
+                      >
+                        <WrenchIcon size={12} />
+                        Mock Location
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className={`attend-status ${webauthnVerified ? 'info' : 'warn'}`}>

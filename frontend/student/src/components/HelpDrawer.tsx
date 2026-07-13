@@ -128,6 +128,12 @@ const LOCATION_SPECIAL: SpecialBlock[] = [
     color: '#667085', bg: '#f0f2f7',
     content: 'Battery saver / power saving modes throttle GPS on most Android phones.\n\nFix: Disable Battery Saver (Settings → Battery → Battery Saver → OFF) before marking attendance.',
   },
+  {
+    icon: <IcoSmartphone />,
+    title: 'Nothing Phone',
+    color: '#334155', bg: '#f8fafc',
+    content: 'Nothing OS sometimes hangs location requests if background apps are stuck.\n\nFix: Swipe down from the top notification panel, check for "Active apps" (or background apps), and close them. If location is still stuck, toggle Location off and on again in Quick Settings.',
+  },
 ];
 
 const CAMERA_HELP: PlatformHelp[] = [

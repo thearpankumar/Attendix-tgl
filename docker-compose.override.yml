@@ -9,7 +9,7 @@ services:
     environment:
       - NODE_ENV=development
       - MONGODB_URI=mongodb://mongo1:27017/attendance-geotag
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
     volumes:
       - ./backend/src:/app/src:ro
 

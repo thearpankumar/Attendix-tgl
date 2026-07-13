@@ -20,6 +20,10 @@ class S3Provider extends StorageProvider {
 
   async upload(file, options = {}) {
     try {
+      if (!file) {
+        throw new Error('File data is required');
+      }
+
       let buffer;
       let contentType = 'image/jpeg';
       
