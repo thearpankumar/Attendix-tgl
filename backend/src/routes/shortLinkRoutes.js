@@ -102,6 +102,13 @@ router.post('/:shortCode/submit', studentLimiter, requireMobileDevice, async (re
       webauthnVerified = false,
     } = req.body;
 
+    if (!rollNumber || typeof rollNumber !== 'string' || rollNumber.trim() === '') {
+      return res.status(400).json({ message: 'Roll number is required' });
+    }
+    if (!studentName || typeof studentName !== 'string' || studentName.trim() === '') {
+      return res.status(400).json({ message: 'Student name is required' });
+    }
+
     // Verify Captcha (bypass in testing)
     if (process.env.NODE_ENV !== 'test') {
       if (!captchaAnswer || !captchaId) {

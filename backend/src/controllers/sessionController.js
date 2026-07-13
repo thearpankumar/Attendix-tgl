@@ -220,9 +220,12 @@ const exportSessionAttendance = async (req, res) => {
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res });
     const worksheet = workbook.addWorksheet('Attendance');
 
+    const locationName = session.locationId?.name || 'Unknown Location';
+    
     worksheet.columns = [
       { header: 'Roll Number', key: 'rollNumber', width: 15 },
       { header: 'Student Name', key: 'studentName', width: 25 },
+      { header: 'Location', key: 'location', width: 20 },
       { header: 'Time (UTC)', key: 'time', width: 20 },
       { header: 'Location Status', key: 'locStatus', width: 15 },
       { header: 'Distance (m)', key: 'distance', width: 15 },
@@ -236,6 +239,7 @@ const exportSessionAttendance = async (req, res) => {
       worksheet.addRow({
         rollNumber: record.rollNumber,
         studentName: record.studentName,
+        location: locationName,
         time: new Date(record.capturedAt).toISOString(),
         locStatus: record.verified ? 'Verified' : 'Flagged',
         distance: record.distanceFromLocation != null ? record.distanceFromLocation.toFixed(2) : 'N/A',

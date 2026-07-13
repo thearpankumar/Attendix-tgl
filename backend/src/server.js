@@ -90,6 +90,7 @@ app.get('/health/live', (req, res) => {
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/config', require('./routes/configRoutes'));
 app.use('/api/attend', require('./routes/studentRoutes'));
+app.use('/api/device', require('./routes/deviceVerificationRoutes'));
 app.use('/s', require('./routes/shortLinkRoutes'));
 app.use('/s', require('./routes/webauthnRoutes'));
 

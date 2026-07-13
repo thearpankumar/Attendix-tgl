@@ -16,6 +16,14 @@ import * as useIsMobileModule from '../../src/hooks/useIsMobile';
 
 vi.mock('../../src/hooks/useIsMobile', () => ({
   useIsMobile: vi.fn(),
+  useMobileVerification: vi.fn(() => ({
+    isMobile: true,
+    isEmulation: false,
+    inconsistencies: [],
+    checking: false,
+    metrics: null,
+    recheck: vi.fn(),
+  })),
 }));
 
 // Helper: after session loads, click through the permission onboarding screen
@@ -100,6 +108,14 @@ describe('StudentScan', () => {
     });
 
     vi.mocked(useIsMobileModule.useIsMobile).mockReturnValue(true);
+    vi.mocked(useIsMobileModule.useMobileVerification).mockReturnValue({
+      isMobile: true,
+      isEmulation: false,
+      inconsistencies: [],
+      checking: false,
+      metrics: {} as any,
+      recheck: vi.fn(),
+    });
   });
 
   const renderComponent = () => render(

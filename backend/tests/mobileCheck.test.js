@@ -82,19 +82,20 @@ describe('Mobile Device Middleware', () => {
             }
 
             const res = await req;
-            
+
             if (tc.allowed) {
               // If allowed, we expect whatever error comes from the actual endpoint, but NOT 403 Access Denied
               expect(res.status).not.toBe(403);
               // Either 200, 302, 400 (validation error), etc.
             } else {
               expect(res.status).toBe(403);
-              if (ep.method === 'get' && ep.path(shortLink.shortCode) === `/s/${shortLink.shortCode}`) {
-                // Short link HTML response
-                expect(res.text).toContain('Mobile Device Required');
+            if (ep.method === 'get' && ep.path(shortLink.shortCode) === `/s/${shortLink.shortCode}`) {
+                // Short link HTML response - bots get JSON instead of HTML
+                expect(res.text).toMatch(/Mobile Device Required|Automated tools are not allowed|spoofingDetected/);
               } else {
                 // JSON response
-                expect(res.body.message).toContain('only allowed on mobile devices');
+                // Bot detection has a different message
+                expect(res.body.message).toMatch(/only allowed on mobile devices|Automated tools are not allowed/i);
               }
             }
           });

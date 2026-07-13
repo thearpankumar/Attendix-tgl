@@ -10,19 +10,78 @@ function requireMobileDevice(req, res, next) {
 
   const userAgent = req.headers['user-agent'] || '';
   
+  const isChromium = /Chrome|Chromium|Edg|Opera|Brave/i.test(userAgent);
+  const uaClaimsMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(userAgent);
+  const isObviousBot = /curl|postman|insomnia|python|wget|httpie|bot|spider|scraper/i.test(userAgent);
+  
+  if (isObviousBot) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access Denied: Automated tools are not allowed.',
+      spoofingDetected: true
+    });
+  }
+  
+  if (isChromium && req.headers['sec-ch-ua-mobile'] !== undefined) {
+    const clientHintMobile = req.headers['sec-ch-ua-mobile'];
+    const chSaysMobile = clientHintMobile === '?1';
+    
+    if (uaClaimsMobile && !chSaysMobile) {
+      return res.status(403).json({
+        success: false,
+        message: 'Device verification failed: User-Agent spoofing detected. Please use a real mobile device.',
+        spoofingDetected: true
+      });
+    }
+    
+    if (!uaClaimsMobile && chSaysMobile) {
+      return res.status(403).json({
+        success: false,
+        message: 'Device verification failed: Inconsistent device signals detected.',
+        spoofingDetected: true
+      });
+    }
+  }
+  
+  const platform = req.headers['sec-ch-ua-platform'] || '';
+  
+  // Check platform consistency for Chromium browsers
+  if (isChromium && uaClaimsMobile) {
+    const validMobilePlatforms = ['"Android"', '"iOS"', '"iPhone"', '"iPad"'];
+    const isMobilePlatform = validMobilePlatforms.some(p => platform.includes(p.replace(/"/g, '')));
+    const isDesktopPlatform = /Windows|macOS|Linux|Chrome OS/i.test(platform);
+    
+    if (isDesktopPlatform && !isMobilePlatform && uaClaimsMobile) {
+      return res.status(403).json({
+        success: false,
+        message: 'Device verification failed: Desktop platform with mobile User-Agent.',
+        spoofingDetected: true
+      });
+    }
+  }
+  
+  // Check platform consistency for Safari and other non-Chromium browsers
+  if (!isChromium && platform && uaClaimsMobile) {
+    const isDesktopPlatform = /Windows|macOS|Linux|Chrome OS/i.test(platform);
+    if (isDesktopPlatform) {
+      return res.status(403).json({
+        success: false,
+        message: 'Device verification failed: Desktop platform with mobile User-Agent.',
+        spoofingDetected: true
+      });
+    }
+  }
+  
   // 1. Is it explicitly a mobile device according to is-mobile?
   const explicitlyMobile = isMobile({ ua: userAgent, tablet: true });
   
   // 2. Could it be a tablet or phone masquerading as a desktop?
   // (e.g., iPadOS 13+ sends Macintosh, Android Desktop Mode sends X11/Linux)
   const mightBeMasquerading = /Macintosh|Windows|Linux|X11|CrOS/i.test(userAgent);
-  
-  // 3. Is it an obvious bot/CLI tool?
-  const isObviousBot = /curl|postman|insomnia|python|wget|httpie|bot|spider|scraper/i.test(userAgent);
 
-  // We only block if it's an obvious bot OR it's not mobile AND doesn't look like a standard OS that could be masquerading.
+  // We only block if it's not mobile AND doesn't look like a standard OS that could be masquerading.
   // The STRICT hardware check (maxTouchPoints) will happen on the React client side.
-  if (isObviousBot || (!explicitlyMobile && !mightBeMasquerading)) {
+  if (!explicitlyMobile && !mightBeMasquerading) {
     if (req.accepts('html') && !req.xhr && !req.path.includes('/api/')) {
       return res.status(403).send(`
         <!DOCTYPE html>

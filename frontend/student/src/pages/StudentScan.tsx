@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useMobileVerification } from '../hooks/useIsMobile';
 import MobileDeviceRequired from '../components/MobileDeviceRequired';
 import PermissionOnboarding from '../components/PermissionOnboarding';
 import HelpDrawer from '../components/HelpDrawer';
@@ -94,7 +94,7 @@ export default function StudentScan() {
   const [flashMsg, setFlashMsg] = useState<{ text: React.ReactNode; ok: boolean } | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [devBypassEnabled, setDevBypassEnabled] = useState(false);
-  const isMobile = useIsMobile();
+  const { isMobile, isEmulation, inconsistencies, checking } = useMobileVerification();
 
 
 
@@ -647,8 +647,19 @@ export default function StudentScan() {
 
   const isPrivacyOs = detectPrivacyOs();
 
+  if (checking && step !== 'loading') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Verifying device...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!isMobile && !devBypassEnabled && step !== 'loading' && step !== 'error' && step !== 'permissions') {
-    return <MobileDeviceRequired />;
+    return <MobileDeviceRequired isEmulation={isEmulation} inconsistencies={inconsistencies} />;
   }
 
   return (

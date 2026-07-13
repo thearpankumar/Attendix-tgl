@@ -129,6 +129,7 @@ describe('Export Session Attendance to Excel', () => {
     const headers = worksheet.getRow(1).values.slice(1);
     expect(headers).toContain('Roll Number');
     expect(headers).toContain('Student Name');
+    expect(headers).toContain('Location');
     expect(headers).toContain('Warnings');
     
     expect(worksheet.rowCount).toBe(3);
@@ -136,12 +137,14 @@ describe('Export Session Attendance to Excel', () => {
     const row2 = worksheet.getRow(2).values.slice(1);
     expect(row2[0]).toBe('A001'); 
     expect(row2[1]).toBe('Alice');
-    expect(row2[3]).toBe('Verified');
+    expect(row2[2]).toBe('Export Location');
+    expect(row2[4]).toBe('Verified');
     
     const row3 = worksheet.getRow(3).values.slice(1);
     expect(row3[0]).toBe('B002');
     expect(row3[1]).toBe('Bob'); 
-    expect(row3[3]).toBe('Flagged');
-    expect(row3[6]).toBe('MULTI_STUDENT_DEVICE');
+    expect(row3[2]).toBe('Export Location');
+    expect(row3[4]).toBe('Flagged');
+    expect(row3[7]).toBe('MULTI_STUDENT_DEVICE');
   });
 });

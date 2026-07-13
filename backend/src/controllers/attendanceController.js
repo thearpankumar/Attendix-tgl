@@ -2,6 +2,7 @@ const Session = require('../models/Session');
 const Attendance = require('../models/Attendance');
 const WebAuthnCredential = require('../models/WebAuthnCredential');
 const SystemConfig = require('../models/SystemConfig');
+const DeviceFingerprint = require('../models/DeviceFingerprint');
 const { getStorageProvider } = require('../storage');
 const { calculateDistance } = require('../utils/geoUtils');
 const { getCachedSession } = require('../middleware/sessionCache');
@@ -299,6 +300,18 @@ const submitAttendance = async (req, res) => {
     const responseMessage = deviceValidation.flags && deviceValidation.flags.length > 0
       ? 'Attendance submitted successfully. Note: Device flagged for review.'
       : 'Attendance submitted successfully';
+
+    try {
+      const device = await DeviceFingerprint.findOrCreate(deviceFingerprint);
+      await device.recordSuccessfulVerification(session._id, rollNumber.toUpperCase());
+      await device.addUserAgent(req.get('User-Agent') || 'unknown');
+      
+      if (req.body.devBypassWebauthn || req.body.devBypassCamera || req.body.devBypassGps) {
+        await device.addClaimedDeviceType('dev-bypass');
+      }
+    } catch (deviceError) {
+      console.warn('Failed to record device success:', deviceError.message);
+    }
 
     res.status(201).json({
       message: responseMessage,
