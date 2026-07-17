@@ -30,6 +30,16 @@ interface Session {
   description?: string;
 }
 
+const getInitialFilters = () => {
+  try {
+    const saved = sessionStorage.getItem('sessionFilters');
+    return saved ? JSON.parse(saved) : { locationId: '', date: '' };
+  } catch {
+    return { locationId: '', date: '' };
+  }
+};
+
+
 const Sessions = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -52,7 +62,7 @@ const Sessions = () => {
   const [deleting, setDeleting] = useState(false);
   const [deactivateId, setDeactivateId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const filtersRef = useRef<{ locationId: string; date: string }>({ locationId: '', date: '' });
+  const filtersRef = useRef<{ locationId: string; date: string }>(getInitialFilters());
 
   const fetchData = useCallback(async () => {
     abortRef.current?.abort();

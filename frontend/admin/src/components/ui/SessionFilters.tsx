@@ -210,13 +210,23 @@ const FilterSection: React.FC<FilterSectionProps> = ({ label, options, value, on
 
 const SessionFilters: React.FC<SessionFiltersProps> = ({ locations, onFilterChange }) => {
   const [popupOpen, setPopupOpen] = useState(false);
-  const [filters, setFilters] = useState({
-    locationId: '',
-    date: '',
+  const [filters, setFilters] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('sessionFilters');
+      return saved ? JSON.parse(saved) : { locationId: '', date: '' };
+    } catch {
+      return { locationId: '', date: '' };
+    }
   });
 
   const handleApply = useCallback((values: { locationId: string; date: string }) => {
     setFilters(values);
+    try {
+      sessionStorage.setItem('sessionFilters', JSON.stringify(values));
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to save filters to sessionStorage', e);
+    }
     if (onFilterChange) {
       onFilterChange(values);
     }

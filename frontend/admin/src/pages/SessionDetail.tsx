@@ -18,6 +18,7 @@ interface Session {
   locationId?: { name: string };
   description?: string;
   batchId?: { _id: string; name: string };
+  createdAt?: string;
 }
 
 interface AbsentStudent {
@@ -157,12 +158,18 @@ const SessionDetail = () => {
       const res = await axios.get(`/api/admin/sessions/${id}/export`, { responseType: 'blob' });
       const url = URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
-      const now = new Date();
-      const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-      const sessionName = session?.description || session?.locationId?.name || 'Session';
-      const safeSessionName = sessionName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      
+      const sessionDate = session?.createdAt ? new Date(session.createdAt) : new Date();
+      const dateOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
+      const dateStr = sessionDate.toLocaleDateString('en-GB', dateOpts).replace(/ /g, '_');
+      
+      const locName = session?.locationId?.name || 'Location';
+      const batchPart = session?.batchId?.name ? `_${session.batchId.name}` : '';
+      const rawName = `${locName}${batchPart}_${dateStr}`;
+      const safeName = rawName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      
       a.href = url;
-      a.download = `TGL-attendix-${safeSessionName}-verified-time${timeStr}.xlsx`;
+      a.download = `${safeName}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Verified attendance exported!');
@@ -468,7 +475,7 @@ const SessionDetail = () => {
       {/* ── Security Review Section ─────────────────────── */}
       <AdminSecurityReview 
         sessionId={id || ''} 
-        apiBaseUrl={import.meta.env.VITE_API_BASE || '/api'}
+        apiBaseUrl={import.meta.env.VITE_API_URL || '/api'}
         token={localStorage.getItem('token') || ''}
       />
 
