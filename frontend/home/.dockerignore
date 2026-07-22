@@ -1,6 +1,6 @@
 node_modules
-dist
 .output
-.tanstack
+.git
+.github
 .env
-npm-debug.log
+.env.*

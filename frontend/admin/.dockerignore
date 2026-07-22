@@ -1,4 +1,9 @@
 node_modules
 dist
+.output
+.git
+.github
 .env
-npm-debug.log
+.env.*
+tests
+coverage
