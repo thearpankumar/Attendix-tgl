@@ -28,13 +28,18 @@ jobs:
         with:
           workspaces: backend-rust
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Run clippy
         run: cargo clippy -- -D warnings
         env:
           CARGO_INCREMENTAL: 0
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo nextest run --locked
         env:
           CARGO_INCREMENTAL: 0
 
