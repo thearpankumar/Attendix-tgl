@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     Extension,
 };
-use calamine::{Reader, Xlsx, open_workbook_from_rs};
+use calamine::{open_workbook_from_rs, Reader, Xlsx};
 use chrono::Utc;
 use mongodb::{
     bson::{doc, oid::ObjectId},
@@ -187,21 +187,28 @@ pub async fn upload_batch_excel(
     let mut batch_name: Option<String> = None;
     let mut description: Option<String> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        AppError::BadRequest(format!("Multipart error: {}", e))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Multipart error: {}", e)))?
+    {
         let name = field.name().unwrap_or("").to_string();
-        
+
         match name.as_str() {
             "file" => {
-                file_data = Some(field.bytes().await.map_err(|e| {
-                    AppError::BadRequest(format!("Failed to read file: {}", e))
-                })?.to_vec());
+                file_data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?
+                        .to_vec(),
+                );
             }
             "name" => {
-                batch_name = Some(field.text().await.map_err(|e| {
-                    AppError::BadRequest(format!("Failed to read name: {}", e))
-                })?);
+                batch_name =
+                    Some(field.text().await.map_err(|e| {
+                        AppError::BadRequest(format!("Failed to read name: {}", e))
+                    })?);
             }
             "description" => {
                 description = Some(field.text().await.map_err(|e| {
@@ -212,13 +219,11 @@ pub async fn upload_batch_excel(
         }
     }
 
-    let file_data = file_data.ok_or_else(|| {
-        AppError::BadRequest("No file uploaded".to_string())
-    })?;
+    let file_data =
+        file_data.ok_or_else(|| AppError::BadRequest("No file uploaded".to_string()))?;
 
-    let batch_name = batch_name.unwrap_or_else(|| {
-        format!("Batch_{}", Utc::now().format("%Y%m%d_%H%M%S"))
-    });
+    let batch_name =
+        batch_name.unwrap_or_else(|| format!("Batch_{}", Utc::now().format("%Y%m%d_%H%M%S")));
 
     let (students, errors) = parse_excel(&file_data)?;
 
@@ -266,7 +271,8 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
     let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
         .map_err(|e| AppError::BadRequest(format!("Failed to open Excel file: {}", e)))?;
 
-    let range = workbook.worksheet_range_at(0)
+    let range = workbook
+        .worksheet_range_at(0)
         .ok_or_else(|| AppError::BadRequest("No worksheet found".to_string()))?
         .map_err(|e| AppError::BadRequest(format!("Failed to read worksheet: {}", e)))?;
 
@@ -274,14 +280,14 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
     let mut errors = Vec::new();
 
     let rows: Vec<_> = range.rows().collect();
-    
+
     if rows.is_empty() {
         return Ok((students, errors));
     }
 
     let header_row = rows[0];
     let mut col_map = std::collections::HashMap::new();
-    
+
     for (i, cell) in header_row.iter().enumerate() {
         let header_str = match cell {
             calamine::Data::String(s) => s.clone(),
@@ -291,21 +297,27 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
         col_map.insert(header_lower, i);
     }
 
-    let name_col = col_map.get("name").or_else(|| col_map.get("student name")).or_else(|| col_map.get("student_name"));
-    let roll_col = col_map.get("roll").or_else(|| col_map.get("roll number")).or_else(|| col_map.get("roll_number"));
+    let name_col = col_map
+        .get("name")
+        .or_else(|| col_map.get("student name"))
+        .or_else(|| col_map.get("student_name"));
+    let roll_col = col_map
+        .get("roll")
+        .or_else(|| col_map.get("roll number"))
+        .or_else(|| col_map.get("roll_number"));
     let email_col = col_map.get("email").or_else(|| col_map.get("email id"));
-    let college_col = col_map.get("college").or_else(|| col_map.get("college name"));
+    let college_col = col_map
+        .get("college")
+        .or_else(|| col_map.get("college name"));
 
     for (row_idx, row) in rows.iter().skip(1).enumerate() {
         let get_string_val = |col: Option<&usize>, row: &[calamine::Data]| -> Option<String> {
             col.and_then(|&i| {
-                row.get(i).and_then(|cell| {
-                    match cell {
-                        calamine::Data::String(s) => Some(s.clone()),
-                        calamine::Data::Int(n) => Some(n.to_string()),
-                        calamine::Data::Float(f) => Some(f.to_string()),
-                        _ => None,
-                    }
+                row.get(i).and_then(|cell| match cell {
+                    calamine::Data::String(s) => Some(s.clone()),
+                    calamine::Data::Int(n) => Some(n.to_string()),
+                    calamine::Data::Float(f) => Some(f.to_string()),
+                    _ => None,
                 })
             })
         };
@@ -326,7 +338,10 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
             }
             _ => {
                 if name.is_some() || roll_number.is_some() {
-                    errors.push(format!("Row {}: Missing required fields (name/roll_number)", row_idx + 2));
+                    errors.push(format!(
+                        "Row {}: Missing required fields (name/roll_number)",
+                        row_idx + 2
+                    ));
                 }
             }
         }

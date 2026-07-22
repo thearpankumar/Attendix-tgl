@@ -3,7 +3,10 @@ use axum::{
     response::IntoResponse,
 };
 use chrono::{Duration, Utc};
-use mongodb::{bson::{doc, DateTime as BsonDateTime}, Collection};
+use mongodb::{
+    bson::{doc, DateTime as BsonDateTime},
+    Collection,
+};
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -35,13 +38,12 @@ pub async fn get_webauthn_status(
     State(state): State<Arc<AppState>>,
     Path((short_code, roll_number)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
 
     let short_link = short_links
@@ -49,7 +51,8 @@ pub async fn get_webauthn_status(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -63,7 +66,9 @@ pub async fn get_webauthn_status(
 
     let roll_upper = roll_number.to_uppercase();
 
-    let credential = credentials.find_one(doc! { "studentId": &roll_upper }).await?;
+    let credential = credentials
+        .find_one(doc! { "studentId": &roll_upper })
+        .await?;
 
     let existing_attendance = attendances
         .find_one(doc! { "sessionId": session_id, "rollNumber": &roll_upper })
@@ -142,14 +147,14 @@ pub async fn start_registration(
     Path(short_code): Path<String>,
     Json(payload): Json<RegistrationStartRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
-    let challenges: Collection<WebAuthnChallenge> = db.collection(WebAuthnChallenge::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
+    let challenges: Collection<WebAuthnChallenge> =
+        db.collection(WebAuthnChallenge::collection_name());
 
     let roll_upper = payload.roll_number.to_uppercase();
 
@@ -158,7 +163,8 @@ pub async fn start_registration(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -170,7 +176,9 @@ pub async fn start_registration(
         return Err(AppError::BadRequest("Session expired".to_string()));
     }
 
-    let existing = credentials.find_one(doc! { "studentId": &roll_upper }).await?;
+    let existing = credentials
+        .find_one(doc! { "studentId": &roll_upper })
+        .await?;
 
     if existing.is_some() {
         return Err(AppError::BadRequest(
@@ -207,8 +215,14 @@ pub async fn start_registration(
             display_name: payload.student_name,
         },
         pub_key_cred_params: vec![
-            PubKeyCredParam { cred_type: "public-key".to_string(), alg: -7 },
-            PubKeyCredParam { cred_type: "public-key".to_string(), alg: -257 },
+            PubKeyCredParam {
+                cred_type: "public-key".to_string(),
+                alg: -7,
+            },
+            PubKeyCredParam {
+                cred_type: "public-key".to_string(),
+                alg: -257,
+            },
         ],
         authenticator_selection: AuthenticatorSelection {
             authenticator_attachment: Some("platform".to_string()),
@@ -259,12 +273,12 @@ pub async fn finish_registration(
     Path(_short_code): Path<String>,
     Json(payload): Json<RegistrationFinishRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
-    let challenges: Collection<WebAuthnChallenge> = db.collection(WebAuthnChallenge::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
+    let challenges: Collection<WebAuthnChallenge> =
+        db.collection(WebAuthnChallenge::collection_name());
 
     let roll_upper = payload.roll_number.to_uppercase();
 
@@ -280,7 +294,9 @@ pub async fn finish_registration(
         .await?
         .ok_or_else(|| AppError::BadRequest("No valid registration challenge found".to_string()))?;
 
-    let existing = credentials.find_one(doc! { "studentId": &roll_upper }).await?;
+    let existing = credentials
+        .find_one(doc! { "studentId": &roll_upper })
+        .await?;
 
     if existing.is_some() {
         return Err(AppError::BadRequest("Device already enrolled".to_string()));
@@ -296,7 +312,8 @@ pub async fn finish_registration(
     let _credential_id_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         &payload.credential.id,
-    ).unwrap_or_else(|_| payload.credential.id.as_bytes().to_vec());
+    )
+    .unwrap_or_else(|_| payload.credential.id.as_bytes().to_vec());
 
     let new_credential = WebAuthnCredential {
         id: None,
@@ -304,8 +321,13 @@ pub async fn finish_registration(
         credential_id: payload.credential.id.clone(),
         public_key,
         counter: 0,
-        device_label: stored_challenge.student_name.unwrap_or_else(|| "Unknown".to_string()),
-        device_type: payload.credential.authenticator_attachment.unwrap_or_else(|| "platform".to_string()),
+        device_label: stored_challenge
+            .student_name
+            .unwrap_or_else(|| "Unknown".to_string()),
+        device_type: payload
+            .credential
+            .authenticator_attachment
+            .unwrap_or_else(|| "platform".to_string()),
         transports: vec![],
         enrolled_at: Utc::now(),
         enrolled_ip_address: None,
@@ -369,14 +391,14 @@ pub async fn start_authentication(
     Path(short_code): Path<String>,
     Json(payload): Json<AuthenticationStartRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
-    let challenges: Collection<WebAuthnChallenge> = db.collection(WebAuthnChallenge::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
+    let challenges: Collection<WebAuthnChallenge> =
+        db.collection(WebAuthnChallenge::collection_name());
 
     let roll_upper = payload.roll_number.to_uppercase();
 
@@ -385,7 +407,8 @@ pub async fn start_authentication(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -400,7 +423,9 @@ pub async fn start_authentication(
     let credential = credentials
         .find_one(doc! { "studentId": &roll_upper })
         .await?
-        .ok_or_else(|| AppError::NotFound("No credential found. Please enroll your device first.".to_string()))?;
+        .ok_or_else(|| {
+            AppError::NotFound("No credential found. Please enroll your device first.".to_string())
+        })?;
 
     if credential.is_suspended {
         return Err(AppError::BadRequest(
@@ -446,20 +471,20 @@ pub async fn start_conditional_authentication(
     State(state): State<Arc<AppState>>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let challenges: Collection<WebAuthnChallenge> = db.collection(WebAuthnChallenge::collection_name());
+    let challenges: Collection<WebAuthnChallenge> =
+        db.collection(WebAuthnChallenge::collection_name());
 
     let short_link = short_links
         .find_one(doc! { "shortCode": short_code.to_lowercase(), "isActive": true })
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -555,15 +580,15 @@ pub async fn finish_authentication(
     Path(short_code): Path<String>,
     Json(payload): Json<AuthenticationFinishRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
     let locations: Collection<Location> = db.collection(Location::collection_name());
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
-    let challenges: Collection<WebAuthnChallenge> = db.collection(WebAuthnChallenge::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
+    let challenges: Collection<WebAuthnChallenge> =
+        db.collection(WebAuthnChallenge::collection_name());
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
 
     // Find short link
@@ -572,7 +597,8 @@ pub async fn finish_authentication(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     // Get session
@@ -596,10 +622,13 @@ pub async fn finish_authentication(
             "expiresAt": { "$gt": BsonDateTime::now() }
         })
         .await?
-        .ok_or_else(|| AppError::BadRequest("No valid authentication challenge found".to_string()))?;
+        .ok_or_else(|| {
+            AppError::BadRequest("No valid authentication challenge found".to_string())
+        })?;
 
     // Determine roll number
-    let roll_upper = payload.roll_number
+    let roll_upper = payload
+        .roll_number
         .clone()
         .or_else(|| {
             if stored_challenge.student_id.is_empty() {
@@ -627,14 +656,17 @@ pub async fn finish_authentication(
         .await?;
 
     if existing.is_some() {
-        return Err(AppError::BadRequest("Attendance already submitted".to_string()));
+        return Err(AppError::BadRequest(
+            "Attendance already submitted".to_string(),
+        ));
     }
 
     // Parse authenticator data
     let auth_data = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         &payload.credential.response.authenticator_data,
-    ).map_err(|e| AppError::BadRequest(format!("Invalid authenticator data: {}", e)))?;
+    )
+    .map_err(|e| AppError::BadRequest(format!("Invalid authenticator data: {}", e)))?;
 
     // Extract counter from authenticator data (bytes 32-36)
     let counter = if auth_data.len() >= 37 {
@@ -648,12 +680,14 @@ pub async fn finish_authentication(
 
     if !user_verified {
         return Err(AppError::Unauthorized(
-            "Biometric verification required. Please use Face ID, Touch ID, or device PIN.".to_string()
+            "Biometric verification required. Please use Face ID, Touch ID, or device PIN."
+                .to_string(),
         ));
     }
 
     // Counter-based replay attack detection
-    let replay_attack = counter > 0 && stored_credential.counter > 0 && counter <= stored_credential.counter;
+    let replay_attack =
+        counter > 0 && stored_credential.counter > 0 && counter <= stored_credential.counter;
 
     if replay_attack {
         // Update credential counter attempted replay
@@ -663,9 +697,9 @@ pub async fn finish_authentication(
                 doc! { "$set": { "counter": counter } },
             )
             .await?;
-        
+
         return Err(AppError::Unauthorized(
-            "Security violation detected. Authentication rejected.".to_string()
+            "Security violation detected. Authentication rejected.".to_string(),
         ));
     }
 
@@ -691,12 +725,14 @@ pub async fn finish_authentication(
     }
 
     // Create attendance record
-    let student_name = payload.student_name
+    let student_name = payload
+        .student_name
         .clone()
         .or_else(|| stored_challenge.student_name.clone())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let device_fingerprint_hash = payload.device_fingerprint
+    let device_fingerprint_hash = payload
+        .device_fingerprint
         .as_ref()
         .map(|fp| crate::models::Device::hash_fingerprint(fp));
 
@@ -726,15 +762,19 @@ pub async fn finish_authentication(
         device_flag: None,
         webauthn_credential_id: Some(payload.credential.id.clone()),
         webauthn_verified: true,
-        webauthn_device_type: payload.credential.authenticator_attachment.as_ref().map(|_| {
-            crate::models::WebAuthnDeviceType::Unknown
-        }),
-        webauthn_authenticator_attachment: payload.credential.authenticator_attachment.as_ref().map(|a| {
-            match a.as_str() {
+        webauthn_device_type: payload
+            .credential
+            .authenticator_attachment
+            .as_ref()
+            .map(|_| crate::models::WebAuthnDeviceType::Unknown),
+        webauthn_authenticator_attachment: payload
+            .credential
+            .authenticator_attachment
+            .as_ref()
+            .map(|a| match a.as_str() {
                 "platform" => crate::models::WebAuthnAttachment::Platform,
                 _ => crate::models::WebAuthnAttachment::CrossPlatform,
-            }
-        }),
+            }),
         webauthn_counter: Some(counter as i32),
         webauthn_replay_attack: replay_attack,
         flag_reviewed: false,
@@ -750,7 +790,11 @@ pub async fn finish_authentication(
         gps_speed: payload.gps_data.as_ref().and_then(|g| g.speed),
         gps_heading: None,
         gps_timestamp: payload.gps_data.as_ref().and_then(|g| g.timestamp),
-        gps_mock_location: payload.gps_data.as_ref().and_then(|g| g.mock_location).unwrap_or(false),
+        gps_mock_location: payload
+            .gps_data
+            .as_ref()
+            .and_then(|g| g.mock_location)
+            .unwrap_or(false),
         gps_provider: payload.gps_data.as_ref().and_then(|g| g.provider.clone()),
         gps_anomalies: vec![],
         gps_confidence: None,
@@ -815,9 +859,7 @@ pub async fn get_upload_url(
     State(state): State<Arc<AppState>>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
@@ -827,7 +869,8 @@ pub async fn get_upload_url(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -839,8 +882,16 @@ pub async fn get_upload_url(
         return Err(AppError::BadRequest("Session expired".to_string()));
     }
 
-    let key = format!("attendance-photos/{}_{}.jpg", session_id.to_hex(), chrono::Utc::now().timestamp());
-    let presigned = state.storage.provider().get_upload_url(&key, "image/jpeg").await?;
+    let key = format!(
+        "attendance-photos/{}_{}.jpg",
+        session_id.to_hex(),
+        chrono::Utc::now().timestamp()
+    );
+    let presigned = state
+        .storage
+        .provider()
+        .get_upload_url(&key, "image/jpeg")
+        .await?;
 
     Ok(Json(UploadUrlResponse {
         upload_url: presigned.upload_url,
@@ -901,9 +952,7 @@ pub async fn submit_attendance(
     Path(short_code): Path<String>,
     Json(payload): Json<SubmitAttendanceRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
@@ -915,7 +964,8 @@ pub async fn submit_attendance(
         .await?
         .ok_or_else(|| AppError::NotFound("Invalid session".to_string()))?;
 
-    let session_id = short_link.session_id
+    let session_id = short_link
+        .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
     let session = sessions
@@ -938,7 +988,9 @@ pub async fn submit_attendance(
         .await?;
 
     if existing.is_some() {
-        return Err(AppError::BadRequest("Attendance already submitted".to_string()));
+        return Err(AppError::BadRequest(
+            "Attendance already submitted".to_string(),
+        ));
     }
 
     // Get location
@@ -962,7 +1014,8 @@ pub async fn submit_attendance(
         )));
     }
 
-    let device_fingerprint_hash = payload.device_fingerprint
+    let device_fingerprint_hash = payload
+        .device_fingerprint
         .as_ref()
         .map(|fp| crate::models::Device::hash_fingerprint(fp));
 
@@ -1009,7 +1062,11 @@ pub async fn submit_attendance(
         gps_speed: payload.gps_data.as_ref().and_then(|g| g.speed),
         gps_heading: None,
         gps_timestamp: payload.gps_data.as_ref().and_then(|g| g.timestamp),
-        gps_mock_location: payload.gps_data.as_ref().and_then(|g| g.mock_location).unwrap_or(false),
+        gps_mock_location: payload
+            .gps_data
+            .as_ref()
+            .and_then(|g| g.mock_location)
+            .unwrap_or(false),
         gps_provider: payload.gps_data.as_ref().and_then(|g| g.provider.clone()),
         gps_anomalies: vec![],
         gps_confidence: None,
@@ -1110,46 +1167,48 @@ fn extract_public_key_from_attestation(attestation_object: &str, _rp_id: &str) -
     let decoded = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         attestation_object,
-    ).map_err(|e| AppError::BadRequest(format!("Invalid attestation object: {}", e)))?;
+    )
+    .map_err(|e| AppError::BadRequest(format!("Invalid attestation object: {}", e)))?;
 
     let cbor_value: ciborium::Value = ciborium::from_reader(&decoded[..])
         .map_err(|e| AppError::BadRequest(format!("CBOR parsing failed: {}", e)))?;
 
-    let cbor_map = cbor_value.as_map()
+    let cbor_map = cbor_value
+        .as_map()
         .ok_or_else(|| AppError::BadRequest("Attestation object is not a CBOR map".to_string()))?;
 
     let mut auth_data: Option<Vec<u8>> = None;
 
     for (key, value) in cbor_map.iter() {
-        if let Some(key_str) = key.as_text() {
-            match key_str {
-                "authData" => {
-                    if let ciborium::Value::Bytes(bytes) = value {
-                        auth_data = Some(bytes.clone());
-                    }
-                }
-                _ => {}
+        if let Some("authData") = key.as_text() {
+            if let ciborium::Value::Bytes(bytes) = value {
+                auth_data = Some(bytes.clone());
             }
         }
     }
 
-    let auth_data = auth_data.ok_or_else(|| AppError::BadRequest("Missing authData".to_string()))?;
+    let auth_data =
+        auth_data.ok_or_else(|| AppError::BadRequest("Missing authData".to_string()))?;
 
     if auth_data.len() < 55 {
         return Err(AppError::BadRequest("authData too short".to_string()));
     }
 
     let offset = 37 + auth_data[37] as usize;
-    
+
     if auth_data.len() < offset + 2 {
-        return Err(AppError::BadRequest("authData missing credential data".to_string()));
+        return Err(AppError::BadRequest(
+            "authData missing credential data".to_string(),
+        ));
     }
 
     let credential_id_len = ((auth_data[offset] as usize) << 8) | (auth_data[offset + 1] as usize);
     let pubkey_offset = offset + 2 + credential_id_len;
 
     if auth_data.len() < pubkey_offset {
-        return Err(AppError::BadRequest("authData missing public key".to_string()));
+        return Err(AppError::BadRequest(
+            "authData missing public key".to_string(),
+        ));
     }
 
     let pubkey_cbor: ciborium::Value = ciborium::from_reader(&auth_data[pubkey_offset..])

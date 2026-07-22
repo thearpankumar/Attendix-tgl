@@ -109,19 +109,21 @@ pub async fn review_submission(
     let message = match payload.action.as_str() {
         "approve" => {
             // Clear flags, mark verified
-            attendances.update_one(
-                doc! { "_id": attendance_oid },
-                doc! {
-                    "$set": {
-                        "flagged": false,
-                        "flagReviewed": true,
-                        "flagReviewedBy": auth.id,
-                        "flagReviewedAt": BsonDateTime::now(),
-                        "flagNotes": payload.notes,
-                        "verified": true,
-                    }
-                },
-            ).await?;
+            attendances
+                .update_one(
+                    doc! { "_id": attendance_oid },
+                    doc! {
+                        "$set": {
+                            "flagged": false,
+                            "flagReviewed": true,
+                            "flagReviewedBy": auth.id,
+                            "flagReviewedAt": BsonDateTime::now(),
+                            "flagNotes": payload.notes,
+                            "verified": true,
+                        }
+                    },
+                )
+                .await?;
 
             // TODO: Update device trust score (when device_trust is available)
 
@@ -129,18 +131,20 @@ pub async fn review_submission(
         }
         "reject" => {
             // Keep flagged, mark reviewed
-            attendances.update_one(
-                doc! { "_id": attendance_oid },
-                doc! {
-                    "$set": {
-                        "flagReviewed": true,
-                        "flagReviewedBy": auth.id,
-                        "flagReviewedAt": BsonDateTime::now(),
-                        "flagNotes": payload.notes,
-                        "verified": false,
-                    }
-                },
-            ).await?;
+            attendances
+                .update_one(
+                    doc! { "_id": attendance_oid },
+                    doc! {
+                        "$set": {
+                            "flagReviewed": true,
+                            "flagReviewedBy": auth.id,
+                            "flagReviewedAt": BsonDateTime::now(),
+                            "flagNotes": payload.notes,
+                            "verified": false,
+                        }
+                    },
+                )
+                .await?;
 
             "Attendance submission rejected and marked as unverified"
         }
@@ -261,16 +265,14 @@ pub async fn get_submission_details(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(attendance_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
 
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
 
@@ -311,33 +313,47 @@ pub async fn get_submission_details(
             heading: attendance.gps_heading,
             provider: attendance.gps_provider,
             mock_location: attendance.gps_mock_location,
-            confidence: attendance.gps_confidence.map(|c| format!("{:?}", c).to_lowercase()),
-            anomalies: attendance.gps_anomalies.iter().map(|a| {
-                serde_json::json!({
-                    "type": format!("{:?}", a.anomaly_type),
-                    "severity": a.severity,
-                    "details": a.details,
-                    "detectedAt": a.detected_at,
+            confidence: attendance
+                .gps_confidence
+                .map(|c| format!("{:?}", c).to_lowercase()),
+            anomalies: attendance
+                .gps_anomalies
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "type": format!("{:?}", a.anomaly_type),
+                        "severity": a.severity,
+                        "details": a.details,
+                        "detectedAt": a.detected_at,
+                    })
                 })
-            }).collect(),
+                .collect(),
         },
         emulator: EmulatorDetails {
             detected: attendance.emulator_detected,
-            flags: attendance.emulator_flags.iter().map(|f| {
-                serde_json::json!({
-                    "type": format!("{:?}", f.flag_type),
-                    "severity": f.severity,
-                    "details": f.details,
+            flags: attendance
+                .emulator_flags
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "type": format!("{:?}", f.flag_type),
+                        "severity": f.severity,
+                        "details": f.details,
+                    })
                 })
-            }).collect(),
+                .collect(),
         },
         integrity: IntegrityDetails {
-            checks: attendance.integrity_checks.iter().map(|c| {
-                serde_json::json!({
-                    "type": format!("{:?}", c.check_type),
-                    "details": c.details,
+            checks: attendance
+                .integrity_checks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "type": format!("{:?}", c.check_type),
+                        "details": c.details,
+                    })
                 })
-            }).collect(),
+                .collect(),
         },
         has_security_data,
     };
@@ -358,16 +374,14 @@ pub async fn get_security_settings(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
 
     let configs: Collection<SystemConfig> = db.collection(SystemConfig::collection_name());
 
@@ -392,16 +406,14 @@ pub async fn update_security_settings(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<UpdateSecuritySettingsRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
 
     let configs: Collection<SystemConfig> = db.collection(SystemConfig::collection_name());
 

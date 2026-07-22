@@ -24,7 +24,7 @@ impl DeviceTrustScore {
         score += (self.successful_submissions * SUCCESS_BONUS).min(MAX_SUCCESS_BONUS);
         score -= (self.failed_submissions * FAIL_PENALTY).min(MAX_FAIL_PENALTY);
         score -= (self.spoofing_attempts * SPOOFING_PENALTY).min(MAX_FAIL_PENALTY);
-        score.max(0).min(100)
+        score.clamp(0, 100)
     }
 }
 
@@ -33,9 +33,9 @@ pub async fn get_device_trust_score(
     fingerprint_hash: &str,
 ) -> Result<Option<DeviceTrustScore>> {
     let devices: Collection<Device> = state.database().collection(Device::collection_name());
-    
+
     let filter = doc! { "fingerprintHash": fingerprint_hash };
-    
+
     let pipeline = vec![
         doc! { "$match": filter },
         doc! {
@@ -47,9 +47,9 @@ pub async fn get_device_trust_score(
             }
         },
     ];
-    
+
     let mut cursor = devices.aggregate(pipeline).await?;
-    
+
     if cursor.advance().await? {
         let doc = cursor.deserialize_current()?;
         Ok(Some(DeviceTrustScore {
@@ -70,7 +70,7 @@ pub async fn update_device_trust(
     spoofing_detected: bool,
 ) -> Result<()> {
     let devices: Collection<Device> = state.database().collection(Device::collection_name());
-    
+
     let update = if success {
         doc! { "$inc": { "successfulSubmissions": 1 } }
     } else if spoofing_detected {
@@ -78,12 +78,11 @@ pub async fn update_device_trust(
     } else {
         doc! { "$inc": { "failedSubmissions": 1 } }
     };
-    
-    devices.update_one(
-        doc! { "fingerprintHash": fingerprint_hash },
-        update,
-    ).await?;
-    
+
+    devices
+        .update_one(doc! { "fingerprintHash": fingerprint_hash }, update)
+        .await?;
+
     Ok(())
 }
 
@@ -93,17 +92,19 @@ pub async fn flag_suspicious_device(
     reason: &str,
 ) -> Result<()> {
     let devices: Collection<Device> = state.database().collection(Device::collection_name());
-    
-    devices.update_one(
-        doc! { "fingerprintHash": fingerprint_hash },
-        doc! {
-            "$set": {
-                "isBlocked": true,
-                "blockReason": reason,
-                "blockedAt": mongodb::bson::DateTime::now(),
-            }
-        },
-    ).await?;
-    
+
+    devices
+        .update_one(
+            doc! { "fingerprintHash": fingerprint_hash },
+            doc! {
+                "$set": {
+                    "isBlocked": true,
+                    "blockReason": reason,
+                    "blockedAt": mongodb::bson::DateTime::now(),
+                }
+            },
+        )
+        .await?;
+
     Ok(())
 }

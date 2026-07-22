@@ -43,16 +43,14 @@ pub async fn create_short_link(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<CreateShortLinkRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
 
@@ -76,20 +74,31 @@ pub async fn create_short_link(
         }
 
         sessions
-            .update_one(doc! { "_id": sid }, doc! { "$set": { "totpEnabled": true } })
+            .update_one(
+                doc! { "_id": sid },
+                doc! { "$set": { "totpEnabled": true } },
+            )
             .await?;
     }
 
-    let short_code = payload.short_code.unwrap_or_else(|| ShortLink::generate_short_code(6));
+    let short_code = payload
+        .short_code
+        .unwrap_or_else(|| ShortLink::generate_short_code(6));
 
     let existing = collection
         .find_one(doc! { "shortCode": &short_code })
         .await?;
     if existing.is_some() {
-        return Err(AppError::BadRequest("Short code already exists".to_string()));
+        return Err(AppError::BadRequest(
+            "Short code already exists".to_string(),
+        ));
     }
 
-    let expires_at = payload.expires_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc)));
+    let expires_at = payload.expires_at.and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+    });
 
     let short_link = ShortLink {
         id: None,
@@ -134,16 +143,14 @@ pub async fn get_short_links(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<ShortLinksQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
 
     let page = query.page.unwrap_or(1);
@@ -184,16 +191,14 @@ pub async fn get_short_link_by_code(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
 
@@ -222,7 +227,9 @@ pub async fn get_short_link_by_code(
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     if !session.is_active {
-        return Err(AppError::BadRequest("Associated session is not active".to_string()));
+        return Err(AppError::BadRequest(
+            "Associated session is not active".to_string(),
+        ));
     }
 
     Ok(Json(serde_json::json!({
@@ -253,16 +260,14 @@ pub async fn attach_short_link(
     Path(short_code): Path<String>,
     Json(payload): Json<AttachRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
     let sessions: Collection<Session> = db.collection(Session::collection_name());
 
@@ -300,7 +305,10 @@ pub async fn attach_short_link(
         .await?;
 
     sessions
-        .update_one(doc! { "_id": session_id }, doc! { "$set": { "totpEnabled": true } })
+        .update_one(
+            doc! { "_id": session_id },
+            doc! { "$set": { "totpEnabled": true } },
+        )
         .await?;
 
     Ok(Json(serde_json::json!({
@@ -315,16 +323,14 @@ pub async fn detach_short_link(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
 
     let link = collection
@@ -339,7 +345,9 @@ pub async fn detach_short_link(
         )
         .await?;
 
-    Ok(Json(serde_json::json!({ "message": "Short link detached successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Short link detached successfully" }),
+    ))
 }
 
 pub async fn delete_short_link(
@@ -347,16 +355,14 @@ pub async fn delete_short_link(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
 
     let result = collection
@@ -367,23 +373,23 @@ pub async fn delete_short_link(
         return Err(AppError::NotFound("Short link not found".to_string()));
     }
 
-    Ok(Json(serde_json::json!({ "message": "Short link deleted successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Short link deleted successfully" }),
+    ))
 }
 
 pub async fn get_available_sessions(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
     let sessions: Collection<Session> = db.collection(Session::collection_name());
 
     let mut cursor = sessions

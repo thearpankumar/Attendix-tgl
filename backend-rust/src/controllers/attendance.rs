@@ -11,15 +11,16 @@ use sha2::Sha256;
 use std::sync::Arc;
 
 use crate::{
+    constants::*,
     error::{AppError, Result},
     middleware::{
-        DeviceCheckResult, DeviceIntegrityResult, EmulatorDetectionResult, GpsValidationResult,
-        record_device_success,
+        record_device_success, DeviceCheckResult, DeviceIntegrityResult, EmulatorDetectionResult,
+        GpsValidationResult,
     },
     models::{
-        Attendance, AttendanceDeviceFlag, Device, EmulatorFlag, EmulatorFlagType,
-        GpsAnomaly, GpsAnomalyType, GpsConfidence, IntegrityCheck, IntegrityCheckType,
-        Location, PhotoHash, Session, WebAuthnCredential,
+        Attendance, AttendanceDeviceFlag, Device, EmulatorFlag, EmulatorFlagType, GpsAnomaly,
+        GpsAnomalyType, GpsConfidence, IntegrityCheck, IntegrityCheckType, Location, PhotoHash,
+        Session, WebAuthnCredential, Severity,
     },
     services::{compute_image_hash, detect_faces, GpsPositionEntry, IpInfo},
     utils::{calculate_distance, is_same_photo},
@@ -49,7 +50,9 @@ pub struct SubmitAttendanceRequest {
 fn verify_captcha(captcha_answer: &str, captcha_id: &str, jwt_secret: &str) -> Result<()> {
     let parts: Vec<&str> = captcha_id.split('.').collect();
     if parts.len() != 2 {
-        return Err(AppError::BadRequest("Invalid captcha ID format".to_string()));
+        return Err(AppError::BadRequest(
+            "Invalid captcha ID format".to_string(),
+        ));
     }
 
     let timestamp: i64 = parts[0]
@@ -59,7 +62,9 @@ fn verify_captcha(captcha_answer: &str, captcha_id: &str, jwt_secret: &str) -> R
     const FIVE_MINUTES_MS: i64 = 5 * 60 * 1000;
     let now = chrono::Utc::now().timestamp_millis();
     if now - timestamp > FIVE_MINUTES_MS {
-        return Err(AppError::BadRequest("Captcha expired. Please refresh and try again.".to_string()));
+        return Err(AppError::BadRequest(
+            "Captcha expired. Please refresh and try again.".to_string(),
+        ));
     }
 
     let mut mac = Hmac::<Sha256>::new_from_slice(jwt_secret.as_bytes())
@@ -68,7 +73,9 @@ fn verify_captcha(captcha_answer: &str, captcha_id: &str, jwt_secret: &str) -> R
     let expected_signature = hex::encode(mac.finalize().into_bytes());
 
     if expected_signature != parts[1] {
-        return Err(AppError::BadRequest("Incorrect captcha. Please try again.".to_string()));
+        return Err(AppError::BadRequest(
+            "Incorrect captcha. Please try again.".to_string(),
+        ));
     }
 
     Ok(())
@@ -129,7 +136,14 @@ pub async fn validate_token(
 
     let locations: Collection<Location> = state
         .db
-        .database(state.config.mongodb_uri.split('/').next_back().unwrap_or("default"))
+        .database(
+            state
+                .config
+                .mongodb_uri
+                .split('/')
+                .next_back()
+                .unwrap_or("default"),
+        )
         .collection(Location::collection_name());
 
     let location = locations
@@ -227,8 +241,12 @@ pub async fn get_upload_url(
         .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
 
     let key = format!("attendance_{}.jpg", uuid::Uuid::new_v4());
-    
-    let presigned = state.storage.provider().get_upload_url(&key, "image/jpeg").await?;
+
+    let presigned = state
+        .storage
+        .provider()
+        .get_upload_url(&key, "image/jpeg")
+        .await?;
 
     Ok(Json(serde_json::json!({
         "uploadUrl": presigned.upload_url,
@@ -294,16 +312,22 @@ pub async fn submit_attendance(
         .unwrap_or(false);
 
     if !bypass_captcha {
-        if let (Some(captcha_answer), Some(captcha_id)) = (&payload.captcha_answer, &payload.captcha_id) {
+        if let (Some(captcha_answer), Some(captcha_id)) =
+            (&payload.captcha_answer, &payload.captcha_id)
+        {
             let jwt_secret = &state.config.jwt_secret;
             verify_captcha(captcha_answer, captcha_id, jwt_secret)?;
         } else {
-            return Err(AppError::BadRequest("Captcha verification inputs missing".to_string()));
+            return Err(AppError::BadRequest(
+                "Captcha verification inputs missing".to_string(),
+            ));
         }
     }
 
     if let Some(ref fingerprint) = payload.device_fingerprint {
-        if let Some((is_blocked, block_reason)) = crate::middleware::check_device_blocked(&state, fingerprint).await? {
+        if let Some((is_blocked, block_reason)) =
+            crate::middleware::check_device_blocked(&state, fingerprint).await?
+        {
             if is_blocked {
                 return Err(AppError::Forbidden(format!(
                     "This device has been blocked: {}",
@@ -319,10 +343,19 @@ pub async fn submit_attendance(
         .split('/')
         .next_back()
         .unwrap_or("default");
-    
-    let sessions: Collection<Session> = state.db.database(db_name).collection(Session::collection_name());
-    let attendances: Collection<Attendance> = state.db.database(db_name).collection(Attendance::collection_name());
-    let locations: Collection<Location> = state.db.database(db_name).collection(Location::collection_name());
+
+    let sessions: Collection<Session> = state
+        .db
+        .database(db_name)
+        .collection(Session::collection_name());
+    let attendances: Collection<Attendance> = state
+        .db
+        .database(db_name)
+        .collection(Attendance::collection_name());
+    let locations: Collection<Location> = state
+        .db
+        .database(db_name)
+        .collection(Location::collection_name());
 
     let token_hash = Session::hash_token(&token);
 
@@ -338,16 +371,20 @@ pub async fn submit_attendance(
     let roll_upper = payload.roll_number.to_uppercase();
 
     // Check WebAuthn credential enrollment time for grace period
-    let webauthn_credentials: Collection<WebAuthnCredential> = state.db.database(db_name).collection(WebAuthnCredential::collection_name());
-    
+    let webauthn_credentials: Collection<WebAuthnCredential> = state
+        .db
+        .database(db_name)
+        .collection(WebAuthnCredential::collection_name());
+
     let webauthn_required = if let Some(credential) = webauthn_credentials
         .find_one(doc! { "studentId": &roll_upper })
         .await?
     {
         // Grace period: 15 minutes after enrollment
         let enrolled_at = credential.enrolled_at;
-        let grace_period_end = enrolled_at + chrono::Duration::minutes(15);
-        
+        let grace_period_end =
+            enrolled_at + chrono::Duration::minutes(WEBAUTHN_GRACE_PERIOD_MINUTES);
+
         Utc::now() >= grace_period_end
     } else {
         false // No credential, no WebAuthn required
@@ -355,7 +392,8 @@ pub async fn submit_attendance(
 
     if webauthn_required && !payload.webauthn_verified.unwrap_or(false) {
         return Err(AppError::Forbidden(
-            "Security policy requires biometric authentication. Please use your enrolled device.".to_string()
+            "Security policy requires biometric authentication. Please use your enrolled device."
+                .to_string(),
         ));
     }
 
@@ -364,7 +402,9 @@ pub async fn submit_attendance(
         .await?;
 
     if existing.is_some() {
-        return Err(AppError::BadRequest("Attendance already submitted".to_string()));
+        return Err(AppError::BadRequest(
+            "Attendance already submitted".to_string(),
+        ));
     }
 
     let location = locations
@@ -388,34 +428,54 @@ pub async fn submit_attendance(
         .unwrap_or("Unknown")
         .to_string();
 
-    let roll_upper = roll_upper.clone();
-    let user_agent_clone = user_agent.clone();
+    let ip_info: IpInfo = crate::services::lookup_ip(&state.http_client, &ip)
+        .await
+        .unwrap_or_else(|_| IpInfo {
+            isp: "Unknown".to_string(),
+            org: "Unknown".to_string(),
+            country: None,
+            region: None,
+            city: None,
+        });
 
-    let ip_info: IpInfo = crate::services::lookup_ip(&state.http_client, &ip).await.unwrap_or_else(|_| IpInfo {
-        isp: "Unknown".to_string(),
-        org: "Unknown".to_string(),
-        country: None,
-        region: None,
-        city: None,
-    });
-
-    let has_high_severity_gps = gps_validation.anomalies.iter().any(|a| a.severity == "high");
-    let has_security_flags = has_high_severity_gps || emulator_detection.has_high_severity || emulator_detection.detected;
+    let has_high_severity_gps = gps_validation
+        .anomalies
+        .iter()
+        .any(|a| a.severity == Severity::High);
+    let has_security_flags = has_high_severity_gps
+        || emulator_detection.has_high_severity
+        || emulator_detection.detected;
 
     let (device_flag, flag_reason) = if has_high_severity_gps {
-        let anomaly_types: Vec<&str> = gps_validation.anomalies.iter()
-            .filter(|a| a.severity == "high")
+        let anomaly_types: Vec<&str> = gps_validation
+            .anomalies
+            .iter()
+            .filter(|a| a.severity == Severity::High)
             .map(|a| a.anomaly_type.as_str())
             .collect();
-        (Some(AttendanceDeviceFlag::GpsAnomalyDetected), Some(format!("GPS anomalies: {}", anomaly_types.join(", "))))
+        (
+            Some(AttendanceDeviceFlag::GpsAnomalyDetected),
+            Some(format!("GPS anomalies: {}", anomaly_types.join(", "))),
+        )
     } else if emulator_detection.detected {
-        (Some(AttendanceDeviceFlag::EmulatorDetected), Some(format!("Emulator detected: {}", emulator_detection.flags.join(", "))))
+        (
+            Some(AttendanceDeviceFlag::EmulatorDetected),
+            Some(format!(
+                "Emulator detected: {}",
+                emulator_detection.flags.join(", ")
+            )),
+        )
     } else if !device_integrity.passed {
-        let check_names: Vec<&str> = device_integrity.checks.iter()
+        let check_names: Vec<&str> = device_integrity
+            .checks
+            .iter()
             .filter(|c| !c.passed)
             .map(|c| c.name.as_str())
             .collect();
-        (Some(AttendanceDeviceFlag::IntegrityCheckFailed), Some(format!("Integrity issues: {}", check_names.join(", "))))
+        (
+            Some(AttendanceDeviceFlag::IntegrityCheckFailed),
+            Some(format!("Integrity issues: {}", check_names.join(", "))),
+        )
     } else {
         (None, None)
     };
@@ -423,36 +483,40 @@ pub async fn submit_attendance(
     let should_flag = has_security_flags || !device_integrity.passed;
 
     let gps_metadata = payload.gps_metadata.as_ref();
-    
+
     let device_fingerprint_hash = payload
         .device_fingerprint
         .as_ref()
         .map(|fp| Device::hash_fingerprint(fp));
 
-    let mut gps_anomalies: Vec<GpsAnomaly> = gps_validation.anomalies.iter().map(|a| {
-        let anomaly_type = match a.anomaly_type.as_str() {
-            "ACCURACY_SUSPICIOUS" => GpsAnomalyType::AccuracySuspicious,
-            "ACCURACY_VERY_SUSPICIOUS" => GpsAnomalyType::AccuracyVerySuspicious,
-            "ALTITUDE_ZERO_OR_NULL" => GpsAnomalyType::AltitudeZeroOrNull,
-            "SPEED_IMPOSSIBLE" => GpsAnomalyType::SpeedImpossible,
-            "POSITION_JUMP" => GpsAnomalyType::PositionJump,
-            "TIMESTAMP_DRIFT" => GpsAnomalyType::TimestampDrift,
-            "ACCURACY_PATTERN" => GpsAnomalyType::AccuracyPattern,
-            "PROVIDER_MISMATCH" => GpsAnomalyType::ProviderMismatch,
-            _ => GpsAnomalyType::AccuracySuspicious,
-        };
-        GpsAnomaly {
-            anomaly_type,
-            severity: a.severity.clone(),
-            details: Some(a.details.clone()),
-            detected_at: Utc::now(),
-        }
-    }).collect();
+    let mut gps_anomalies: Vec<GpsAnomaly> = gps_validation
+        .anomalies
+        .iter()
+        .map(|a| {
+            let anomaly_type = match a.anomaly_type.as_str() {
+                "ACCURACY_SUSPICIOUS" => GpsAnomalyType::AccuracySuspicious,
+                "ACCURACY_VERY_SUSPICIOUS" => GpsAnomalyType::AccuracyVerySuspicious,
+                "ALTITUDE_ZERO_OR_NULL" => GpsAnomalyType::AltitudeZeroOrNull,
+                "SPEED_IMPOSSIBLE" => GpsAnomalyType::SpeedImpossible,
+                "POSITION_JUMP" => GpsAnomalyType::PositionJump,
+                "TIMESTAMP_DRIFT" => GpsAnomalyType::TimestampDrift,
+                "ACCURACY_PATTERN" => GpsAnomalyType::AccuracyPattern,
+                "PROVIDER_MISMATCH" => GpsAnomalyType::ProviderMismatch,
+                _ => GpsAnomalyType::AccuracySuspicious,
+            };
+            GpsAnomaly {
+                anomaly_type,
+                severity: a.severity,
+                details: Some(a.details.clone()),
+                detected_at: Utc::now(),
+            }
+        })
+        .collect();
 
     // GPS History Analysis - track position and detect anomalies
     // Use device fingerprint as device identifier, fall back to roll number
     let device_id = payload.device_fingerprint.as_deref().unwrap_or(&roll_upper);
-    
+
     let gps_position_entry = GpsPositionEntry {
         latitude: payload.latitude,
         longitude: payload.longitude,
@@ -460,26 +524,38 @@ pub async fn submit_attendance(
         altitude: gps_metadata.and_then(|g| g.altitude),
         speed: gps_metadata.and_then(|g| g.speed),
         heading: gps_metadata.and_then(|g| g.heading),
-        timestamp: gps_metadata.and_then(|g| g.timestamp).unwrap_or_else(|| Utc::now().timestamp_millis()),
+        timestamp: gps_metadata
+            .and_then(|g| g.timestamp)
+            .unwrap_or_else(|| Utc::now().timestamp_millis()),
         provider: gps_metadata.and_then(|g| g.provider.clone()),
         mock_location: gps_metadata.and_then(|g| g.is_mock_location),
     };
 
     // Add position to history and analyze (gracefully handle errors)
-    if let Err(e) = state.gps_history.add_position(device_id, gps_position_entry.clone()).await {
+    if let Err(e) = state
+        .gps_history
+        .add_position(device_id, gps_position_entry.clone())
+        .await
+    {
         tracing::warn!("Failed to add GPS position to history: {}", e);
     }
 
-    // Check for position jumps (threshold: 500m with speed > 200km/h indicates impossible travel)
-    match state.gps_history.detect_position_jump(device_id, &gps_position_entry, 500.0).await {
+    // Check for position jumps (threshold: POSITION_JUMP_THRESHOLD_M with speed > MAX_REASONABLE_SPEED_KMH indicates impossible travel)
+    match state
+        .gps_history
+        .detect_position_jump(device_id, &gps_position_entry, POSITION_JUMP_THRESHOLD_M)
+        .await
+    {
         Ok(true) => {
             tracing::warn!(
                 "Position jump detected for device {} at ({}, {})",
-                device_id, payload.latitude, payload.longitude
+                device_id,
+                payload.latitude,
+                payload.longitude
             );
             gps_anomalies.push(GpsAnomaly {
                 anomaly_type: GpsAnomalyType::PositionJump,
-                severity: "high".to_string(),
+                severity: Severity::High,
                 details: Some("GPS position jump detected from history analysis".to_string()),
                 detected_at: Utc::now(),
             });
@@ -491,12 +567,18 @@ pub async fn submit_attendance(
     }
 
     // Check for impossible travel patterns
-    match state.gps_history.detect_impossible_travel(device_id, &gps_position_entry).await {
+    match state
+        .gps_history
+        .detect_impossible_travel(device_id, &gps_position_entry)
+        .await
+    {
         Ok(history_anomalies) if !history_anomalies.is_empty() => {
             for anomaly in history_anomalies {
                 tracing::warn!(
                     "Impossible travel detected for device {}: {} - {}",
-                    device_id, anomaly.anomaly_type, anomaly.details
+                    device_id,
+                    anomaly.anomaly_type,
+                    anomaly.details
                 );
                 let anomaly_type = match anomaly.anomaly_type.as_str() {
                     "RAPID_POSITION_CHANGE" => GpsAnomalyType::PositionJump,
@@ -525,59 +607,66 @@ pub async fn submit_attendance(
         _ => None,
     };
 
-    let emulator_flags: Vec<EmulatorFlag> = emulator_detection.flags.iter().map(|f| {
-        let flag_type = match f.as_str() {
-            "DESKTOP_GPU_DETECTED" => EmulatorFlagType::DesktopGpuDetected,
-            "AUDIO_FINGERPRINT_EMULATOR" => EmulatorFlagType::AudioFingerprintEmulator,
-            "TIMING_ANOMALY" => EmulatorFlagType::TimingAnomaly,
-            "BATTERY_PATTERN_EMULATOR" => EmulatorFlagType::BatteryPatternEmulator,
-            "SCREEN_RESOLUTION_SUSPICIOUS" => EmulatorFlagType::ScreenResolutionSuspicious,
-            "DEVICE_MEMORY_ROUND" => EmulatorFlagType::DeviceMemoryRound,
-            "WEBGL_RENDERER_EMULATOR" => EmulatorFlagType::WebglRendererEmulator,
-            "PLATFORM_INCONSISTENCY" => EmulatorFlagType::PlatformInconsistency,
-            _ => EmulatorFlagType::PlatformInconsistency,
-        };
-        EmulatorFlag {
-            flag_type,
-            severity: "medium".to_string(),
-            details: None,
-        }
-    }).collect();
+    let emulator_flags: Vec<EmulatorFlag> = emulator_detection
+        .flags
+        .iter()
+        .map(|f| {
+            let flag_type = match f.as_str() {
+                "DESKTOP_GPU_DETECTED" => EmulatorFlagType::DesktopGpuDetected,
+                "AUDIO_FINGERPRINT_EMULATOR" => EmulatorFlagType::AudioFingerprintEmulator,
+                "TIMING_ANOMALY" => EmulatorFlagType::TimingAnomaly,
+                "BATTERY_PATTERN_EMULATOR" => EmulatorFlagType::BatteryPatternEmulator,
+                "SCREEN_RESOLUTION_SUSPICIOUS" => EmulatorFlagType::ScreenResolutionSuspicious,
+                "DEVICE_MEMORY_ROUND" => EmulatorFlagType::DeviceMemoryRound,
+                "WEBGL_RENDERER_EMULATOR" => EmulatorFlagType::WebglRendererEmulator,
+                "PLATFORM_INCONSISTENCY" => EmulatorFlagType::PlatformInconsistency,
+                _ => EmulatorFlagType::PlatformInconsistency,
+            };
+            EmulatorFlag {
+                flag_type,
+                severity: Severity::Medium,
+                details: None,
+            }
+        })
+        .collect();
 
-    let integrity_checks: Vec<IntegrityCheck> = device_integrity.checks.iter().map(|c| {
-        let check_type = match c.name.as_str() {
-            "TIMING_MANIPULATION" => IntegrityCheckType::TimingManipulation,
-            "BROWSER_API_INCONSISTENCY" => IntegrityCheckType::BrowserApiInconsistency,
-            "POINTER_EVENTS_SUSPICIOUS" => IntegrityCheckType::PointerEventsSuspicious,
-            _ => IntegrityCheckType::BrowserApiInconsistency,
-        };
-        IntegrityCheck {
-            check_type,
-            passed: c.passed,
-            details: c.details.clone(),
-        }
-    }).collect();
+    let integrity_checks: Vec<IntegrityCheck> = device_integrity
+        .checks
+        .iter()
+        .map(|c| {
+            let check_type = match c.name.as_str() {
+                "TIMING_MANIPULATION" => IntegrityCheckType::TimingManipulation,
+                "BROWSER_API_INCONSISTENCY" => IntegrityCheckType::BrowserApiInconsistency,
+                "POINTER_EVENTS_SUSPICIOUS" => IntegrityCheckType::PointerEventsSuspicious,
+                _ => IntegrityCheckType::BrowserApiInconsistency,
+            };
+            IntegrityCheck {
+                check_type,
+                passed: c.passed,
+                details: c.details.clone(),
+            }
+        })
+        .collect();
 
     // Perform face detection if photo_url is provided
-    let face_detected_result = if let (Some(photo_public_id), true) = 
-        (&payload.photo_public_id, payload.photo_url.is_some()) {
+    let face_detected_result = if let (Some(photo_public_id), true) =
+        (&payload.photo_public_id, payload.photo_url.is_some())
+    {
         match state.storage.provider().download(photo_public_id).await {
-            Ok(image_data) => {
-                match detect_faces(&image_data).await {
-                    Ok(result) => {
-                        tracing::info!(
-                            "Face detection completed for attendance: detected={}, confidence={:.2}",
-                            result.face_detected,
-                            result.confidence
-                        );
-                        Some(result.face_detected)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Face detection failed for attendance submission: {}", e);
-                        None
-                    }
+            Ok(image_data) => match detect_faces(&image_data).await {
+                Ok(result) => {
+                    tracing::info!(
+                        "Face detection completed for attendance: detected={}, confidence={:.2}",
+                        result.face_detected,
+                        result.confidence
+                    );
+                    Some(result.face_detected)
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("Face detection failed for attendance submission: {}", e);
+                    None
+                }
+            },
             Err(e) => {
                 tracing::warn!("Failed to download photo for face detection: {}", e);
                 None
@@ -593,64 +682,71 @@ pub async fn submit_attendance(
         .unwrap_or(true);
 
     // Compute photo hash and check for reuse
-    let photo_hashes: Collection<PhotoHash> = state.db.database(db_name).collection(PhotoHash::collection_name());
-    let (photo_hash_value, photo_reuse_detected) = if let Some(photo_public_id) = &payload.photo_public_id {
-        match state.storage.provider().download(photo_public_id).await {
-            Ok(image_data) => {
-                // Compute perceptual hash
-                let hash_result = compute_image_hash(&image_data);
-                let hash_str = match hash_result {
-                    Ok(h) => Some(format!("{:016x}", h)),
-                    Err(e) => {
-                        tracing::warn!("Failed to compute photo hash: {}", e);
-                        None
-                    }
-                };
+    let photo_hashes: Collection<PhotoHash> = state
+        .db
+        .database(db_name)
+        .collection(PhotoHash::collection_name());
+    let (photo_hash_value, photo_reuse_detected) =
+        if let Some(photo_public_id) = &payload.photo_public_id {
+            match state.storage.provider().download(photo_public_id).await {
+                Ok(image_data) => {
+                    // Compute perceptual hash
+                    let hash_result = compute_image_hash(&image_data);
+                    let hash_str = match hash_result {
+                        Ok(h) => Some(format!("{:016x}", h)),
+                        Err(e) => {
+                            tracing::warn!("Failed to compute photo hash: {}", e);
+                            None
+                        }
+                    };
 
-                // Check for reuse in same session
-                let reuse_detected = if let Some(ref hash) = hash_str {
-                    if let Some(session_id) = session.id {
-                        match photo_hashes.find_one(doc! {
-                            "sessionId": session_id,
-                            "rollNumber": { "$ne": &roll_upper }
-                        }).await {
-                            Ok(Some(existing)) => {
-                                // Compare with existing hash using similarity threshold
-                                let existing_hash = existing.photo_hash;
-                                let threshold = 0.15; // 15% difference threshold
-                                is_same_photo(hash, &existing_hash, threshold)
-                            },
-                            Ok(None) => false,
-                            Err(e) => {
-                                tracing::warn!("Failed to check photo reuse: {}", e);
-                                false
+                    // Check for reuse in same session
+                    let reuse_detected = if let Some(ref hash) = hash_str {
+                        if let Some(session_id) = session.id {
+                            match photo_hashes
+                                .find_one(doc! {
+                                    "sessionId": session_id,
+                                    "rollNumber": { "$ne": &roll_upper }
+                                })
+                                .await
+                            {
+                                Ok(Some(existing)) => {
+                                    // Compare with existing hash using similarity threshold
+                                    let existing_hash = existing.photo_hash;
+                                    let threshold = PHOTO_SIMILARITY_THRESHOLD;
+                                    is_same_photo(hash, &existing_hash, threshold)
+                                }
+                                Ok(None) => false,
+                                Err(e) => {
+                                    tracing::warn!("Failed to check photo reuse: {}", e);
+                                    false
+                                }
                             }
+                        } else {
+                            false
                         }
                     } else {
                         false
+                    };
+
+                    if reuse_detected {
+                        tracing::warn!(
+                            "Photo reuse detected for roll_number={} in session={}",
+                            roll_upper,
+                            session.id.map(|id| id.to_hex()).unwrap_or_default()
+                        );
                     }
-                } else {
-                    false
-                };
 
-                if reuse_detected {
-                    tracing::warn!(
-                        "Photo reuse detected for roll_number={} in session={}",
-                        roll_upper,
-                        session.id.map(|id| id.to_hex()).unwrap_or_default()
-                    );
+                    (hash_str, reuse_detected)
                 }
-
-                (hash_str, reuse_detected)
+                Err(e) => {
+                    tracing::warn!("Failed to download photo for hash computation: {}", e);
+                    (None, false)
+                }
             }
-            Err(e) => {
-                tracing::warn!("Failed to download photo for hash computation: {}", e);
-                (None, false)
-            }
-        }
-    } else {
-        (None, false)
-    };
+        } else {
+            (None, false)
+        };
 
     let attendance = Attendance {
         id: None,
@@ -695,7 +791,9 @@ pub async fn submit_attendance(
         gps_speed: gps_metadata.and_then(|g| g.speed),
         gps_heading: gps_metadata.and_then(|g| g.heading),
         gps_timestamp: gps_metadata.and_then(|g| g.timestamp),
-        gps_mock_location: gps_metadata.and_then(|g| g.is_mock_location).unwrap_or(false),
+        gps_mock_location: gps_metadata
+            .and_then(|g| g.is_mock_location)
+            .unwrap_or(false),
         gps_provider: gps_metadata.and_then(|g| g.provider.clone()),
         gps_anomalies,
         gps_confidence,
@@ -711,13 +809,9 @@ pub async fn submit_attendance(
         .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
 
     if let (Some(ref fingerprint), Some(session_id)) = (&payload.device_fingerprint, session.id) {
-        if let Err(e) = record_device_success(
-            &state,
-            fingerprint,
-            session_id,
-            &roll_upper,
-            &user_agent_clone,
-        ).await {
+        if let Err(e) =
+            record_device_success(&state, fingerprint, session_id, &roll_upper, &user_agent).await
+        {
             tracing::warn!("Failed to record device success: {}", e);
         }
     }

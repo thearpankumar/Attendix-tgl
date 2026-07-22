@@ -2,9 +2,9 @@ use chrono::{DateTime, Duration, Utc};
 use mongodb::bson::oid::ObjectId;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 const SESSION_CACHE_PREFIX: &str = "session:";
 const SESSION_CACHE_TTL: i64 = 300;
@@ -65,18 +65,18 @@ impl SessionCache {
         if let Some(ref redis_client) = self.redis {
             let mut conn = redis_client.get_multiplexed_async_connection().await.ok()?;
             let key = format!("{}{}", SESSION_CACHE_PREFIX, token_hash);
-            
+
             let result: Option<String> = conn.get(&key).await.ok()?;
-            
+
             if let Some(json) = result {
                 let session: CachedSession = serde_json::from_str(&json).ok()?;
-                
+
                 if session.cached_at + Duration::seconds(self.ttl_secs) > Utc::now() {
                     return Some(session);
                 }
             }
         }
-        
+
         None
     }
 
@@ -104,7 +104,7 @@ impl SessionCache {
         if let Some(ref redis_client) = self.redis {
             if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
                 let key = format!("{}{}", SESSION_CACHE_PREFIX, token_hash);
-                
+
                 if let Ok(json) = serde_json::to_string(session) {
                     let _: Result<(), _> = conn.set_ex(&key, json, self.ttl_secs as u64).await;
                 }
@@ -126,7 +126,7 @@ impl SessionCache {
         if self.use_redis {
             self.invalidate_from_redis(token_hash).await;
         }
-        
+
         let mut cache = self.memory_cache.write().await;
         cache.remove(token_hash);
     }
@@ -144,7 +144,7 @@ impl SessionCache {
         if self.use_redis {
             self.clear_redis().await;
         }
-        
+
         let mut cache = self.memory_cache.write().await;
         cache.clear();
     }
@@ -153,12 +153,14 @@ impl SessionCache {
         if let Some(ref redis_client) = self.redis {
             if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
                 let pattern = format!("{}*", SESSION_CACHE_PREFIX);
-                if let Ok(keys) = redis::cmd("KEYS").arg(&pattern).query_async::<Vec<String>>(&mut conn).await {
+                if let Ok(keys) = redis::cmd("KEYS")
+                    .arg(&pattern)
+                    .query_async::<Vec<String>>(&mut conn)
+                    .await
+                {
                     if !keys.is_empty() {
-                        let _: Result<(), _> = redis::cmd("DEL")
-                            .arg(&keys)
-                            .query_async(&mut conn)
-                            .await;
+                        let _: Result<(), _> =
+                            redis::cmd("DEL").arg(&keys).query_async(&mut conn).await;
                     }
                 }
             }
@@ -187,24 +189,28 @@ pub async fn get_or_fetch_session(
     }
 
     tracing::debug!("Session cache miss, fetching from database");
-    
+
     use mongodb::bson::doc;
-    
+
     let collection = db.collection::<crate::models::Session>("sessions");
     let filter = doc! {
         "tokenHash": token_hash,
         "isActive": true,
         "expiresAt": { "$gt": mongodb::bson::DateTime::now() }
     };
-    
+
     let session = collection.find_one(filter).await?;
-    
+
     if let Some(session) = session {
         let location_collection = db.collection::<crate::models::Location>("locations");
-        let location = location_collection.find_one(doc! { "_id": session.location_id }).await?;
-        
+        let location = location_collection
+            .find_one(doc! { "_id": session.location_id })
+            .await?;
+
         let cached = CachedSession {
-            id: session.id.ok_or_else(|| crate::error::AppError::Internal("Session missing ID".into()))?,
+            id: session
+                .id
+                .ok_or_else(|| crate::error::AppError::Internal("Session missing ID".into()))?,
             token_hash: session.token_hash.clone(),
             location_id: session.location_id,
             location_name: location.as_ref().map(|l| l.name.clone()),

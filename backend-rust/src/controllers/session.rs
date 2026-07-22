@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
+    constants::*,
     error::{AppError, Result},
     middleware::{
         validators::{validate_request, SessionCreateRequest},
@@ -134,7 +135,7 @@ pub async fn get_sessions(
     let mut cursor = collection
         .find(doc! {})
         .sort(doc! { "createdAt": -1 })
-        .limit(50)
+        .limit(DASHBOARD_PAGE_SIZE)
         .await?;
     let mut sessions = Vec::new();
 
@@ -238,9 +239,7 @@ pub async fn delete_session(
     Path(id): Path<String>,
     Json(payload): Json<DeleteSessionRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let sessions: Collection<Session> = db.collection(Session::collection_name());
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
@@ -264,7 +263,8 @@ pub async fn delete_session(
         .ok_or_else(|| AppError::Unauthorized("Admin not found".to_string()))?;
 
     // Verify the password using Admin::verify_password()
-    let password_valid = admin.verify_password(&payload.password)
+    let password_valid = admin
+        .verify_password(&payload.password)
         .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))?;
 
     if !password_valid {
@@ -273,7 +273,7 @@ pub async fn delete_session(
 
     // Find all attendance records with photos before deleting them
     let mut attendance_cursor = attendances
-        .find(doc! { 
+        .find(doc! {
             "sessionId": session_id,
             "photoPublicId": { "$exists": true, "$ne": "" }
         })
@@ -294,7 +294,7 @@ pub async fn delete_session(
     // Delete photos from storage
     for public_id in &photo_ids_to_delete {
         match state.storage.provider().delete(public_id).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!("Failed to delete photo {}: {}", public_id, e);
             }
@@ -315,9 +315,7 @@ pub async fn delete_session(
         .await?;
 
     // Delete the session
-    sessions
-        .delete_one(doc! { "_id": session_id })
-        .await?;
+    sessions.delete_one(doc! { "_id": session_id }).await?;
 
     Ok((
         StatusCode::OK,
@@ -383,9 +381,7 @@ pub async fn export_session_attendance(
     Path(id): Path<String>,
     Query(_query): Query<ExportQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state.config.mongodb_uri.split('/').next_back().unwrap_or("default"),
-    );
+    let db = state.database();
 
     let sessions: Collection<Session> = db.collection(Session::collection_name());
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
@@ -446,8 +442,14 @@ pub async fn export_session_attendance(
     Ok((
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
         ],
         excel_data,
     ))
@@ -514,18 +516,39 @@ fn generate_excel(
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
 
-    worksheet.write_string(0, 0, "Roll Number").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 1, "Student Name").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 2, "Status").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 3, "Verified").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 4, "Distance (m)").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 5, "Captured At").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 6, "WebAuthn").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(0, 7, "Device Flag").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 0, "Roll Number")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 1, "Student Name")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 2, "Status")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 3, "Verified")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 4, "Distance (m)")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 5, "Captured At")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 6, "WebAuthn")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(0, 7, "Device Flag")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
 
     let mut row = 1u32;
     for record in data {
-        let status = if record.device_flag.as_ref().map(|f| f == "ABSENT").unwrap_or(false) {
+        let status = if record
+            .device_flag
+            .as_ref()
+            .map(|f| f == "ABSENT")
+            .unwrap_or(false)
+        {
             "Absent"
         } else if record.verified {
             "Present"
@@ -533,33 +556,80 @@ fn generate_excel(
             "Pending"
         };
 
-        worksheet.write_string(row, 0, &record.roll_number).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 1, &record.student_name).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 2, status).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 3, if record.verified { "Yes" } else { "No" }).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_number(row, 4, record.distance).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 5, &record.captured_at).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 6, if record.webauthn_verified { "Yes" } else { "No" }).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row, 7, record.device_flag.as_deref().unwrap_or("")).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 0, &record.roll_number)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 1, &record.student_name)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 2, status)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 3, if record.verified { "Yes" } else { "No" })
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_number(row, 4, record.distance)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 5, &record.captured_at)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(
+                row,
+                6,
+                if record.webauthn_verified {
+                    "Yes"
+                } else {
+                    "No"
+                },
+            )
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row, 7, record.device_flag.as_deref().unwrap_or(""))
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
         row += 1;
     }
 
-    worksheet.write_string(row + 2, 0, "Session Information").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 3, 0, "Location:").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 3, 1, &location.name).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 4, 0, "Session ID:").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 4, 1, session.id.map(|id| id.to_hex()).unwrap_or_default()).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 5, 0, "Description:").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    worksheet.write_string(row + 5, 1, session.description.as_deref().unwrap_or("")).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-    
+    worksheet
+        .write_string(row + 2, 0, "Session Information")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(row + 3, 0, "Location:")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(row + 3, 1, &location.name)
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(row + 4, 0, "Session ID:")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(
+            row + 4,
+            1,
+            session.id.map(|id| id.to_hex()).unwrap_or_default(),
+        )
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(row + 5, 0, "Description:")
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+    worksheet
+        .write_string(row + 5, 1, session.description.as_deref().unwrap_or(""))
+        .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+
     if let Some(b) = batch {
-        worksheet.write_string(row + 6, 0, "Batch:").map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
-        worksheet.write_string(row + 6, 1, &b.name).map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row + 6, 0, "Batch:")
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
+        worksheet
+            .write_string(row + 6, 1, &b.name)
+            .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
     }
 
     worksheet.autofit();
 
-    let data = workbook.save_to_buffer()
+    let data = workbook
+        .save_to_buffer()
         .map_err(|e| AppError::Internal(format!("Excel generation failed: {}", e)))?;
 
     Ok(data)

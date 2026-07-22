@@ -1,3 +1,7 @@
+use crate::constants::{
+    FLAG_DEVICE_FINGERPRINT_CHANGE, FLAG_MULTI_STUDENT_DEVICE, FLAG_RAPID_SUBMISSION,
+    FLAG_STUDENT_DEVICE_SWITCHED,
+};
 use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
@@ -72,7 +76,12 @@ impl Device {
         hex::encode(hasher.finalize())
     }
 
-    pub fn new(fingerprint_hash: String, bound_to_student: String, session_id: ObjectId, user_agent: Option<String>) -> Self {
+    pub fn new(
+        fingerprint_hash: String,
+        bound_to_student: String,
+        session_id: ObjectId,
+        user_agent: Option<String>,
+    ) -> Self {
         Self {
             id: None,
             fingerprint_hash,
@@ -104,10 +113,12 @@ impl Device {
     ) {
         self.flags.push(DeviceFlagEntry {
             flag_type: match flag_type {
-                DeviceFlagType::MultiStudentDevice => "MULTI_STUDENT_DEVICE".to_string(),
-                DeviceFlagType::StudentDeviceSwitched => "STUDENT_DEVICE_SWITCHED".to_string(),
-                DeviceFlagType::RapidSubmission => "RAPID_SUBMISSION".to_string(),
-                DeviceFlagType::DeviceFingerprintChange => "DEVICE_FINGERPRINT_CHANGE".to_string(),
+                DeviceFlagType::MultiStudentDevice => FLAG_MULTI_STUDENT_DEVICE.to_string(),
+                DeviceFlagType::StudentDeviceSwitched => FLAG_STUDENT_DEVICE_SWITCHED.to_string(),
+                DeviceFlagType::RapidSubmission => FLAG_RAPID_SUBMISSION.to_string(),
+                DeviceFlagType::DeviceFingerprintChange => {
+                    FLAG_DEVICE_FINGERPRINT_CHANGE.to_string()
+                }
             },
             timestamp: Utc::now(),
             details,
@@ -118,6 +129,6 @@ impl Device {
     pub fn has_multi_student_flag(&self) -> bool {
         self.flags
             .iter()
-            .any(|f| f.flag_type == "MULTI_STUDENT_DEVICE")
+            .any(|f| f.flag_type == FLAG_MULTI_STUDENT_DEVICE)
     }
 }

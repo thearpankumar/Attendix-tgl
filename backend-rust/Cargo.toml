@@ -1,0 +1,107 @@
+[package]
+name = "attendance-geotag-backend"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+axum = { version = "0.8", features = ["multipart"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["cors", "compression-gzip", "trace", "request-id", "limit", "set-header"] }
+mongodb = { version = "3", features = ["compat-3-0-0"] }
+bson = { version = "3", features = ["chrono-0_4", "serde_with-3", "serde"] }
+redis = { version = "1.4", features = ["tokio-comp", "connection-manager"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+argon2 = "0.5"
+bcrypt = "0.19"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+ciborium = "0.2"
+aws-config = "1"
+aws-sdk-s3 = "1"
+image = "0.25"
+image_hasher = "3"
+rust_xlsxwriter = "0.96"
+calamine = "0.36"
+captcha = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+prometheus = "0.14"
+axum-prometheus = "0.10"
+validator = { version = "0.20", features = ["derive"] }
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
+base64 = "0.22"
+rand = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+futures = "0.3"
+async-trait = "0.1"
+regex = "1"
+url = "2"
+aws-types = "1.5.0"
+reqwest = { version = "0.13", features = ["json"] }
+once_cell = "1.21"
+dashmap = "6"
+face_id = "0.4"
+
+[dev-dependencies]
+
+tokio-test = "0.4"
+mockall = "0.15"
+wiremock = "0.6"
+pretty_assertions = "1.4"
+claim = "0.5"
+rstest = "0.26"
+serial_test = "3.5"
+tempfile = "3"
+axum-test = "21"
+tower-test = "0.4"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["mongo", "redis"] }
+
+[[test]]
+name = "unit"
+path = "tests/unit/lib.rs"
+
+[[test]]
+name = "middleware"
+path = "tests/middleware/lib.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/lib.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "security"
+path = "tests/security/lib.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/lib.rs"
+required-features = ["integration-tests"]
+
+[features]
+default = []
+integration-tests = []
+
+[profile.test]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
+
+[profile.dev]
+opt-level = 0

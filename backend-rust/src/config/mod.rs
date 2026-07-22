@@ -88,7 +88,7 @@ impl AppConfig {
                     let bucket = env::var("AWS_S3_BUCKET").unwrap_or_default();
                     let access_key_id = env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
                     let secret_access_key = env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
-                    
+
                     if is_production {
                         if bucket.is_empty() {
                             panic!("AWS_S3_BUCKET must be set in production");
@@ -100,7 +100,7 @@ impl AppConfig {
                             panic!("AWS_SECRET_ACCESS_KEY must be set in production");
                         }
                     }
-                    
+
                     S3Config {
                         bucket,
                         region: env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string()),

@@ -4,14 +4,19 @@ use axum::{
     Extension,
 };
 use chrono::{Duration, Utc};
-use mongodb::{bson::{doc, DateTime as BsonDateTime}, Collection};
+use mongodb::{
+    bson::{doc, DateTime as BsonDateTime},
+    Collection,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Attendance, Flag, WebAuthnCredential, WebAuthnReenrollmentAction, WebAuthnReenrollmentLog},
+    models::{
+        Attendance, Flag, WebAuthnCredential, WebAuthnReenrollmentAction, WebAuthnReenrollmentLog,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -37,8 +42,10 @@ pub async fn reset_credential(
         .unwrap_or("default");
     let db = state.db.database(db_name);
 
-    let credentials: Collection<WebAuthnCredential> = db.collection(WebAuthnCredential::collection_name());
-    let logs: Collection<WebAuthnReenrollmentLog> = db.collection(WebAuthnReenrollmentLog::collection_name());
+    let credentials: Collection<WebAuthnCredential> =
+        db.collection(WebAuthnCredential::collection_name());
+    let logs: Collection<WebAuthnReenrollmentLog> =
+        db.collection(WebAuthnReenrollmentLog::collection_name());
     let flags: Collection<Flag> = db.collection(Flag::collection_name());
 
     // Check for abuse: > 10 resets in 1 hour
@@ -273,16 +280,14 @@ pub async fn get_webauthn_stats(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default"),
-        );
+    let db = state.db.database(
+        state
+            .config
+            .mongodb_uri
+            .split('/')
+            .next_back()
+            .unwrap_or("default"),
+    );
 
     let credentials: Collection<WebAuthnCredential> =
         db.collection(WebAuthnCredential::collection_name());

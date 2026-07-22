@@ -1,4 +1,8 @@
-#![allow(dead_code)]
+use crate::constants::{
+    Severity, EMULATOR_FLAG_AUDIO_FINGERPRINT, EMULATOR_FLAG_DESKTOP_GPU,
+    EMULATOR_FLAG_PLATFORM_INCONSISTENCY, EMULATOR_FLAG_SCREEN_RESOLUTION,
+    EMULATOR_FLAG_TIMING_ANOMALY, EMULATOR_FLAG_WEBGL_RENDERER,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -16,7 +20,7 @@ pub struct EmulatorIndicators {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmulatorFlagResult {
     pub flag_type: String,
-    pub severity: String,
+    pub severity: Severity,
     pub details: String,
 }
 
@@ -50,26 +54,26 @@ impl EmulatorIndicators {
 
             // Expanded GPU patterns to detect emulators/VMs from Node.js backend
             let emulator_renderer_patterns = [
-                "SwiftShader",         // Chrome emulators
-                "llvmpipe",           // Linux software rendering
-                "Mesa",               // QEMU, Linux VMs
-                "VMware",             // VMware desktop VMs
-                "VirtualBox",         // VirtualBox desktop VMs
-                "Microsoft Basic Render", // Hyper-V
-                "Gallium",            // Linux VM drivers
-                "Zink",               // OpenGL over Vulkan (VMs)
-                "virgl",              // Virtio GPU
-                "nouveau",            // NVIDIA open-source driver (VMs)
-                "softpipe",           // Software rendering
+                "SwiftShader",                      // Chrome emulators
+                "llvmpipe",                         // Linux software rendering
+                "Mesa",                             // QEMU, Linux VMs
+                "VMware",                           // VMware desktop VMs
+                "VirtualBox",                       // VirtualBox desktop VMs
+                "Microsoft Basic Render",           // Hyper-V
+                "Gallium",                          // Linux VM drivers
+                "Zink",                             // OpenGL over Vulkan (VMs)
+                "virgl",                            // Virtio GPU
+                "nouveau",                          // NVIDIA open-source driver (VMs)
+                "softpipe",                         // Software rendering
                 "Microsoft Remote Display Adapter", // RDP
-                "superflower",        // Android emulator
-                " WASTD",              // Trailing space intentional
-                "paravirtualized",    // Hyper-V paravirtualized
-                "Cirrus Logic",       // QEMU legacy
-                "QEMU",               // QEMU
-                "vbox",               // VirtualBox abbreviated
-                "vmware",             // VMware lowercase
-                "vmsvga",             // VMware SVGA
+                "superflower",                      // Android emulator
+                " WASTD",                           // Trailing space intentional
+                "paravirtualized",                  // Hyper-V paravirtualized
+                "Cirrus Logic",                     // QEMU legacy
+                "QEMU",                             // QEMU
+                "vbox",                             // VirtualBox abbreviated
+                "vmware",                           // VMware lowercase
+                "vmsvga",                           // VMware SVGA
             ];
             for pattern in emulator_renderer_patterns {
                 if renderer.contains(pattern) {
@@ -85,8 +89,8 @@ impl EmulatorIndicators {
     pub fn check_timing(analyze_timing: f64) -> Option<EmulatorFlagResult> {
         if !(1.0..=5000.0).contains(&analyze_timing) {
             return Some(EmulatorFlagResult {
-                flag_type: "TIMING_ANOMALY".to_string(),
-                severity: "medium".to_string(),
+                flag_type: EMULATOR_FLAG_TIMING_ANOMALY.to_string(),
+                severity: Severity::Medium,
                 details: format!(
                     "Timing analysis returned suspicious value: {}ms",
                     analyze_timing
@@ -104,8 +108,8 @@ impl EmulatorIndicators {
         let is_suspicious = width > 1000 || height > 1000;
         if is_suspicious {
             return Some(EmulatorFlagResult {
-                flag_type: "SCREEN_RESOLUTION_SUSPICIOUS".to_string(),
-                severity: "low".to_string(),
+                flag_type: EMULATOR_FLAG_SCREEN_RESOLUTION.to_string(),
+                severity: Severity::Low,
                 details: format!("Non-mobile resolution: {}x{}", width, height),
             });
         }
@@ -117,32 +121,32 @@ impl EmulatorIndicators {
 
         if self.desktop_gpu_detected {
             flags.push(EmulatorFlagResult {
-                flag_type: "DESKTOP_GPU_DETECTED".to_string(),
-                severity: "high".to_string(),
+                flag_type: EMULATOR_FLAG_DESKTOP_GPU.to_string(),
+                severity: Severity::High,
                 details: "Desktop GPU detected on mobile device".to_string(),
             });
         }
 
         if self.audio_fingerprint_emulator {
             flags.push(EmulatorFlagResult {
-                flag_type: "AUDIO_FINGERPRINT_EMULATOR".to_string(),
-                severity: "medium".to_string(),
+                flag_type: EMULATOR_FLAG_AUDIO_FINGERPRINT.to_string(),
+                severity: Severity::Medium,
                 details: "Audio fingerprint matches emulator profile".to_string(),
             });
         }
 
         if self.webgl_renderer_emulator {
             flags.push(EmulatorFlagResult {
-                flag_type: "WEBGL_RENDERER_EMULATOR".to_string(),
-                severity: "high".to_string(),
+                flag_type: EMULATOR_FLAG_WEBGL_RENDERER.to_string(),
+                severity: Severity::High,
                 details: "WebGL renderer indicates emulator".to_string(),
             });
         }
 
         if self.platform_inconsistency {
             flags.push(EmulatorFlagResult {
-                flag_type: "PLATFORM_INCONSISTENCY".to_string(),
-                severity: "medium".to_string(),
+                flag_type: EMULATOR_FLAG_PLATFORM_INCONSISTENCY.to_string(),
+                severity: Severity::Medium,
                 details: "Platform inconsistencies detected".to_string(),
             });
         }

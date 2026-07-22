@@ -18,6 +18,7 @@ pub use attendance::*;
 pub use batch::*;
 pub use device::*;
 pub use device_fingerprint::*;
+pub use flag::*;
 pub use location::*;
 pub use photo_hash::*;
 pub use session::*;
@@ -26,3 +27,6 @@ pub use system_config::*;
 pub use webauthn_challenge::{WebAuthnChallenge, WebAuthnChallengeType};
 pub use webauthn_credential::*;
 pub use webauthn_reenrollment_log::*;
+
+// Re-export Severity from constants for convenience
+pub use crate::constants::Severity;

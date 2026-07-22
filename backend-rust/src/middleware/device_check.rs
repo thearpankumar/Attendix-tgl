@@ -1,10 +1,4 @@
-use axum::{
-    body::Body,
-    extract::State,
-    http::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
 use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime as BsonDateTime};
 use mongodb::Collection;
 use std::sync::Arc;
@@ -87,7 +81,10 @@ pub async fn device_check_middleware(
         device_flag: None,
     };
 
-    let roll_upper = roll_number.as_ref().map(|r| r.to_uppercase()).unwrap_or_default();
+    let roll_upper = roll_number
+        .as_ref()
+        .map(|r| r.to_uppercase())
+        .unwrap_or_default();
 
     if let (Some(session_id), Some(_roll_number)) = (session_id, roll_number.as_ref()) {
         let existing_device = collection
@@ -110,7 +107,10 @@ pub async fn device_check_middleware(
 
                     device.flags.push(DeviceFlagEntry {
                         flag_type: "MULTI_STUDENT_DEVICE".to_string(),
-                        details: Some(format!("Device previously used by {}, now {}", bound, roll_upper)),
+                        details: Some(format!(
+                            "Device previously used by {}, now {}",
+                            bound, roll_upper
+                        )),
                         session_id: Some(session_id),
                         timestamp: chrono::Utc::now(),
                     });
