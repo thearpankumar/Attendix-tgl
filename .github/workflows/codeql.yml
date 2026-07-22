@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'backend/**/*.js'
+      - 'backend-rust/**/*.rs'
       - 'frontend/admin/src/**/*.{js,jsx}'
       - 'frontend/student/src/**/*.{js,jsx,ts,tsx}'
       - 'frontend/home/src/**/*.{ts,tsx}'
@@ -12,7 +12,7 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/**/*.js'
+      - 'backend-rust/**/*.rs'
       - 'frontend/admin/src/**/*.{js,jsx}'
       - 'frontend/student/src/**/*.{js,jsx,ts,tsx}'
       - 'frontend/home/src/**/*.{ts,tsx}'
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['javascript']
+        language: ['javascript', 'rust']
 
     steps:
       - name: Checkout code

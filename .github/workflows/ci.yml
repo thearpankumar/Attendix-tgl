@@ -7,48 +7,36 @@ on:
     branches: [master]
 
 jobs:
-  backend-test:
-    name: Backend Tests
+  backend-rust-test:
+    name: Backend Rust Tests
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend
+        working-directory: backend-rust
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          components: clippy, rustfmt
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend-rust
 
-      - name: Run linting
-        run: npm run lint
-
-      - name: Run tests with coverage
-        run: npm run test:coverage
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
         env:
-          NODE_ENV: test
-          JWT_SECRET: test-jwt-secret-for-ci
-          ADMIN_SECRET: test-admin-secret-for-ci
-          STORAGE_PROVIDER: cloudinary
-          CLOUDINARY_CLOUD_NAME: test
-          CLOUDINARY_API_KEY: test
-          CLOUDINARY_API_SECRET: test
+          CARGO_INCREMENTAL: 0
 
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: backend-coverage
-          path: backend/coverage/
-          retention-days: 7
+      - name: Run tests
+        run: cargo test --locked
+        env:
+          CARGO_INCREMENTAL: 0
 
   frontend-admin-test:
     name: Frontend Admin Tests
@@ -167,11 +155,15 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Audit backend dependencies
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit backend-rust dependencies
         run: |
-          cd backend
-          echo "=== Backend Security Audit ==="
-          npm audit --audit-level=high
+          cd backend-rust
+          cargo audit
         continue-on-error: false
 
       - name: Audit frontend/admin dependencies
@@ -203,13 +195,13 @@ jobs:
   ci-status:
     name: CI Status Check
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-admin-test, frontend-student-test, frontend-home-test, security-audit]
+    needs: [backend-rust-test, frontend-admin-test, frontend-student-test, frontend-home-test, security-audit]
     if: always()
 
     steps:
       - name: Check all jobs passed
         run: |
-          if [ "${{ needs.backend-test.result }}" != "success" ] || \
+          if [ "${{ needs.backend-rust-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-admin-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-student-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-home-test.result }}" != "success" ] || \
