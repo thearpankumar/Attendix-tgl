@@ -26,7 +26,8 @@ pub struct CreateSessionRequest {
     pub location_id: String,
     pub batch_id: Option<String>,
     pub description: Option<String>,
-    pub expires_in_hours: Option<i64>,
+    #[serde(alias = "durationMinutes", alias = "expiresInHours")]
+    pub duration_minutes: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,7 +51,7 @@ pub async fn create_session(
 ) -> Result<impl IntoResponse> {
     let validation_req = SessionCreateRequest {
         location_id: payload.location_id.clone(),
-        duration_minutes: payload.expires_in_hours.map(|h| (h * 60) as i32),
+        duration_minutes: payload.duration_minutes,
         batch_id: payload.batch_id.clone(),
         description: payload.description.clone(),
     };
@@ -76,7 +77,8 @@ pub async fn create_session(
         .and_then(|id| ObjectId::parse_str(&id).ok());
 
     let token = Session::generate_token();
-    let expires_at = Utc::now() + chrono::Duration::hours(payload.expires_in_hours.unwrap_or(24));
+    let duration_minutes = payload.duration_minutes.unwrap_or(30) as i64;
+    let expires_at = Utc::now() + chrono::Duration::minutes(duration_minutes);
 
     let session = Session {
         id: None,
@@ -267,6 +269,36 @@ pub async fn delete_session(
 
     if !password_valid {
         return Err(AppError::Unauthorized("Incorrect password".to_string()));
+    }
+
+    // Find all attendance records with photos before deleting them
+    let mut attendance_cursor = attendances
+        .find(doc! { 
+            "sessionId": session_id,
+            "photoPublicId": { "$exists": true, "$ne": "" }
+        })
+        .projection(doc! { "photoPublicId": 1 })
+        .await?;
+
+    let mut photo_ids_to_delete = Vec::new();
+    while attendance_cursor.advance().await? {
+        let attendance: Attendance = attendance_cursor.deserialize_current()?;
+        if !attendance.photo_public_id.is_empty() {
+            photo_ids_to_delete.push(attendance.photo_public_id.clone());
+        }
+    }
+
+    // Drop cursor to release any remaining resources
+    drop(attendance_cursor);
+
+    // Delete photos from storage
+    for public_id in &photo_ids_to_delete {
+        match state.storage.provider().delete(public_id).await {
+            Ok(_) => {},
+            Err(e) => {
+                tracing::warn!("Failed to delete photo {}: {}", public_id, e);
+            }
+        }
     }
 
     // Delete all attendance records for this session
