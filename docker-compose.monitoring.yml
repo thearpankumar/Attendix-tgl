@@ -9,13 +9,15 @@
 # Prod stack:
 #   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml -f docker-compose.monitoring.yml up -d --build
 #
-# Nothing here requires app code changes. It already ships every container's
-# stdout/stderr (Caddy's JSON access logs, Mongo/Redis/backend console
-# output, ...) into Loki via Alloy's Docker log discovery. Prometheus scrapes
-# cAdvisor (per-container CPU/mem) and node-exporter (host CPU/mem/disk) —
-# both work with zero app instrumentation. A commented-out `backend` scrape
-# job is left in monitoring/prometheus/prometheus.yml for whenever
-# prom-client metrics get added to the app later.
+# It ships every container's stdout/stderr (Caddy's JSON access logs,
+# Mongo/Redis/backend console output, ...) into Loki via Alloy's Docker log
+# discovery. Prometheus scrapes cAdvisor (per-container CPU/mem) and
+# node-exporter (host CPU/mem/disk), which work with zero app
+# instrumentation, plus a `backend` job in monitoring/prometheus/prometheus.yml
+# that scrapes the Rust backend's own /metrics (HTTP request rate/latency/
+# status via axum-prometheus). Note that job hardcodes port 5000 (the prod
+# PORT) — it won't resolve against the dev stack's backend, which listens on
+# 3000.
 #
 # Only Grafana is reachable from outside, through Caddy at
 # /logging-grafana-main (see Caddyfile/Caddyfile.prod). Prometheus has no

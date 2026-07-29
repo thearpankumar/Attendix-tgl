@@ -59,7 +59,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"docker\", container=~\".*(attendance|backend).*\", level=~\"error|warn|40|50\"} | json",
+          "expr": "{job=\"docker\", container=~\".*(attendance|backend).*\", level=~\"(?i)error|warn\"} | json",
           "refId": "A"
         }
       ],
@@ -68,7 +68,7 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "description": "Attendance submission events from the backend (module=attendance).",
+      "description": "Attendance submission events from the backend (module matches the controllers::attendance Rust module path).",
       "gridPos": { "h": 10, "w": 12, "x": 0, "y": 20 },
       "id": 3,
       "options": {
@@ -84,7 +84,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"docker\", container=~\".*backend.*\"} | json | module=\"attendance\"",
+          "expr": "{job=\"docker\", container=~\".*backend.*\"} | json | module=~\"controllers::attendance\"",
           "refId": "A"
         }
       ],
@@ -109,7 +109,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"docker\", container=~\".*(attendance|backend).*\", level=~\"warn|40\"} | json | module=~\"auth|deviceCheck|webauthn|shortLinks\"",
+          "expr": "{job=\"docker\", container=~\".*(attendance|backend).*\", level=~\"(?i)warn\"} | json | module=~\"middleware::auth|middleware::device_check|controllers::webauthn|controllers::public_webauthn|controllers::short_link\"",
           "refId": "A"
         }
       ],

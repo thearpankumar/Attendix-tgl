@@ -24,7 +24,8 @@ scrape_configs:
     static_configs:
       - targets: ['caddy:2019']
 
-  # Backend Node.js metrics via prom-client (/metrics endpoint added in server.js).
+  # Backend Rust (axum) HTTP metrics via axum-prometheus, exposed at /metrics
+  # (see backend-rust/src/routes/mod.rs::metric_layer_and_handle).
   # Uses dns_sd_configs so ALL 3 replicas (deploy.replicas: 3) are scraped
   # individually rather than only whichever replica Docker's round-robin DNS
   # resolves first from a static_configs target.

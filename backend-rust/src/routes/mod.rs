@@ -7,11 +7,22 @@ mod short_link;
 mod student;
 
 use axum::{extract::State, routing::get, Json, Router};
+use axum_prometheus::{metrics_exporter_prometheus::PrometheusHandle, PrometheusMetricLayer};
 use chrono::Utc;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::AppState;
+
+/// `PrometheusMetricLayer::pair()` installs a process-wide global metrics
+/// recorder, which can only be installed once. `create_routes` is called
+/// exactly once in production, but tests build a Router per test case
+/// within the same process — so the pair is cached and reused rather than
+/// re-installed on every call.
+fn metric_layer_and_handle() -> (PrometheusMetricLayer<'static>, PrometheusHandle) {
+    static PAIR: OnceLock<(PrometheusMetricLayer<'static>, PrometheusHandle)> = OnceLock::new();
+    PAIR.get_or_init(PrometheusMetricLayer::pair).clone()
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,12 +70,18 @@ pub fn create_routes(state: Arc<AppState>) -> Router {
         )
         .with_state(state.clone());
 
+    let (metric_layer, metric_handle) = metric_layer_and_handle();
+
     Router::new()
         .route("/health", get(health_check))
         .route("/health/ready", get(health_ready))
         .route("/health/live", get(health_live))
-        .route("/metrics", get(metrics))
+        .route(
+            "/metrics",
+            get(move || async move { metric_handle.render() }),
+        )
         .nest("/api", api_routes)
+        .layer(metric_layer)
         .with_state(state)
 }
 
@@ -129,18 +146,6 @@ async fn health_live() -> Json<HealthResponse> {
         status: "alive".to_string(),
         timestamp: Utc::now().to_rfc3339(),
     })
-}
-
-async fn metrics() -> impl axum::response::IntoResponse {
-    use prometheus::Encoder;
-    let encoder = prometheus::TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-    encoder.encode(&metric_families, &mut buffer).unwrap();
-    (
-        axum::http::StatusCode::OK,
-        String::from_utf8(buffer).unwrap(),
-    )
 }
 
 async fn get_storage_info(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {

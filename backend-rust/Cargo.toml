@@ -28,7 +28,6 @@ calamine = "0.36"
 captcha = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-prometheus = "0.14"
 axum-prometheus = "0.10"
 validator = { version = "0.20", features = ["derive"] }
 dotenvy = "0.15"

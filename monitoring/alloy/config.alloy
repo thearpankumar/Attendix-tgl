@@ -7,11 +7,18 @@
 //     → loki.process (JSON parse → extract level + module as labels)
 //     → loki.write (Loki)
 //
-// JSON logs (Pino format) get level and module promoted to Loki labels so you
-// can filter efficiently:
-//   {container="attendance-backend", level="error"}
-//   {container="attendance-backend"} | json | module="attendance"
+// The backend (backend-rust) emits structured JSON logs via
+// tracing_subscriber::fmt::layer().json() (see backend-rust/src/main.rs)
+// when NODE_ENV != development, e.g.:
+//   {"timestamp":"...","level":"INFO","fields":{"message":"..."},"target":"attendance_geotag_backend::controllers::attendance"}
+// `level` is already an uppercase string (INFO/WARN/ERROR/DEBUG/TRACE) — no
+// translation needed. `target` (the emitting Rust module path) is promoted
+// to a `module` label so you can filter efficiently:
+//   {container="attendance-backend", level="ERROR"}
+//   {container="attendance-backend"} | json | module=~"controllers::attendance"
 //
+// Caddy's own JSON access logs (`log { format json }` in the Caddyfile) use
+// lowercase levels natively and pass through this same pipeline unaffected.
 // Non-JSON lines (MongoDB/Redis plain text) pass through unchanged as raw strings.
 
 // ─── 1. Discover all Docker containers ─────────────────────────────────────
@@ -40,43 +47,26 @@ loki.source.docker "default" {
 
 // ─── 4. Process: parse JSON + extract labels ───────────────────────────────
 loki.process "json_pipeline" {
-  // Stage 1: Attempt to parse the log line as JSON (Pino output).
-  // If the line is not JSON (e.g. MongoDB/Redis plain text), this stage
-  // is a no-op and the line passes through unchanged.
+  // Attempt to parse the log line as JSON (backend tracing / Caddy access
+  // logs). If the line is not JSON (e.g. MongoDB/Redis plain text), this
+  // stage is a no-op and the line passes through unchanged.
+  //
+  // `level` is a top-level string field for both the backend
+  // (tracing_subscriber's JSON formatter) and Caddy — no translation stage
+  // needed. `target` (the emitting Rust module path, e.g.
+  // "attendance_geotag_backend::controllers::attendance") is only present
+  // on backend logs and doubles as a "module" label.
   stage.json {
     expressions = {
       // Extract these fields from the JSON body for use in later stages.
       // They do NOT become labels here — just extracted values.
       extracted_level  = "level",
-      extracted_module = "module",
-      extracted_msg    = "message",
+      extracted_module = "target",
+      extracted_msg    = "fields.message",
     }
   }
 
-  // Stage 2: Translate Pino's integer log levels to strings.
-  // Pino uses: 30=info, 40=warn, 50=error, 60=fatal
-  stage.replace {
-    expression = "^30$"
-    source = "extracted_level"
-    replace = "info"
-  }
-  stage.replace {
-    expression = "^40$"
-    source = "extracted_level"
-    replace = "warn"
-  }
-  stage.replace {
-    expression = "^50$"
-    source = "extracted_level"
-    replace = "error"
-  }
-  stage.replace {
-    expression = "^60$"
-    source = "extracted_level"
-    replace = "fatal"
-  }
-
-  // Stage 3: Promote extracted fields to Loki stream labels.
+  // Promote extracted fields to Loki stream labels.
   // Keep label cardinality LOW — only high-value, low-cardinality fields.
   // requestId, rollNumber, sessionId should stay in the log body (query with `| json`).
   stage.labels {

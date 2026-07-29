@@ -68,6 +68,52 @@ async fn test_metrics_not_world_accessible() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Regression test: /metrics must actually report HTTP request metrics, not
+/// an empty body. Before this was wired up (axum-prometheus's
+/// PrometheusMetricLayer applied to the router), the handler called
+/// prometheus::gather() against a registry nothing ever registered into,
+/// silently returning 0 bytes — the Grafana dashboard's backend panels had
+/// no data as a result.
+#[tokio::test]
+async fn test_metrics_reports_actual_http_metrics() {
+    let app = create_test_app().await;
+
+    // Generate at least one recorded request before scraping.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        body.contains("axum_http_requests_total"),
+        "expected /metrics body to contain HTTP request metrics, got: {body}"
+    );
+    assert!(!body.trim().is_empty());
+}
+
 #[tokio::test]
 async fn test_storage_info_is_public_but_rate_limited() {
     let app = create_test_app().await;
