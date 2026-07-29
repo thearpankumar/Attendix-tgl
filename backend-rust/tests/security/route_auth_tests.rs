@@ -85,6 +85,50 @@ async fn test_storage_info_is_public_but_rate_limited() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Regression test: the storage-info response body must include
+/// `supportsDirectUpload`, otherwise the student frontends' direct-S3-upload
+/// path (gated on this exact field) silently never activates and photos are
+/// never persisted. See backend-rust/src/routes/mod.rs::get_storage_info.
+#[tokio::test]
+async fn test_storage_info_response_body_shape() {
+    let app = create_test_app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/storage-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 8192)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(
+        json.get("provider").and_then(|v| v.as_str()).is_some(),
+        "response must include a string `provider` field"
+    );
+    let supports_direct_upload = json
+        .get("supportsDirectUpload")
+        .unwrap_or_else(|| panic!("response missing `supportsDirectUpload` field: {json}"))
+        .as_bool()
+        .unwrap_or_else(|| panic!("`supportsDirectUpload` must be a boolean: {json}"));
+
+    // Default test AppConfig uses the s3 provider (see AppConfig::default),
+    // which is the only StorageProvider actually implemented.
+    assert_eq!(json["provider"], "s3");
+    assert!(
+        supports_direct_upload,
+        "s3 provider must report supportsDirectUpload: true"
+    );
+}
+
 #[tokio::test]
 async fn test_device_verify_is_public() {
     let app = create_test_app().await;

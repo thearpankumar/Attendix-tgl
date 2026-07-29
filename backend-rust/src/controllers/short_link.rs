@@ -19,6 +19,7 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateShortLinkRequest {
     pub short_code: Option<String>,
     pub session_id: Option<String>,
@@ -42,6 +43,16 @@ pub struct ShortLinkResponse {
     pub click_count: i32,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+}
+
+/// Resolves the short code to use for a new short link: a trimmed, non-empty
+/// custom code if the admin provided one, otherwise a freshly generated one.
+/// An empty string (sent by the admin UI's "auto-generate" mode) must fall
+/// through to generation rather than being used literally.
+fn resolve_short_code(provided: Option<String>) -> String {
+    provided
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| ShortLink::generate_short_code(6))
 }
 
 pub async fn create_short_link(
@@ -90,9 +101,7 @@ pub async fn create_short_link(
             .await?;
     }
 
-    let short_code = payload
-        .short_code
-        .unwrap_or_else(|| ShortLink::generate_short_code(6));
+    let short_code = resolve_short_code(payload.short_code);
 
     let existing = collection
         .find_one(doc! { "shortCode": &short_code })
@@ -555,4 +564,52 @@ pub async fn get_short_link_session(
         "expiresAt": session.expires_at,
         "isActive": session.is_active,
     })))
+}
+
+#[cfg(test)]
+mod create_short_link_tests {
+    use super::*;
+
+    /// Regression test: CreateShortLinkRequest must deserialize the
+    /// camelCase field names ShortLinks.tsx actually sends
+    /// (`{shortCode, sessionId}`), not the snake_case keys they'd need
+    /// without `#[serde(rename_all = "camelCase")]`.
+    #[test]
+    fn deserializes_camel_case_fields() {
+        let payload: CreateShortLinkRequest = serde_json::from_value(serde_json::json!({
+            "shortCode": "custom123",
+            "sessionId": "abc123",
+        }))
+        .unwrap();
+
+        assert_eq!(payload.short_code.as_deref(), Some("custom123"));
+        assert_eq!(payload.session_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn resolve_short_code_uses_provided_custom_code() {
+        let resolved = resolve_short_code(Some("custom123".to_string()));
+        assert_eq!(resolved, "custom123");
+    }
+
+    /// Regression test: the admin UI's "auto-generate" mode sends
+    /// `shortCode: ""`. Once the camelCase deserialization fix made this
+    /// value actually reach the handler as `Some("")`, using it literally
+    /// (instead of falling back to generation) would create a short link
+    /// with an empty code.
+    #[test]
+    fn resolve_short_code_falls_back_to_generated_code_for_empty_string() {
+        let resolved = resolve_short_code(Some("".to_string()));
+        assert_eq!(resolved.len(), 6);
+        assert_ne!(resolved, "");
+
+        let resolved_whitespace = resolve_short_code(Some("   ".to_string()));
+        assert_eq!(resolved_whitespace.len(), 6);
+    }
+
+    #[test]
+    fn resolve_short_code_falls_back_to_generated_code_for_none() {
+        let resolved = resolve_short_code(None);
+        assert_eq!(resolved.len(), 6);
+    }
 }

@@ -79,8 +79,7 @@ describe('Sessions', () => {
   it('auto-generate mode: creates session + new shortlink', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
     (axios.post as any).mockImplementation((url: string) => {
-      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id' } });
-      if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortCode: 'abc123' } });
+      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'abc123' } });
       return Promise.resolve({ data: {} });
     });
 
@@ -93,16 +92,17 @@ describe('Sessions', () => {
     fireEvent.submit(container.querySelector('form')!);
 
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({ locationId: 'loc1' }));
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/shortlinks', expect.objectContaining({ sessionId: 'new-session-id' }));
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        locationId: 'loc1',
+        shortlinkMode: 'auto',
+      }));
     });
   });
 
   it('attach existing mode: shows dropdown of unassigned links and calls attach API', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], shortLinks: [FREE_LINK] }));
     (axios.post as any).mockImplementation((url: string) => {
-      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id' } });
-      if (url.includes('/attach')) return Promise.resolve({ data: { shortCode: 'cs101' } });
+      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'cs101' } });
       return Promise.resolve({ data: {} });
     });
 
@@ -123,8 +123,11 @@ describe('Sessions', () => {
     fireEvent.submit(container.querySelector('form')!);
 
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.any(Object));
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/shortlinks/cs101/attach', { sessionId: 'new-session-id', force: true });
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        locationId: 'loc1',
+        shortlinkMode: 'existing',
+        existingShortCode: 'cs101',
+      }));
     });
   });
 

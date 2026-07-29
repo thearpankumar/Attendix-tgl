@@ -7,8 +7,8 @@ export const useFlaggedCount = (): number => {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await axios.get<{ flaggedUnreviewed?: number }>('/api/admin/dashboard');
-        setCount(res.data.flaggedUnreviewed || 0);
+        const res = await axios.get<{ pulse?: { quarantine?: { count?: number } } }>('/api/admin/dashboard');
+        setCount(res.data.pulse?.quarantine?.count || 0);
       } catch {
         // silently fail
       }

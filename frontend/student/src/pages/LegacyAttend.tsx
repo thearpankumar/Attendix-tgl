@@ -224,7 +224,7 @@ export default function LegacyAttend() {
         const blob = await (await fetch(photoDataRef.current)).blob();
         const upRes = await fetch(urlData.uploadUrl, { method: urlData.method, headers: urlData.headers || {}, body: blob });
         if (!upRes.ok) throw new Error('Photo upload failed');
-        body = { studentName: name.trim(), rollNumber: roll.trim().toUpperCase(), directUpload: true, publicId: urlData.publicId, latitude: loc.latitude, longitude: loc.longitude, faceDetected: faceDetectedRef.current, captchaAnswer: captchaAnswer.trim(), captchaId, devBypassCamera: usedDevBypassCamera, devBypassGps: usedDevBypassGps };
+        body = { studentName: name.trim(), rollNumber: roll.trim().toUpperCase(), directUpload: true, photoPublicId: urlData.publicId, latitude: loc.latitude, longitude: loc.longitude, faceDetected: faceDetectedRef.current, captchaAnswer: captchaAnswer.trim(), captchaId, devBypassCamera: usedDevBypassCamera, devBypassGps: usedDevBypassGps };
       } else {
         body = { studentName: name.trim(), rollNumber: roll.trim().toUpperCase(), photo: photoDataRef.current, latitude: loc.latitude, longitude: loc.longitude, faceDetected: faceDetectedRef.current, captchaAnswer: captchaAnswer.trim(), captchaId, devBypassCamera: usedDevBypassCamera, devBypassGps: usedDevBypassGps };
       }

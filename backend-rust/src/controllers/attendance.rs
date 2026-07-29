@@ -99,6 +99,183 @@ pub struct GpsMetadataPayload {
     pub provider: Option<String>,
 }
 
+pub(crate) fn build_gps_anomalies(gps_validation: &GpsValidationResult) -> Vec<GpsAnomaly> {
+    gps_validation
+        .anomalies
+        .iter()
+        .map(|a| {
+            let anomaly_type = match a.anomaly_type.as_str() {
+                "ACCURACY_SUSPICIOUS" => GpsAnomalyType::AccuracySuspicious,
+                "ACCURACY_VERY_SUSPICIOUS" => GpsAnomalyType::AccuracyVerySuspicious,
+                "ALTITUDE_ZERO_OR_NULL" => GpsAnomalyType::AltitudeZeroOrNull,
+                "SPEED_IMPOSSIBLE" => GpsAnomalyType::SpeedImpossible,
+                "POSITION_JUMP" => GpsAnomalyType::PositionJump,
+                "TIMESTAMP_DRIFT" => GpsAnomalyType::TimestampDrift,
+                "ACCURACY_PATTERN" => GpsAnomalyType::AccuracyPattern,
+                "PROVIDER_MISMATCH" => GpsAnomalyType::ProviderMismatch,
+                _ => GpsAnomalyType::AccuracySuspicious,
+            };
+            GpsAnomaly {
+                anomaly_type,
+                severity: a.severity,
+                details: Some(a.details.clone()),
+                detected_at: Utc::now(),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn build_emulator_flags(
+    emulator_detection: &EmulatorDetectionResult,
+) -> Vec<EmulatorFlag> {
+    emulator_detection
+        .flags
+        .iter()
+        .map(|f| {
+            let flag_type = match f.as_str() {
+                "DESKTOP_GPU_DETECTED" => EmulatorFlagType::DesktopGpuDetected,
+                "AUDIO_FINGERPRINT_EMULATOR" => EmulatorFlagType::AudioFingerprintEmulator,
+                "TIMING_ANOMALY" => EmulatorFlagType::TimingAnomaly,
+                "BATTERY_PATTERN_EMULATOR" => EmulatorFlagType::BatteryPatternEmulator,
+                "SCREEN_RESOLUTION_SUSPICIOUS" => EmulatorFlagType::ScreenResolutionSuspicious,
+                "DEVICE_MEMORY_ROUND" => EmulatorFlagType::DeviceMemoryRound,
+                "WEBGL_RENDERER_EMULATOR" => EmulatorFlagType::WebglRendererEmulator,
+                "PLATFORM_INCONSISTENCY" => EmulatorFlagType::PlatformInconsistency,
+                _ => EmulatorFlagType::PlatformInconsistency,
+            };
+            EmulatorFlag {
+                flag_type,
+                severity: Severity::Medium,
+                details: None,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn build_integrity_checks(
+    device_integrity: &DeviceIntegrityResult,
+) -> Vec<IntegrityCheck> {
+    device_integrity
+        .checks
+        .iter()
+        .map(|c| {
+            let check_type = match c.name.as_str() {
+                "TIMING_MANIPULATION" => IntegrityCheckType::TimingManipulation,
+                "BROWSER_API_INCONSISTENCY" => IntegrityCheckType::BrowserApiInconsistency,
+                "POINTER_EVENTS_SUSPICIOUS" => IntegrityCheckType::PointerEventsSuspicious,
+                _ => IntegrityCheckType::BrowserApiInconsistency,
+            };
+            IntegrityCheck {
+                check_type,
+                passed: c.passed,
+                details: c.details.clone(),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn gps_confidence_from_str(confidence: &str) -> Option<GpsConfidence> {
+    match confidence {
+        "high" => Some(GpsConfidence::High),
+        "medium" => Some(GpsConfidence::Medium),
+        "low" => Some(GpsConfidence::Low),
+        "suspicious" => Some(GpsConfidence::Suspicious),
+        _ => None,
+    }
+}
+
+/// Records the GPS position in device history and appends any position-jump /
+/// impossible-travel anomalies it detects to `gps_anomalies`. Shared by both
+/// the plain attendance submit flow and the WebAuthn-authenticated flow so
+/// spoofed-location detection applies equally regardless of auth method.
+pub(crate) async fn track_gps_history(
+    state: &crate::AppState,
+    device_id: &str,
+    latitude: f64,
+    longitude: f64,
+    gps_metadata: Option<&GpsMetadataPayload>,
+    gps_anomalies: &mut Vec<GpsAnomaly>,
+) {
+    let gps_position_entry = GpsPositionEntry {
+        latitude,
+        longitude,
+        accuracy: gps_metadata.and_then(|g| g.accuracy),
+        altitude: gps_metadata.and_then(|g| g.altitude),
+        speed: gps_metadata.and_then(|g| g.speed),
+        heading: gps_metadata.and_then(|g| g.heading),
+        timestamp: gps_metadata
+            .and_then(|g| g.timestamp)
+            .unwrap_or_else(|| Utc::now().timestamp_millis()),
+        provider: gps_metadata.and_then(|g| g.provider.clone()),
+        mock_location: gps_metadata.and_then(|g| g.is_mock_location),
+    };
+
+    if let Err(e) = state
+        .gps_history
+        .add_position(device_id, gps_position_entry.clone())
+        .await
+    {
+        tracing::warn!("Failed to add GPS position to history: {}", e);
+    }
+
+    match state
+        .gps_history
+        .detect_position_jump(device_id, &gps_position_entry, POSITION_JUMP_THRESHOLD_M)
+        .await
+    {
+        Ok(true) => {
+            tracing::warn!(
+                "Position jump detected for device {} at ({}, {})",
+                device_id,
+                latitude,
+                longitude
+            );
+            gps_anomalies.push(GpsAnomaly {
+                anomaly_type: GpsAnomalyType::PositionJump,
+                severity: Severity::High,
+                details: Some("GPS position jump detected from history analysis".to_string()),
+                detected_at: Utc::now(),
+            });
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!("Failed to detect position jump: {}", e);
+        }
+    }
+
+    match state
+        .gps_history
+        .detect_impossible_travel(device_id, &gps_position_entry)
+        .await
+    {
+        Ok(history_anomalies) if !history_anomalies.is_empty() => {
+            for anomaly in history_anomalies {
+                tracing::warn!(
+                    "Impossible travel detected for device {}: {} - {}",
+                    device_id,
+                    anomaly.anomaly_type,
+                    anomaly.details
+                );
+                let anomaly_type = match anomaly.anomaly_type.as_str() {
+                    "RAPID_POSITION_CHANGE" => GpsAnomalyType::PositionJump,
+                    "IMPOSSIBLE_SPEED" => GpsAnomalyType::SpeedImpossible,
+                    _ => GpsAnomalyType::SpeedImpossible,
+                };
+                gps_anomalies.push(GpsAnomaly {
+                    anomaly_type,
+                    severity: anomaly.severity,
+                    details: Some(anomaly.details),
+                    detected_at: Utc::now(),
+                });
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("Failed to detect impossible travel: {}", e);
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct AttendanceResponse {
     #[serde(rename = "_id")]
@@ -521,164 +698,25 @@ pub async fn submit_attendance(
         .as_ref()
         .map(|fp| Device::hash_fingerprint(fp));
 
-    let mut gps_anomalies: Vec<GpsAnomaly> = gps_validation
-        .anomalies
-        .iter()
-        .map(|a| {
-            let anomaly_type = match a.anomaly_type.as_str() {
-                "ACCURACY_SUSPICIOUS" => GpsAnomalyType::AccuracySuspicious,
-                "ACCURACY_VERY_SUSPICIOUS" => GpsAnomalyType::AccuracyVerySuspicious,
-                "ALTITUDE_ZERO_OR_NULL" => GpsAnomalyType::AltitudeZeroOrNull,
-                "SPEED_IMPOSSIBLE" => GpsAnomalyType::SpeedImpossible,
-                "POSITION_JUMP" => GpsAnomalyType::PositionJump,
-                "TIMESTAMP_DRIFT" => GpsAnomalyType::TimestampDrift,
-                "ACCURACY_PATTERN" => GpsAnomalyType::AccuracyPattern,
-                "PROVIDER_MISMATCH" => GpsAnomalyType::ProviderMismatch,
-                _ => GpsAnomalyType::AccuracySuspicious,
-            };
-            GpsAnomaly {
-                anomaly_type,
-                severity: a.severity,
-                details: Some(a.details.clone()),
-                detected_at: Utc::now(),
-            }
-        })
-        .collect();
+    let mut gps_anomalies: Vec<GpsAnomaly> = build_gps_anomalies(&gps_validation);
 
     // GPS History Analysis - track position and detect anomalies
     // Use device fingerprint as device identifier, fall back to roll number
     let device_id = payload.device_fingerprint.as_deref().unwrap_or(&roll_upper);
 
-    let gps_position_entry = GpsPositionEntry {
-        latitude: payload.latitude,
-        longitude: payload.longitude,
-        accuracy: gps_metadata.and_then(|g| g.accuracy),
-        altitude: gps_metadata.and_then(|g| g.altitude),
-        speed: gps_metadata.and_then(|g| g.speed),
-        heading: gps_metadata.and_then(|g| g.heading),
-        timestamp: gps_metadata
-            .and_then(|g| g.timestamp)
-            .unwrap_or_else(|| Utc::now().timestamp_millis()),
-        provider: gps_metadata.and_then(|g| g.provider.clone()),
-        mock_location: gps_metadata.and_then(|g| g.is_mock_location),
-    };
+    track_gps_history(
+        &state,
+        device_id,
+        payload.latitude,
+        payload.longitude,
+        gps_metadata,
+        &mut gps_anomalies,
+    )
+    .await;
 
-    // Add position to history and analyze (gracefully handle errors)
-    if let Err(e) = state
-        .gps_history
-        .add_position(device_id, gps_position_entry.clone())
-        .await
-    {
-        tracing::warn!("Failed to add GPS position to history: {}", e);
-    }
-
-    // Check for position jumps (threshold: POSITION_JUMP_THRESHOLD_M with speed > MAX_REASONABLE_SPEED_KMH indicates impossible travel)
-    match state
-        .gps_history
-        .detect_position_jump(device_id, &gps_position_entry, POSITION_JUMP_THRESHOLD_M)
-        .await
-    {
-        Ok(true) => {
-            tracing::warn!(
-                "Position jump detected for device {} at ({}, {})",
-                device_id,
-                payload.latitude,
-                payload.longitude
-            );
-            gps_anomalies.push(GpsAnomaly {
-                anomaly_type: GpsAnomalyType::PositionJump,
-                severity: Severity::High,
-                details: Some("GPS position jump detected from history analysis".to_string()),
-                detected_at: Utc::now(),
-            });
-        }
-        Ok(false) => {} // No jump detected
-        Err(e) => {
-            tracing::warn!("Failed to detect position jump: {}", e);
-        }
-    }
-
-    // Check for impossible travel patterns
-    match state
-        .gps_history
-        .detect_impossible_travel(device_id, &gps_position_entry)
-        .await
-    {
-        Ok(history_anomalies) if !history_anomalies.is_empty() => {
-            for anomaly in history_anomalies {
-                tracing::warn!(
-                    "Impossible travel detected for device {}: {} - {}",
-                    device_id,
-                    anomaly.anomaly_type,
-                    anomaly.details
-                );
-                let anomaly_type = match anomaly.anomaly_type.as_str() {
-                    "RAPID_POSITION_CHANGE" => GpsAnomalyType::PositionJump,
-                    "IMPOSSIBLE_SPEED" => GpsAnomalyType::SpeedImpossible,
-                    _ => GpsAnomalyType::SpeedImpossible,
-                };
-                gps_anomalies.push(GpsAnomaly {
-                    anomaly_type,
-                    severity: anomaly.severity,
-                    details: Some(anomaly.details),
-                    detected_at: Utc::now(),
-                });
-            }
-        }
-        Ok(_) => {} // No anomalies
-        Err(e) => {
-            tracing::warn!("Failed to detect impossible travel: {}", e);
-        }
-    }
-
-    let gps_confidence = match gps_validation.confidence.as_str() {
-        "high" => Some(GpsConfidence::High),
-        "medium" => Some(GpsConfidence::Medium),
-        "low" => Some(GpsConfidence::Low),
-        "suspicious" => Some(GpsConfidence::Suspicious),
-        _ => None,
-    };
-
-    let emulator_flags: Vec<EmulatorFlag> = emulator_detection
-        .flags
-        .iter()
-        .map(|f| {
-            let flag_type = match f.as_str() {
-                "DESKTOP_GPU_DETECTED" => EmulatorFlagType::DesktopGpuDetected,
-                "AUDIO_FINGERPRINT_EMULATOR" => EmulatorFlagType::AudioFingerprintEmulator,
-                "TIMING_ANOMALY" => EmulatorFlagType::TimingAnomaly,
-                "BATTERY_PATTERN_EMULATOR" => EmulatorFlagType::BatteryPatternEmulator,
-                "SCREEN_RESOLUTION_SUSPICIOUS" => EmulatorFlagType::ScreenResolutionSuspicious,
-                "DEVICE_MEMORY_ROUND" => EmulatorFlagType::DeviceMemoryRound,
-                "WEBGL_RENDERER_EMULATOR" => EmulatorFlagType::WebglRendererEmulator,
-                "PLATFORM_INCONSISTENCY" => EmulatorFlagType::PlatformInconsistency,
-                _ => EmulatorFlagType::PlatformInconsistency,
-            };
-            EmulatorFlag {
-                flag_type,
-                severity: Severity::Medium,
-                details: None,
-            }
-        })
-        .collect();
-
-    let integrity_checks: Vec<IntegrityCheck> = device_integrity
-        .checks
-        .iter()
-        .map(|c| {
-            let check_type = match c.name.as_str() {
-                "TIMING_MANIPULATION" => IntegrityCheckType::TimingManipulation,
-                "BROWSER_API_INCONSISTENCY" => IntegrityCheckType::BrowserApiInconsistency,
-                "POINTER_EVENTS_SUSPICIOUS" => IntegrityCheckType::PointerEventsSuspicious,
-                _ => IntegrityCheckType::BrowserApiInconsistency,
-            };
-            IntegrityCheck {
-                check_type,
-                passed: c.passed,
-                details: c.details.clone(),
-            }
-        })
-        .collect();
+    let gps_confidence = gps_confidence_from_str(&gps_validation.confidence);
+    let emulator_flags: Vec<EmulatorFlag> = build_emulator_flags(&emulator_detection);
+    let integrity_checks: Vec<IntegrityCheck> = build_integrity_checks(&device_integrity);
 
     // Perform face detection if photo_url is provided
     let face_detected_result = if is_dev_bypass_all && payload.dev_bypass_camera.unwrap_or(false) {
@@ -905,4 +943,112 @@ pub async fn submit_attendance(
             "deviceWarning": if device_check.flags.is_empty() { None } else { Some(device_check.flags) }
         })),
     ))
+}
+
+#[cfg(test)]
+mod anti_fraud_conversion_tests {
+    use super::*;
+    use crate::middleware::{DeviceIntegrityResult, EmulatorDetectionResult, GpsValidationResult};
+
+    /// Regression test: finish_authentication (WebAuthn submit path) used to
+    /// hardcode gps_anomalies/emulator_flags/integrity_checks/gps_confidence
+    /// to empty/None even though the same GpsValidationResult /
+    /// EmulatorDetectionResult / DeviceIntegrityResult extensions available
+    /// to submit_attendance were available there too. These shared helpers
+    /// are now used by both handlers, so a correctness bug here breaks both
+    /// paths identically instead of only ever being caught in one of them.
+    #[test]
+    fn build_gps_anomalies_maps_known_anomaly_types() {
+        let validation: GpsValidationResult = serde_json::from_value(serde_json::json!({
+            "valid": false,
+            "confidence": "suspicious",
+            "anomalies": [
+                {
+                    "anomaly_type": "ACCURACY_VERY_SUSPICIOUS",
+                    "severity": "high",
+                    "details": "accuracy too good to be true",
+                },
+                {
+                    "anomaly_type": "UNKNOWN_TYPE_FROM_FUTURE_CLIENT",
+                    "severity": "low",
+                    "details": "unrecognized",
+                },
+            ],
+        }))
+        .unwrap();
+
+        let anomalies = build_gps_anomalies(&validation);
+        assert_eq!(anomalies.len(), 2);
+        assert!(matches!(
+            anomalies[0].anomaly_type,
+            GpsAnomalyType::AccuracyVerySuspicious
+        ));
+        assert_eq!(anomalies[0].severity, Severity::High);
+        // Unknown anomaly types fall back to a safe default rather than panicking.
+        assert!(matches!(
+            anomalies[1].anomaly_type,
+            GpsAnomalyType::AccuracySuspicious
+        ));
+    }
+
+    #[test]
+    fn build_emulator_flags_maps_known_flags() {
+        let detection: EmulatorDetectionResult = serde_json::from_value(serde_json::json!({
+            "detected": true,
+            "has_high_severity": true,
+            "flags": ["DESKTOP_GPU_DETECTED"],
+        }))
+        .unwrap();
+
+        let flags = build_emulator_flags(&detection);
+        assert_eq!(flags.len(), 1);
+        assert!(matches!(
+            flags[0].flag_type,
+            EmulatorFlagType::DesktopGpuDetected
+        ));
+    }
+
+    #[test]
+    fn build_integrity_checks_maps_known_checks() {
+        let integrity: DeviceIntegrityResult = serde_json::from_value(serde_json::json!({
+            "passed": false,
+            "checks": [
+                {
+                    "name": "TIMING_MANIPULATION",
+                    "passed": false,
+                    "details": "timing anomaly",
+                },
+            ],
+        }))
+        .unwrap();
+
+        let checks = build_integrity_checks(&integrity);
+        assert_eq!(checks.len(), 1);
+        assert!(matches!(
+            checks[0].check_type,
+            IntegrityCheckType::TimingManipulation
+        ));
+        assert!(!checks[0].passed);
+    }
+
+    #[test]
+    fn gps_confidence_from_str_maps_all_known_values() {
+        assert!(matches!(
+            gps_confidence_from_str("high"),
+            Some(GpsConfidence::High)
+        ));
+        assert!(matches!(
+            gps_confidence_from_str("medium"),
+            Some(GpsConfidence::Medium)
+        ));
+        assert!(matches!(
+            gps_confidence_from_str("low"),
+            Some(GpsConfidence::Low)
+        ));
+        assert!(matches!(
+            gps_confidence_from_str("suspicious"),
+            Some(GpsConfidence::Suspicious)
+        ));
+        assert!(gps_confidence_from_str("unknown").is_none());
+    }
 }

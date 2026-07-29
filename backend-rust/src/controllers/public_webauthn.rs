@@ -23,6 +23,7 @@ use crate::{
 // =================== WebAuthn Status ===================
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebAuthnStatusResponse {
     pub enrolled: bool,
     pub suspended: bool,
@@ -542,6 +543,8 @@ pub struct AuthenticationFinishRequest {
     pub longitude: f64,
     pub device_fingerprint: Option<String>,
     pub gps_data: Option<crate::middleware::GpsDataPayload>,
+    pub gps_metadata: Option<super::attendance::GpsMetadataPayload>,
+    pub face_detected: Option<bool>,
     pub dev_bypass_camera: Option<bool>,
     pub dev_bypass_gps: Option<bool>,
     pub dev_bypass_webauthn: Option<bool>,
@@ -808,6 +811,22 @@ pub async fn finish_authentication(
         .as_ref()
         .map(|fp| crate::models::Device::hash_fingerprint(fp));
 
+    let mut gps_anomalies = super::attendance::build_gps_anomalies(&gps_validation);
+    let emulator_flags = super::attendance::build_emulator_flags(&emulator_detection);
+    let integrity_checks = super::attendance::build_integrity_checks(&device_integrity);
+    let gps_confidence = super::attendance::gps_confidence_from_str(&gps_validation.confidence);
+
+    let device_id = payload.device_fingerprint.as_deref().unwrap_or(&roll_upper);
+    super::attendance::track_gps_history(
+        &state,
+        device_id,
+        payload.latitude,
+        payload.longitude,
+        payload.gps_metadata.as_ref(),
+        &mut gps_anomalies,
+    )
+    .await;
+
     let attendance = Attendance {
         id: None,
         session_id,
@@ -825,7 +844,9 @@ pub async fn finish_authentication(
         network_provider: None,
         network_org: None,
         verified: true,
-        face_detected: face_detected_result.unwrap_or(true),
+        face_detected: face_detected_result
+            .or(payload.face_detected)
+            .unwrap_or(true),
         device_fingerprint: payload.device_fingerprint.clone(),
         device_fingerprint_hash,
         device_first_seen: false,
@@ -870,11 +891,11 @@ pub async fn finish_authentication(
             .and_then(|g| g.mock_location)
             .unwrap_or(false),
         gps_provider: payload.gps_data.as_ref().and_then(|g| g.provider.clone()),
-        gps_anomalies: vec![],
-        gps_confidence: None,
+        gps_anomalies,
+        gps_confidence,
         emulator_detected: emulator_detection.detected,
-        emulator_flags: vec![],
-        integrity_checks: vec![],
+        emulator_flags,
+        integrity_checks,
     };
 
     let result = attendances.insert_one(&attendance).await?;
@@ -1104,4 +1125,67 @@ fn extract_public_key_from_attestation(attestation_object: &str, _rp_id: &str) -
         .map_err(|e| AppError::BadRequest(format!("Failed to serialize public key: {}", e)))?;
 
     Ok(pubkey_bytes)
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// Regression test: StudentScan.tsx checks `data.alreadySubmitted`.
+    /// Without `#[serde(rename_all = "camelCase")]` this field serializes as
+    /// `already_submitted`, so the frontend's already-submitted check would
+    /// always read `undefined` and silently fail to short-circuit.
+    #[test]
+    fn webauthn_status_response_serializes_camel_case() {
+        let response = WebAuthnStatusResponse {
+            enrolled: true,
+            suspended: false,
+            already_submitted: true,
+            message: Some("Attendance already submitted".to_string()),
+            student_name: None,
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["alreadySubmitted"], true);
+        assert!(json.get("already_submitted").is_none());
+        // student_name is None and should be omitted entirely, not `null`.
+        assert!(json.get("studentName").is_none());
+    }
+
+    /// Regression test: AuthenticationFinishRequest (the submit endpoint
+    /// used whenever a WebAuthn credential is present) must accept
+    /// `gpsMetadata` and `faceDetected` — StudentScan.tsx always sends both,
+    /// and without these fields they were silently dropped by serde,
+    /// disabling GPS position-history tracking and the face-detection
+    /// fallback for every passkey-authenticated submission.
+    #[test]
+    fn authentication_finish_request_deserializes_gps_metadata_and_face_detected() {
+        let payload: AuthenticationFinishRequest = serde_json::from_value(serde_json::json!({
+            "rollNumber": "CS101",
+            "credential": {
+                "id": "cred-id",
+                "response": {
+                    "clientDataJson": "e30=",
+                    "authenticatorData": "e30=",
+                    "signature": "e30=",
+                },
+                "type": "public-key",
+            },
+            "latitude": 12.9,
+            "longitude": 77.6,
+            "gpsMetadata": {
+                "accuracy": 5.0,
+                "isMockLocation": false,
+            },
+            "faceDetected": true,
+        }))
+        .unwrap();
+
+        let gps_metadata = payload
+            .gps_metadata
+            .expect("gpsMetadata should have deserialized");
+        assert_eq!(gps_metadata.accuracy, Some(5.0));
+        assert_eq!(gps_metadata.is_mock_location, Some(false));
+        assert_eq!(payload.face_detected, Some(true));
+    }
 }

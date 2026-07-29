@@ -184,6 +184,8 @@ struct StorageInfoResponse {
     provider: String,
     bucket: String,
     region: String,
+    #[serde(rename = "supportsDirectUpload")]
+    supports_direct_upload: bool,
 }
 
 /// Admin registration request
@@ -669,6 +671,10 @@ fn simulate_storage_info(provider: &str) -> MockResponse<StorageInfoResponse> {
         provider: provider.to_string(),
         bucket: "test-bucket".to_string(),
         region: "us-east-1".to_string(),
+        // Only S3 is actually implemented as a StorageProvider (see
+        // backend-rust/src/storage/mod.rs::create_storage_provider) — direct
+        // upload is only supported for the "s3" provider.
+        supports_direct_upload: provider == "s3",
     })
 }
 
@@ -899,6 +905,15 @@ mod storage_configuration_tests {
         let body = response.body.unwrap();
         assert!(body.provider == "cloudinary" || body.provider == "s3");
         assert!(!body.provider.is_empty());
+        // supports_direct_upload is a bool field by construction; the real
+        // assertion of interest is that it's present at all and reflects the
+        // provider (see the real HTTP-level test in
+        // tests/security/route_auth_tests.rs for coverage against the
+        // actual serialized response, not this mock).
+        assert!(
+            !body.supports_direct_upload,
+            "cloudinary has no direct-upload support"
+        );
     }
 
     /// Test: storage provider can be s3
@@ -909,6 +924,7 @@ mod storage_configuration_tests {
         assert_eq!(response.status, 200);
         let body = response.body.unwrap();
         assert_eq!(body.provider, "s3");
+        assert!(body.supports_direct_upload, "s3 must support direct upload");
     }
 }
 

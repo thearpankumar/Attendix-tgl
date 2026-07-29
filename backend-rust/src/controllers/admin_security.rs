@@ -14,7 +14,9 @@ use std::sync::Arc;
 use crate::{
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Attendance, SystemConfig},
+    models::{
+        Admin, Attendance, EmulatorFlag, GpsAnomaly, GpsConfidence, IntegrityCheck, SystemConfig,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -213,6 +215,45 @@ pub async fn review_submission(
     })))
 }
 
+// =================== Flagged Submissions ===================
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlaggedSubmissionResponse {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub roll_number: String,
+    pub student_name: String,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub flagged: bool,
+    pub flag_reason: Option<String>,
+    pub flag_reviewed: bool,
+    pub gps_confidence: Option<GpsConfidence>,
+    pub gps_anomalies: Vec<GpsAnomaly>,
+    pub emulator_detected: bool,
+    pub emulator_flags: Vec<EmulatorFlag>,
+    pub integrity_checks: Vec<IntegrityCheck>,
+}
+
+impl FlaggedSubmissionResponse {
+    fn from_attendance(a: Attendance) -> Self {
+        Self {
+            id: a.id.unwrap_or_default().to_hex(),
+            roll_number: a.roll_number,
+            student_name: a.student_name,
+            captured_at: a.captured_at,
+            flagged: a.flagged,
+            flag_reason: a.flag_reason,
+            flag_reviewed: a.flag_reviewed,
+            gps_confidence: a.gps_confidence,
+            gps_anomalies: a.gps_anomalies,
+            emulator_detected: a.emulator_detected,
+            emulator_flags: a.emulator_flags,
+            integrity_checks: a.integrity_checks,
+        }
+    }
+}
+
 pub async fn get_flagged_submissions(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
@@ -244,72 +285,28 @@ pub async fn get_flagged_submissions(
 
     while cursor.advance().await? {
         let a = cursor.deserialize_current()?;
-        submissions.push(serde_json::json!({
-            "id": a.id.unwrap().to_hex(),
-            "studentName": a.student_name,
-            "rollNumber": a.roll_number,
-            "deviceFlag": a.device_flag,
-            "flagReviewed": a.flag_reviewed,
-            "capturedAt": a.captured_at,
-        }));
+        submissions.push(FlaggedSubmissionResponse::from_attendance(a));
     }
 
-    Ok(Json(submissions))
+    Ok(Json(serde_json::json!({ "submissions": submissions })))
 }
 
 // =================== Submission Details ===================
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewedByInfo {
+    pub username: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubmissionDetailsResponse {
-    pub attendance: AttendanceDetails,
-    pub location: LocationDetails,
-    pub gps: GpsDetails,
-    pub emulator: EmulatorDetails,
-    pub integrity: IntegrityDetails,
-    pub has_security_data: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AttendanceDetails {
-    pub id: String,
-    pub roll_number: String,
-    pub student_name: String,
-    pub captured_at: chrono::DateTime<chrono::Utc>,
-    pub flagged: bool,
-    pub flag_reason: Option<String>,
-    pub flag_reviewed: bool,
-    pub flag_reviewed_by: Option<String>,
+    #[serde(flatten)]
+    pub submission: FlaggedSubmissionResponse,
+    pub flag_reviewed_by: Option<ReviewedByInfo>,
     pub flag_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LocationDetails {
-    pub latitude: f64,
-    pub longitude: f64,
-    pub distance_from_location: f64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GpsDetails {
-    pub accuracy: Option<f64>,
-    pub altitude: Option<f64>,
-    pub speed: Option<f64>,
-    pub heading: Option<f64>,
-    pub provider: Option<String>,
-    pub mock_location: bool,
-    pub confidence: Option<String>,
-    pub anomalies: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EmulatorDetails {
-    pub detected: bool,
-    pub flags: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct IntegrityDetails {
-    pub checks: Vec<serde_json::Value>,
+    pub has_security_data: bool,
 }
 
 pub async fn get_submission_details(
@@ -330,6 +327,7 @@ pub async fn get_submission_details(
     );
 
     let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
+    let admins: Collection<Admin> = db.collection(Admin::collection_name());
 
     let attendance_oid = ObjectId::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
@@ -344,72 +342,24 @@ pub async fn get_submission_details(
         || !attendance.integrity_checks.is_empty()
         || attendance.gps_accuracy.is_some();
 
+    let flag_reviewed_by_id = attendance.flag_reviewed_by;
+    let flag_reviewed_at = attendance.flag_reviewed_at;
+
+    let flag_reviewed_by = if let Some(admin_id) = flag_reviewed_by_id {
+        admins
+            .find_one(doc! { "_id": admin_id })
+            .await?
+            .map(|admin| ReviewedByInfo {
+                username: admin.username,
+            })
+    } else {
+        None
+    };
+
     let details = SubmissionDetailsResponse {
-        attendance: AttendanceDetails {
-            id: attendance_id,
-            roll_number: attendance.roll_number,
-            student_name: attendance.student_name,
-            captured_at: attendance.captured_at,
-            flagged: attendance.flagged,
-            flag_reason: attendance.flag_reason,
-            flag_reviewed: attendance.flag_reviewed,
-            flag_reviewed_by: attendance.flag_reviewed_by.map(|id| id.to_hex()),
-            flag_reviewed_at: attendance.flag_reviewed_at,
-        },
-        location: LocationDetails {
-            latitude: attendance.student_latitude,
-            longitude: attendance.student_longitude,
-            distance_from_location: attendance.distance_from_location,
-        },
-        gps: GpsDetails {
-            accuracy: attendance.gps_accuracy,
-            altitude: attendance.gps_altitude,
-            speed: attendance.gps_speed,
-            heading: attendance.gps_heading,
-            provider: attendance.gps_provider,
-            mock_location: attendance.gps_mock_location,
-            confidence: attendance
-                .gps_confidence
-                .map(|c| format!("{:?}", c).to_lowercase()),
-            anomalies: attendance
-                .gps_anomalies
-                .iter()
-                .map(|a| {
-                    serde_json::json!({
-                        "type": format!("{:?}", a.anomaly_type),
-                        "severity": a.severity,
-                        "details": a.details,
-                        "detectedAt": a.detected_at,
-                    })
-                })
-                .collect(),
-        },
-        emulator: EmulatorDetails {
-            detected: attendance.emulator_detected,
-            flags: attendance
-                .emulator_flags
-                .iter()
-                .map(|f| {
-                    serde_json::json!({
-                        "type": format!("{:?}", f.flag_type),
-                        "severity": f.severity,
-                        "details": f.details,
-                    })
-                })
-                .collect(),
-        },
-        integrity: IntegrityDetails {
-            checks: attendance
-                .integrity_checks
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "type": format!("{:?}", c.check_type),
-                        "details": c.details,
-                    })
-                })
-                .collect(),
-        },
+        submission: FlaggedSubmissionResponse::from_attendance(attendance),
+        flag_reviewed_by,
+        flag_reviewed_at,
         has_security_data,
     };
 
@@ -509,4 +459,97 @@ pub async fn update_security_settings(
             "trustScore": config.trust_score,
         }
     })))
+}
+
+#[cfg(test)]
+mod flagged_submission_contract_tests {
+    use super::*;
+
+    fn sample_response() -> FlaggedSubmissionResponse {
+        FlaggedSubmissionResponse {
+            id: "507f1f77bcf86cd799439011".to_string(),
+            roll_number: "CS101".to_string(),
+            student_name: "Alice".to_string(),
+            captured_at: Utc::now(),
+            flagged: true,
+            flag_reason: Some("GPS anomalies detected".to_string()),
+            flag_reviewed: false,
+            gps_confidence: Some(GpsConfidence::Suspicious),
+            gps_anomalies: vec![],
+            emulator_detected: false,
+            emulator_flags: vec![],
+            integrity_checks: vec![],
+        }
+    }
+
+    /// Regression test: SecurityReview.tsx keys each flagged submission by
+    /// `_id` (not `id`) and expects camelCase throughout. Without the
+    /// `#[serde(rename = "_id")]` + `rename_all = "camelCase")]` pair here,
+    /// "View Details" would request `.../attendance/undefined/details`.
+    #[test]
+    fn flagged_submission_response_serializes_underscore_id_and_camel_case() {
+        let json = serde_json::to_value(sample_response()).unwrap();
+
+        assert_eq!(json["_id"], "507f1f77bcf86cd799439011");
+        assert!(json.get("id").is_none());
+        assert_eq!(json["rollNumber"], "CS101");
+    }
+
+    #[test]
+    fn flagged_submission_response_field_names() {
+        let json = serde_json::to_value(sample_response()).unwrap();
+
+        for key in [
+            "_id",
+            "rollNumber",
+            "studentName",
+            "capturedAt",
+            "flagged",
+            "flagReason",
+            "flagReviewed",
+            "gpsConfidence",
+            "gpsAnomalies",
+            "emulatorDetected",
+            "emulatorFlags",
+            "integrityChecks",
+        ] {
+            assert!(json.get(key).is_some(), "missing expected key `{key}`");
+        }
+        assert_eq!(json["gpsConfidence"], "suspicious");
+    }
+
+    /// Regression test: get_flagged_submissions must wrap the list as
+    /// `{"submissions": [...]}` — SecurityReview.tsx reads `data.submissions`
+    /// and previously got `undefined` back from a bare array response.
+    #[test]
+    fn flagged_submissions_list_is_wrapped_in_submissions_key() {
+        let wrapped = serde_json::json!({ "submissions": [sample_response()] });
+        assert!(wrapped["submissions"].is_array());
+        assert_eq!(wrapped["submissions"].as_array().unwrap().len(), 1);
+    }
+
+    /// Regression test: SubmissionDetailsResponse flattens the submission
+    /// fields (via #[serde(flatten)]) alongside flagReviewedBy/flagReviewedAt
+    /// so the frontend's `{...submission, ...data}` spread actually adds new
+    /// information instead of nested objects the UI never reads.
+    #[test]
+    fn submission_details_response_flattens_and_adds_review_info() {
+        let details = SubmissionDetailsResponse {
+            submission: sample_response(),
+            flag_reviewed_by: Some(ReviewedByInfo {
+                username: "admin1".to_string(),
+            }),
+            flag_reviewed_at: Some(Utc::now()),
+            has_security_data: true,
+        };
+
+        let json = serde_json::to_value(&details).unwrap();
+        // Flattened submission fields appear at the top level, not nested
+        // under e.g. `attendance`/`gps`/`emulator` as the old shape did.
+        assert_eq!(json["_id"], "507f1f77bcf86cd799439011");
+        assert_eq!(json["rollNumber"], "CS101");
+        assert_eq!(json["flagReviewedBy"]["username"], "admin1");
+        assert!(json.get("flagReviewedAt").is_some());
+        assert_eq!(json["hasSecurityData"], true);
+    }
 }
