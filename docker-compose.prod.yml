@@ -34,7 +34,7 @@ services:
   
   backend:
     build:
-      context: ./backend
+      context: ./backend-rust
       dockerfile: Dockerfile
     restart: unless-stopped
     logging: *default-logging
@@ -46,11 +46,8 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRE=7d
       - ADMIN_SECRET=${ADMIN_SECRET}
-      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-s3}
-      # Cloudinary
-      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
-      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
-      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      # Only s3 is implemented as a StorageProvider (backend-rust/src/storage) — no Cloudinary support.
+      - STORAGE_PROVIDER=s3
       # AWS S3
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
       - AWS_REGION=${AWS_REGION:-us-east-1}
@@ -60,9 +57,10 @@ services:
       - WEBAUTHN_RP_NAME=${WEBAUTHN_RP_NAME:-Attendix Attendance System}
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-xenkrypt.in}
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://xenkrypt.in}
-      # Database Pool
-      - MONGODB_POOL_MAX=${MONGODB_POOL_MAX:-300}
-      - MONGODB_POOL_MIN=${MONGODB_POOL_MIN:-20}
+      # Database Pool (names must match backend-rust/src/config/mod.rs::AppConfig::from_env)
+      - MONGODB_MAX_POOL_SIZE=${MONGODB_MAX_POOL_SIZE:-300}
+      - MONGODB_MIN_POOL_SIZE=${MONGODB_MIN_POOL_SIZE:-20}
+      - DEV_BYPASS_ALL=${DEV_BYPASS_ALL:-false}
     deploy:
       replicas: 3
       resources:
@@ -118,7 +116,7 @@ services:
     build:
       context: ./frontend/student
       args:
-        VITE_BYPASS_MOBILE_CHECK: ${VITE_BYPASS_MOBILE_CHECK:-false}
+        VITE_DEV_BYPASS_ALL: ${DEV_BYPASS_ALL:-false}
     restart: unless-stopped
     logging: *default-logging
     deploy:

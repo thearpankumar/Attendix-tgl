@@ -1,4 +1,4 @@
-.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-backend build-backend
+.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-backend build-backend deps-backend dev-backend lint-backend restart-backend
 
 # Run all checks and builds
 all: test-admin build-admin test-home build-home test-student build-student test-backend build-backend
@@ -12,8 +12,12 @@ help:
 	@echo "  build-home     - Build Home frontend"
 	@echo "  test-student   - Run lint, typecheck, and tests for Student frontend"
 	@echo "  build-student  - Build Student frontend"
-	@echo "  test-backend   - Run tests for the Rust backend"
+	@echo "  deps-backend   - Fetch/build Rust backend dependencies"
+	@echo "  test-backend   - Run tests for the Rust backend (--all-features, matches CI)"
+	@echo "  lint-backend   - Run clippy and fmt --check for the Rust backend (matches CI)"
+	@echo "  dev-backend    - Run the Rust backend in dev mode (cargo run)"
 	@echo "  build-backend  - Build the Rust backend"
+	@echo "  restart-backend - Rebuild and restart the backend container"
 
 test-admin:
 	@echo "==============================="
@@ -56,11 +60,30 @@ build-student:
 	@echo "==============================="
 	cd frontend/student && npm run build
 
+deps-backend:
+	@echo "==============================="
+	@echo "   Fetching Backend Deps       "
+	@echo "==============================="
+	cd backend-rust && cargo build
+
 test-backend:
 	@echo "==============================="
 	@echo "   Running Backend Tests       "
 	@echo "==============================="
-	cd backend-rust && cargo test
+	cd backend-rust && cargo test --all-features
+
+lint-backend:
+	@echo "==============================="
+	@echo "   Running Backend Linter      "
+	@echo "==============================="
+	cd backend-rust && cargo clippy -- -D warnings
+	cd backend-rust && cargo fmt -- --check
+
+dev-backend:
+	@echo "==============================="
+	@echo "   Starting Backend (dev)      "
+	@echo "==============================="
+	cd backend-rust && cargo run
 
 build-backend:
 	@echo "==============================="

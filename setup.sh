@@ -8,7 +8,8 @@
 # 
 # Features:
 # - Installs Docker and Docker Compose (if not present)
-# - Installs Node.js 24 LTS via nvm (if not present)
+# - Installs Rust (via rustup) for the backend-rust API (if not present)
+# - Installs Node.js 24 LTS via nvm (if not present) for the admin/student frontends
 # - Checks existing versions and warns without overwriting
 # - Installs project dependencies
 # - Runs Docker Compose for development
@@ -30,7 +31,7 @@ BOLD='\033[1m'
 # Global variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NVM_VERSION="v0.40.5"
-NODE_VERSION="22"  # Using Node 22 as required by backend/package.json
+NODE_VERSION="24"  # For the admin/student frontends (matches .github/workflows/ci.yml)
 DOCKER_COMPOSE_VERSION=""  # Will be detected
 
 # Detect OS
@@ -309,7 +310,7 @@ check_docker_compose() {
 
 install_docker() {
     detect_os
-    
+
     if [ "$OS" = "linux" ]; then
         install_docker_linux
     elif [ "$OS" = "mac" ]; then
@@ -318,6 +319,60 @@ install_docker() {
         print_error "Unsupported OS: $(uname -s)"
         return 1
     fi
+}
+
+#===============================================================================
+# RUST INSTALLATION (via rustup) — needed for backend-rust
+#===============================================================================
+
+get_rust_version() {
+    if command_exists rustc; then
+        rustc --version 2>/dev/null | awk '{print $2}'
+    else
+        echo ""
+    fi
+}
+
+check_rust() {
+    print_section "Checking Rust Installation"
+
+    # rustup-installed toolchains live in ~/.cargo/bin, which may not be on
+    # PATH yet in this shell (e.g. right after a fresh install).
+    if [ -s "$HOME/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.cargo/env"
+    fi
+
+    local rust_version
+    rust_version=$(get_rust_version)
+
+    if [ -n "$rust_version" ]; then
+        print_check "Rust"
+        print_success "Rust $rust_version is installed"
+        return 0
+    else
+        print_check "Rust"
+        print_warning "Rust is not installed"
+        return 1
+    fi
+}
+
+install_rust() {
+    print_section "Installing Rust (via rustup)"
+
+    if command_exists rustc; then
+        print_warning "Rust is already installed"
+        return 0
+    fi
+
+    print_info "Downloading and running the rustup installer..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+    # shellcheck disable=SC1091
+    [ -s "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+    print_success "Rust installed successfully!"
+    print_info "Open a new shell (or run 'source ~/.cargo/env') to pick up cargo/rustc on PATH."
 }
 
 #===============================================================================
@@ -475,21 +530,19 @@ check_nvm() {
 
 install_backend_deps() {
     print_section "Installing Backend Dependencies"
-    
-    cd "$SCRIPT_DIR/backend"
-    
-    # Load NVM if available
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    
-    if [ -f "package.json" ]; then
-        print_info "Installing backend npm packages..."
-        npm install
-        print_success "Backend dependencies installed!"
-    else
-        print_error "package.json not found in backend/"
+
+    cd "$SCRIPT_DIR"
+
+    # Load Rust if available
+    [ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
+    if ! command_exists cargo; then
+        print_error "cargo not found. Run './setup.sh rust' (or use the menu's Rust install option) first."
         return 1
     fi
+    print_info "Fetching and building backend-rust crates (make deps-backend)..."
+    make deps-backend
+    print_success "Backend dependencies built!"
 }
 
 install_frontend_deps() {
@@ -516,38 +569,41 @@ install_frontend_deps() {
 
 install_all_deps() {
     print_section "Installing All Project Dependencies"
-    
+
     # Load NVM
     export NVM_DIR="$HOME/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    
+
     # Use correct Node version
     if command_exists nvm; then
         nvm use 2>/dev/null || nvm use "$NODE_VERSION"
     fi
-    
+
+    # Load Rust
+    [ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
     install_backend_deps
     install_frontend_deps
-    
+
     print_success "All dependencies installed!"
 }
 
 check_deps() {
     print_section "Checking Project Dependencies"
-    
+
     local backend_installed=false
     local admin_installed=false
-    
-    # Check backend
-    if [ -d "$SCRIPT_DIR/backend/node_modules" ]; then
-        print_check "Backend node_modules"
-        print_success "Backend dependencies are installed"
+
+    # Check backend (Rust build artifacts)
+    if [ -d "$SCRIPT_DIR/backend-rust/target" ]; then
+        print_check "Backend build artifacts (backend-rust/target)"
+        print_success "Backend dependencies are built"
         backend_installed=true
     else
-        print_check "Backend node_modules"
-        print_warning "Backend dependencies not installed"
+        print_check "Backend build artifacts (backend-rust/target)"
+        print_warning "Backend has not been built yet"
     fi
-    
+
     # Check admin frontend
     if [ -d "$SCRIPT_DIR/frontend/admin/node_modules" ]; then
         print_check "Admin frontend node_modules"
@@ -557,7 +613,7 @@ check_deps() {
         print_check "Admin frontend node_modules"
         print_warning "Admin frontend dependencies not installed"
     fi
-    
+
     if [ "$backend_installed" = true ] && [ "$admin_installed" = true ]; then
         return 0
     else
@@ -721,14 +777,21 @@ run_all_checks() {
         all_passed=false
     fi
     
-    # Check Node.js
+    # Check Rust (backend-rust)
+    if check_rust; then
+        :  # pass
+    else
+        all_passed=false
+    fi
+
+    # Check Node.js (frontends)
     check_nvm
     if check_node; then
         check_npm
     else
         all_passed=false
     fi
-    
+
     # Check dependencies
     check_deps
     
@@ -748,20 +811,19 @@ run_all_checks() {
 
 run_backend_dev() {
     print_section "Starting Backend Development Server"
-    
-    cd "$SCRIPT_DIR/backend"
-    
-    # Load NVM
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    
+
+    cd "$SCRIPT_DIR"
+
+    # Load Rust
+    [ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
     # Set environment for development
     export NODE_ENV=development
-    
-    print_info "Starting backend in development mode..."
+
+    print_info "Starting backend-rust in development mode (make dev-backend)..."
     print_info "Press Ctrl+C to stop"
-    
-    npm run dev
+
+    make dev-backend
 }
 
 run_admin_dev() {
@@ -785,28 +847,26 @@ run_admin_dev() {
 
 run_backend_tests() {
     print_section "Running Backend Tests"
-    
-    cd "$SCRIPT_DIR/backend"
-    
-    # Load NVM
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    
-    print_info "Running Jest tests..."
-    npm test
+
+    cd "$SCRIPT_DIR"
+
+    # Load Rust
+    [ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
+    print_info "Running backend tests (make test-backend)..."
+    make test-backend
 }
 
 run_backend_lint() {
     print_section "Running Backend Linter"
-    
-    cd "$SCRIPT_DIR/backend"
-    
-    # Load NVM
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    
-    print_info "Running ESLint..."
-    npm run lint
+
+    cd "$SCRIPT_DIR"
+
+    # Load Rust
+    [ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
+    print_info "Running backend linter (make lint-backend)..."
+    make lint-backend
 }
 
 #===============================================================================
@@ -820,21 +880,22 @@ show_main_menu() {
     
     echo -e "  ${CYAN}1)${NC} Run System Checks"
     echo -e "  ${CYAN}2)${NC} Install Docker & Docker Compose"
-    echo -e "  ${CYAN}3)${NC} Install Node.js (via NVM)"
-    echo -e "  ${CYAN}4)${NC} Install Project Dependencies"
-    echo -e "  ${CYAM}5)${NC} Copy .env File"
+    echo -e "  ${CYAN}3)${NC} Install Rust (via rustup, for backend-rust)"
+    echo -e "  ${CYAN}4)${NC} Install Node.js (via NVM, for the frontends)"
+    echo -e "  ${CYAN}5)${NC} Install Project Dependencies"
+    echo -e "  ${CYAN}6)${NC} Copy .env File"
     echo ""
-    echo -e "  ${GREEN}6)${NC} Start Docker Compose (Production)"
-    echo -e "  ${GREEN}7)${NC} Stop Docker Compose"
-    echo -e "  ${GREEN}8)${NC} View Docker Logs"
-    echo -e "  ${GREEN}9)${NC} Docker Compose Status"
+    echo -e "  ${GREEN}7)${NC} Start Docker Compose (Production)"
+    echo -e "  ${GREEN}8)${NC} Stop Docker Compose"
+    echo -e "  ${GREEN}9)${NC} View Docker Logs"
+    echo -e "  ${GREEN}10)${NC} Docker Compose Status"
     echo -e "  ${YELLOW}R)${NC} Reset Docker (Remove Volumes)"
     echo ""
-    echo -e "  ${PURPLE}10)${NC} Run Backend Dev Server (nodemon)"
-    echo -e "  ${PURPLE}11)${NC} Run Admin Frontend Dev (Vite)"
+    echo -e "  ${PURPLE}11)${NC} Run Backend Dev Server (cargo run)"
+    echo -e "  ${PURPLE}12)${NC} Run Admin Frontend Dev (Vite)"
     echo ""
-    echo -e "  ${BLUE}12)${NC} Run Backend Tests"
-    echo -e "  ${BLUE}13)${NC} Run Backend Linter"
+    echo -e "  ${BLUE}13)${NC} Run Backend Tests (cargo test)"
+    echo -e "  ${BLUE}14)${NC} Run Backend Linter (cargo clippy + fmt)"
     echo ""
     echo -e "  ${RED}Q)${NC} Quit"
     echo ""
@@ -844,7 +905,7 @@ show_main_menu() {
 handle_menu() {
     local choice
     read -r choice
-    
+
     case $choice in
         1)
             run_all_checks
@@ -858,43 +919,46 @@ handle_menu() {
             fi
             ;;
         3)
+            install_rust
+            ;;
+        4)
             install_nvm
             # Source nvm
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             install_node
             ;;
-        4)
+        5)
             install_all_deps
             ;;
-        5)
+        6)
             copy_env_file
             ;;
-        6)
+        7)
             docker_compose_up
             ;;
-        7)
+        8)
             docker_compose_down
             ;;
-        8)
+        9)
             docker_compose_logs
             ;;
-        9)
+        10)
             docker_compose_status
             ;;
         [rR])
             docker_compose_reset
             ;;
-        10)
+        11)
             run_backend_dev
             ;;
-        11)
+        12)
             run_admin_dev
             ;;
-        12)
+        13)
             run_backend_tests
             ;;
-        13)
+        14)
             run_backend_lint
             ;;
         [qQ])
@@ -905,7 +969,7 @@ handle_menu() {
             print_error "Invalid option"
             ;;
     esac
-    
+
     echo ""
     echo -e "${YELLOW}Press Enter to continue...${NC}"
     read -r
@@ -921,9 +985,10 @@ print_usage() {
     echo ""
     echo -e "${CYAN}Options:${NC}"
     echo "  check       Run system checks"
-    echo "  install     Install all (Docker, Node.js, Dependencies)"
+    echo "  install     Install all (Docker, Rust, Node.js, Dependencies)"
     echo "  docker      Install Docker only"
-    echo "  node        Install Node.js only (via NVM)"
+    echo "  rust        Install Rust only (via rustup, for backend-rust)"
+    echo "  node        Install Node.js only (via NVM, for the frontends)"
     echo "  deps        Install project dependencies only"
     echo "  env         Copy .env.example to .env"
     echo "  up          Start Docker Compose"
@@ -931,9 +996,9 @@ print_usage() {
     echo "  logs        View Docker Compose logs"
     echo "  status      Show Docker Compose status"
     echo "  reset       Reset Docker (remove volumes)"
-    echo "  test        Run backend tests"
-    echo "  lint        Run backend linter"
-    echo "  dev         Run backend dev server"
+    echo "  test        Run backend tests (cargo test)"
+    echo "  lint        Run backend linter (cargo clippy + fmt)"
+    echo "  dev         Run backend dev server (cargo run)"
     echo "  menu        Show interactive menu (default)"
     echo "  help        Show this help message"
     echo ""
@@ -956,6 +1021,7 @@ handle_cli() {
             if [ "$OS" = "linux" ] || [ "$OS" = "mac" ]; then
                 install_docker
             fi
+            install_rust
             install_nvm
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
@@ -966,6 +1032,9 @@ handle_cli() {
         docker)
             detect_os
             install_docker
+            ;;
+        rust)
+            install_rust
             ;;
         node)
             install_nvm

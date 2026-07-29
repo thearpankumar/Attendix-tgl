@@ -104,10 +104,12 @@ attendix.talenciaglobal.com {
 		reverse_proxy student-frontend:80
 	}
 
-	# Short links and WebAuthn routes
-	# NOTE: WebAuthn is mounted under /s/:shortCode/webauthn/* in server.js,
-	# so it is already served by this /s/* block — no separate /webauthn/* needed.
+	# Short links and WebAuthn routes (the Rust backend nests these under
+	# /api/s/*, so the /api prefix must be added back here — WebAuthn is
+	# mounted under /s/:shortCode/webauthn/*, so it is already served by
+	# this /s/* block, no separate /webauthn/* needed).
 	handle /s/* {
+		rewrite * /api{path}
 		reverse_proxy backend:5000
 	}
 
@@ -197,10 +199,12 @@ attendix.talenciaglobal.com {
 		reverse_proxy student-frontend:80
 	}
 
-	# Short links and WebAuthn routes
-	# NOTE: WebAuthn is mounted under /s/:shortCode/webauthn/* in server.js,
-	# so it is already served by this /s/* block — no separate /webauthn/* needed.
+	# Short links and WebAuthn routes (the Rust backend nests these under
+	# /api/s/*, so the /api prefix must be added back here — WebAuthn is
+	# mounted under /s/:shortCode/webauthn/*, so it is already served by
+	# this /s/* block, no separate /webauthn/* needed).
 	handle /s/* {
+		rewrite * /api{path}
 		reverse_proxy backend:5000
 	}
 
