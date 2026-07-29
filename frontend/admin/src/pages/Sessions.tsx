@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import type { FormEvent } from 'react';
 import axios from 'axios';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { toast } from 'react-toastify';
 import { ClipboardList, Sparkles, Link as LinkIcon, Pencil, AlertTriangle } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';

@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import LegacyAttend from '../../src/pages/LegacyAttend';
 import * as useIsMobileModule from '../../src/hooks/useIsMobile';
@@ -77,7 +77,7 @@ describe('LegacyAttend', () => {
   });
 
   const renderComponent = () => render(
-    <MemoryRouter initialEntries={['/s/legacycode']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/s/legacycode']}>
       <Routes>
         <Route path="/s/:shortCode" element={<LegacyAttend />} />
       </Routes>

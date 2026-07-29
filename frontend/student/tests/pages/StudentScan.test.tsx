@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import StudentScan from '../../src/pages/StudentScan';
 
@@ -119,7 +119,7 @@ describe('StudentScan', () => {
   });
 
   const renderComponent = () => render(
-    <MemoryRouter initialEntries={['/attend/testcode']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/attend/testcode']}>
       <Routes>
         <Route path="/attend/:shortCode" element={<StudentScan />} />
       </Routes>

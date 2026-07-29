@@ -1,9 +1,9 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router';
 import StudentScan from './pages/StudentScan';
 import LegacyAttend from './pages/LegacyAttend';
 function App() {
   return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <Routes>
         <Route path="/attend/:shortCode" element={<StudentScan />} />
         <Route path="/attend/legacy/:shortCode" element={<LegacyAttend />} />

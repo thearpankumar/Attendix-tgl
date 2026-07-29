@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { useMobileVerification } from '../hooks/useIsMobile';
 import MobileDeviceRequired from '../components/MobileDeviceRequired';
 import { useFaceDetection } from '../hooks/useFaceDetection';

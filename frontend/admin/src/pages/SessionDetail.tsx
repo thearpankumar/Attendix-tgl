@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { QrCode, CheckCircle, XCircle, X, MapPin, Clock, Calendar, RefreshCw, Users, ShieldCheck, User, AlertCircle } from 'lucide-react';

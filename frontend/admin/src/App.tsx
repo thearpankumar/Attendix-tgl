@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { ToastContainer } from 'react-toastify';
 import { useAuth } from './context/AuthContext';
 import Login from './pages/Login';
@@ -27,7 +27,7 @@ function App() {
   const { admin } = useAuth();
 
   return (
-    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
       <Routes>
         <Route path="/login" element={admin ? <Navigate to="/" /> : <Login />} />
         <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />

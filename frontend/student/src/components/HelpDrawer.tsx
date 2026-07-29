@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type JSX } from 'react';
 
 type Step = 'loading' | 'permissions' | 'error' | 'rollInput' | 'webauthnAction' | 'form' | 'success';
 

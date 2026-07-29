@@ -2,7 +2,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Sessions from '../../src/pages/Sessions';
 import axios from 'axios';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Shared mock factory — always returns correct shape for all three GET endpoints
 const makeMockGet = ({
@@ -36,7 +36,7 @@ describe('Sessions', () => {
   });
 
   const renderComponent = () => render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <Sessions />
     </MemoryRouter>
   );

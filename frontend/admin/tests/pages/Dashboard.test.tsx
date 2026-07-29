@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import Dashboard from '../../src/pages/Dashboard';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { mockDashboardData } from '../fixtures/dashboardData';
 
 vi.mock('axios');

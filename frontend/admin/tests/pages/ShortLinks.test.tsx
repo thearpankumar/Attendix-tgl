@@ -2,7 +2,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ShortLinks from '../../src/pages/ShortLinks';
 import axios from 'axios';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { toast } from 'react-toastify';
 
 describe('ShortLinks', () => {
@@ -11,7 +11,7 @@ describe('ShortLinks', () => {
   });
 
   const renderComponent = () => render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <ShortLinks />
     </MemoryRouter>
   );

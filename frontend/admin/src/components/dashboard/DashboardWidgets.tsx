@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { GraduationCap, ShieldCheck, Users, AlertTriangle, Info, ArrowRight, ArrowUp, ArrowDown, Minus, Cpu, Server, Container } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Variants } from 'framer-motion';
