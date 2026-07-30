@@ -89,7 +89,7 @@ build-backend:
 	@echo "==============================="
 	@echo "   Building Rust Backend (GNU)"
 	@echo "==============================="
-	cd backend-rust && cargo zigbuild --release --target x86_64-unknown-linux-gnu
+	cd backend-rust && OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu CFLAGS="-I/usr/include/x86_64-linux-gnu -I/usr/include" cargo zigbuild --release --target x86_64-unknown-linux-gnu
 	docker compose build backend
 
 restart-backend: build-backend

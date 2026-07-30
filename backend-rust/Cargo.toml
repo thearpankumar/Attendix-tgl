@@ -49,7 +49,8 @@ reqwest = { version = "0.13", features = ["json"] }
 once_cell = "1.21"
 dashmap = "6"
 face_id = "0.4"
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10.81", features = ["vendored"] }
+openssl-sys = { version = "0.9.117", features = ["vendored"] }
 
 [dev-dependencies]
 
