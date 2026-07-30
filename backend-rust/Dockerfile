@@ -36,8 +36,8 @@ RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
     apt-get install -y --no-install-recommends ca-certificates libssl3 libstdc++6 curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy the host-compiled binary targeting GLIBC 2.31
-COPY target/x86_64-unknown-linux-gnu.2.31/release/attendance-geotag-backend /usr/local/bin/
+# Copy the host-compiled binary targeting x86_64-unknown-linux-gnu
+COPY target/x86_64-unknown-linux-gnu/release/attendance-geotag-backend /usr/local/bin/
 
 RUN useradd -m appuser && chown -R appuser:appuser /app
 

@@ -87,9 +87,9 @@ dev-backend:
 
 build-backend:
 	@echo "==============================="
-	@echo "   Building Rust Backend (GNU 2.31)"
+	@echo "   Building Rust Backend (GNU)"
 	@echo "==============================="
-	cd backend-rust && cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.31
+	cd backend-rust && cargo zigbuild --release --target x86_64-unknown-linux-gnu
 	docker compose build backend
 
 restart-backend: build-backend
