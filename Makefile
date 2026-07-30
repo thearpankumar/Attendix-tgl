@@ -87,9 +87,10 @@ dev-backend:
 
 build-backend:
 	@echo "==============================="
-	@echo "   Building Rust Backend       "
+	@echo "   Building Rust Backend (musl)"
 	@echo "==============================="
-	cd backend-rust && cargo build --release
+	cd backend-rust && rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+	cd backend-rust && cargo build --release --target x86_64-unknown-linux-musl
 	docker compose build backend
 
 restart-backend: build-backend
