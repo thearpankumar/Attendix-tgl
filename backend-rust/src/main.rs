@@ -256,7 +256,50 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn create_indexes(state: &Arc<AppState>) -> anyhow::Result<()> {
+async fn ensure_index<T>(
+    coll: &mongodb::Collection<T>,
+    index: mongodb::IndexModel,
+) -> anyhow::Result<()>
+where
+    T: Send + Sync,
+{
+    if let Err(e) = coll.create_index(index.clone()).await {
+        if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind {
+            if cmd_err.code == 85 {
+                let name = if let Some(ref name) = index.options.as_ref().and_then(|o| o.name.clone()) {
+                    name.clone()
+                } else {
+                    index
+                        .keys
+                        .iter()
+                        .map(|(k, v)| {
+                            let dir = match v {
+                                mongodb::bson::Bson::Int32(n) => n.to_string(),
+                                mongodb::bson::Bson::Int64(n) => n.to_string(),
+                                _ => "1".to_string(),
+                            };
+                            format!("{}_{}", k, dir)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("_")
+                };
+
+                if !name.is_empty() {
+                    tracing::warn!("Dropping conflicting index '{}' to update index options", name);
+                    let _ = coll.drop_index(&name).await;
+                    coll.create_index(index).await?;
+                    return Ok(());
+                }
+            }
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+async fn create_indexes(
+    state: &Arc<AppState>,
+) -> anyhow::Result<()> {
     use mongodb::bson::doc;
     use mongodb::IndexModel;
 
@@ -265,139 +308,139 @@ async fn create_indexes(state: &Arc<AppState>) -> anyhow::Result<()> {
     let admins: mongodb::Collection<attendance_geotag_backend::models::Admin> =
         db.collection("admins");
 
-    admins
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "username": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .unique(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &admins,
+        IndexModel::builder()
+            .keys(doc! { "username": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true)
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
-    admins
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "email": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .unique(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &admins,
+        IndexModel::builder()
+            .keys(doc! { "email": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true)
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
     let sessions: mongodb::Collection<attendance_geotag_backend::models::Session> =
         db.collection("sessions");
 
-    sessions
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "createdBy": 1, "createdAt": -1 })
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &sessions,
+        IndexModel::builder()
+            .keys(doc! { "createdBy": 1, "createdAt": -1 })
+            .build(),
+    )
+    .await?;
 
     let attendances: mongodb::Collection<attendance_geotag_backend::models::Attendance> =
         db.collection("attendances");
 
-    attendances
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "sessionId": 1, "rollNumber": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .unique(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &attendances,
+        IndexModel::builder()
+            .keys(doc! { "sessionId": 1, "rollNumber": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true)
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
-    attendances
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "sessionId": 1, "capturedAt": -1 })
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &attendances,
+        IndexModel::builder()
+            .keys(doc! { "sessionId": 1, "capturedAt": -1 })
+            .build(),
+    )
+    .await?;
 
-    attendances
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "flagged": 1, "sessionId": 1 })
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &attendances,
+        IndexModel::builder()
+            .keys(doc! { "flagged": 1, "sessionId": 1 })
+            .build(),
+    )
+    .await?;
 
     let webauthn_challenges: mongodb::Collection<
         attendance_geotag_backend::models::WebAuthnChallenge,
     > = db.collection("webauthnchallenges");
 
-    webauthn_challenges
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "expiresAt": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .expire_after(std::time::Duration::from_secs(300))
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &webauthn_challenges,
+        IndexModel::builder()
+            .keys(doc! { "expiresAt": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .expire_after(std::time::Duration::from_secs(300))
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
     let credentials: mongodb::Collection<attendance_geotag_backend::models::WebAuthnCredential> =
         db.collection("webauthncredentials");
 
-    credentials
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "studentId": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .unique(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &credentials,
+        IndexModel::builder()
+            .keys(doc! { "studentId": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true)
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
-    credentials
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "credentialId": 1 })
-                .options(
-                    mongodb::options::IndexOptions::builder()
-                        .unique(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &credentials,
+        IndexModel::builder()
+            .keys(doc! { "credentialId": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true)
+                    .build(),
+            )
+            .build(),
+    )
+    .await?;
 
     let devices: mongodb::Collection<attendance_geotag_backend::models::Device> =
         db.collection("devices");
 
-    devices
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "fingerprintHash": 1, "sessionId": 1 })
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &devices,
+        IndexModel::builder()
+            .keys(doc! { "fingerprintHash": 1, "sessionId": 1 })
+            .build(),
+    )
+    .await?;
 
-    devices
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "boundToStudent": 1, "sessionId": 1 })
-                .build(),
-        )
-        .await?;
+    ensure_index(
+        &devices,
+        IndexModel::builder()
+            .keys(doc! { "boundToStudent": 1, "sessionId": 1 })
+            .build(),
+    )
+    .await?;
 
     tracing::info!("Database indexes created successfully");
 
