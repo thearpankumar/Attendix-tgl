@@ -89,7 +89,6 @@ build-backend:
 	@echo "==============================="
 	@echo "   Building Rust Backend       "
 	@echo "==============================="
-	cd backend-rust && RUSTFLAGS="-C link-arg=-lstdc++" cargo build --release
 	docker compose build backend
 
 restart-backend: build-backend

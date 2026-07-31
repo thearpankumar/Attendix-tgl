@@ -1,16 +1,23 @@
 # ==============================================================================
-# Stage 1: Model Downloader
+# Stage 1: Rust Builder & Model Downloader
 # ==============================================================================
-FROM rust:1.97-slim AS model-builder
+FROM rust:1.97-slim AS builder
 
-WORKDIR /builder
+WORKDIR /usr/src/app
+
 RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential && rm -rf /var/lib/apt/lists/*
 
-RUN cargo new model-downloader
-WORKDIR /builder/model-downloader
-RUN cargo add face_id@0.4 && cargo add tokio -F rt-multi-thread
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 
-RUN echo 'fn main() {\n\
+# Compile application binary inside Docker environment (guarantees GLIBC compatibility)
+RUN RUSTFLAGS="-C link-arg=-lstdc++" cargo build --release
+
+# Download and cache Hugging Face models for FaceAnalyzer
+RUN cargo new --bin model-downloader && \
+    cd model-downloader && \
+    cargo add face_id@0.4 && cargo add tokio -F rt-multi-thread && \
+    echo 'fn main() {\n\
     println!("Downloading models...");\n\
     tokio::runtime::Builder::new_current_thread()\n\
         .enable_all()\n\
@@ -20,9 +27,8 @@ RUN echo 'fn main() {\n\
             face_id::analyzer::FaceAnalyzer::from_hf().build().await.expect("Failed to build face analyzer and download models");\n\
         });\n\
     println!("Done downloading models.");\n\
-}' > src/main.rs
-
-RUN cargo run --release
+}' > src/main.rs && \
+    RUSTFLAGS="-C link-arg=-lstdc++" cargo run --release
 
 # ==============================================================================
 # Stage 2: Final Runtime Image
@@ -36,12 +42,12 @@ RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
     apt-get install -y --no-install-recommends ca-certificates libssl3 libstdc++6 curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy the host-compiled binary
-COPY target/release/attendance-geotag-backend /usr/local/bin/
+# Copy the compiled binary from the builder stage
+COPY --from=builder /usr/src/app/target/release/attendance-geotag-backend /usr/local/bin/
 
 RUN useradd -m appuser && chown -R appuser:appuser /app
 
-COPY --from=model-builder --chown=appuser:appuser /root/.cache /home/appuser/.cache
+COPY --from=builder --chown=appuser:appuser /root/.cache /home/appuser/.cache
 
 USER appuser
 
