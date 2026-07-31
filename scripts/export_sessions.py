@@ -5,21 +5,11 @@ MongoDB Attendance Exporter to Excel (.xlsx) & CSV
 This script connects to a MongoDB database, extracts all attendance records,
 and organizes them by session.
 
-If exporting to Excel (--format excel):
-    It creates one Excel Workbook with a separate sheet for each Session.
-    Each sheet contains the detailed student attendance (Name, Roll Number, Time, Status).
-
-If exporting to CSV (--format csv):
-    It creates a single CSV file containing all attendances across all sessions.
-
 Dependencies:
     pip install pymongo pandas openpyxl python-dotenv
 
 Usage:
     python3 export_sessions.py [options]
-
-Examples:
-    python3 export_sessions.py --output "detailed_attendance.xlsx"
 """
 
 import sys
@@ -28,11 +18,18 @@ import csv
 import argparse
 from datetime import datetime
 
-# Optional dotenv support
+# Load environment variables robustly
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from dotenv import load_dotenv, find_dotenv
+    # Find .env file starting from the current working directory or script directory
+    env_path = find_dotenv(usecwd=True)
+    if env_path:
+        load_dotenv(env_path)
+        print(f"[*] Loaded environment variables from {env_path}")
+    else:
+        print("[*] No .env file found. Using system environment variables or defaults.")
 except ImportError:
+    print("[!] 'python-dotenv' is missing. Cannot load .env file automatically.")
     pass
 
 # MongoDB driver
@@ -41,7 +38,7 @@ try:
 except ImportError:
     print("Error: 'pymongo' library is missing.")
     print("Please install dependencies by running:")
-    print("    pip install pymongo pandas openpyxl")
+    print("    pip install pymongo pandas openpyxl python-dotenv")
     sys.exit(1)
 
 # Optional Pandas & OpenPyXL for styled Excel exports
@@ -59,6 +56,28 @@ try:
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
+
+
+def construct_mongo_uri():
+    """
+    Constructs the MongoDB URI from individual environment variables 
+    if MONGODB_URI is not explicitly defined.
+    """
+    # 1. If full URI is provided, use it directly
+    uri = os.getenv("MONGODB_URI")
+    if uri:
+        return uri
+
+    # 2. Otherwise build from components (useful for separate user/pass in .env)
+    user = os.getenv("MONGO_USER") or os.getenv("MONGO_USERNAME")
+    password = os.getenv("MONGO_PASSWORD") or os.getenv("MONGO_PASS")
+    host = os.getenv("MONGO_HOST", "localhost")
+    port = os.getenv("MONGO_PORT", "27017")
+
+    if user and password:
+        return f"mongodb://{user}:{password}@{host}:{port}/"
+    else:
+        return f"mongodb://{host}:{port}/"
 
 
 def fetch_data(db):
@@ -265,30 +284,43 @@ def export_to_csv(rows, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Extract MongoDB Detailed Attendance data to Excel (.xlsx) / CSV")
-    parser.add_argument("--uri", "-u", default=os.getenv("MONGODB_URI", "mongodb://localhost:27017"), help="MongoDB URI")
+    parser.add_argument("--uri", "-u", help="MongoDB URI string")
     parser.add_argument("--db", "-d", default=os.getenv("MONGO_DB", "attendance-geotag"), help="Database name")
     parser.add_argument("--output", "-o", default=os.getenv("OUTPUT_FILE", "detailed_attendance.xlsx"), help="Output file path")
     parser.add_argument("--format", choices=["excel", "csv"], default="excel", help="Output file format")
 
     args = parser.parse_args()
 
+    # Determine URI: Argument > Environment Construct > Default Fallback
+    final_uri = args.uri if args.uri else construct_mongo_uri()
+    final_db = args.db
+
     print("==================================================")
     print("   Detailed Attendance Exporter (By Session)      ")
     print("==================================================")
     
-    client_kwargs = {"serverSelectionTimeoutMS": 4000}
-    uri = args.uri
+    # Hide password in logs if present
+    display_uri = final_uri
+    if "@" in display_uri:
+        auth_part, host_part = display_uri.split("@", 1)
+        scheme_part = auth_part.split("://")[0]
+        display_uri = f"{scheme_part}://<HIDDEN_CREDENTIALS>@{host_part}"
+    print(f"[*] MongoDB URI   : {display_uri}")
+    print(f"[*] Database      : {final_db}")
 
-    if ("localhost" in uri or "127.0.0.1" in uri) and "directConnection" not in uri:
+    client_kwargs = {"serverSelectionTimeoutMS": 4000}
+
+    # Handle local Replica Set discovery issue:
+    if ("localhost" in final_uri or "127.0.0.1" in final_uri) and "directConnection" not in final_uri:
         client_kwargs["directConnection"] = True
 
     try:
-        client = pymongo.MongoClient(uri, **client_kwargs)
+        client = pymongo.MongoClient(final_uri, **client_kwargs)
         client.admin.command("ping")
     except Exception as e:
         if "directConnection" not in client_kwargs:
             try:
-                client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=4000, directConnection=True)
+                client = pymongo.MongoClient(final_uri, serverSelectionTimeoutMS=4000, directConnection=True)
                 client.admin.command("ping")
             except Exception as retry_err:
                 e = retry_err
@@ -297,7 +329,7 @@ def main():
             print(f"\n[!] Connection failed: {e}")
             sys.exit(1)
 
-    db = client[args.db]
+    db = client[final_db]
     
     sessions, attendances_by_session, all_attendance_rows = fetch_data(db)
 
