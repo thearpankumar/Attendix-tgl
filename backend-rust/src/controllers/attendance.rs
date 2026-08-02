@@ -20,7 +20,7 @@ use crate::{
     models::{
         Attendance, AttendanceDeviceFlag, Device, EmulatorFlag, EmulatorFlagType, GpsAnomaly,
         GpsAnomalyType, GpsConfidence, IntegrityCheck, IntegrityCheckType, Location, PhotoHash,
-        Session, Severity, WebAuthnCredential,
+        Session, Severity, ShortLink, WebAuthnCredential,
     },
     services::{compute_image_hash, detect_faces, GpsPositionEntry, IpInfo},
     utils::{calculate_distance, is_same_photo},
@@ -563,10 +563,32 @@ pub async fn submit_attendance(
 
     let token_hash = Session::hash_token(&token);
 
-    let session = sessions
+    let session = match sessions
         .find_one(doc! { "tokenHash": &token_hash, "isActive": true })
         .await?
-        .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+    {
+        Some(session) => session,
+        // This handler is shared by /api/attend/:token (real session token)
+        // and /api/s/:shortCode/submit (short link code), so fall back to
+        // resolving `token` as a short code when it isn't a token hash match.
+        None => {
+            let short_links: Collection<ShortLink> = state
+                .db
+                .database(db_name)
+                .collection(ShortLink::collection_name());
+            let link = short_links
+                .find_one(doc! { "shortCode": token.to_lowercase(), "isActive": true })
+                .await?
+                .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+            let session_id = link
+                .session_id
+                .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+            sessions
+                .find_one(doc! { "_id": session_id, "isActive": true })
+                .await?
+                .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?
+        }
+    };
 
     if session.is_expired() {
         return Err(AppError::BadRequest("Session has expired".to_string()));

@@ -997,9 +997,10 @@ pub async fn get_upload_url(
 // =================== Captcha ===================
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptchaResponse {
     pub captcha_id: String,
-    pub captcha_url: String,
+    pub captcha_svg: String,
 }
 
 pub async fn get_captcha(
@@ -1012,15 +1013,9 @@ pub async fn get_captcha(
 
     Ok(Json(CaptchaResponse {
         captcha_id: format!("{}.{}", timestamp, signature),
-        captcha_url: format!(
-            "data:image/svg+xml;base64,{}",
-            base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                format!(
-                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="150" height="50"><text x="10" y="35" font-size="30">{}</text></svg>"#,
-                    captcha_text
-                )
-            )
+        captcha_svg: format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="150" height="50"><text x="10" y="35" font-size="30">{}</text></svg>"#,
+            captcha_text
         ),
     }))
 }
