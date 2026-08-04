@@ -3,5 +3,13 @@ ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104"
+    "RUSTSEC-2026-0104",
+    # rsa: Marvin Attack timing sidechannel. Pulled in transitively via sqlx's
+    # "macros" feature (needed for #[derive(sqlx::FromRow)] and sqlx::migrate!) —
+    # sqlx-macros-core unconditionally depends on sqlx-mysql regardless of which
+    # database backend feature is actually enabled (known upstream sqlx issue:
+    # https://github.com/launchbadge/sqlx/issues/3538). This backend is
+    # Postgres-only; the vulnerable MySQL RSA auth code path is compiled in but
+    # never executed. No fixed rsa version is available upstream yet.
+    "RUSTSEC-2023-0071"
 ]
