@@ -7,10 +7,10 @@
 # Dev stack:
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d --build
 # Prod stack:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml -f docker-compose.monitoring.yml up -d --build
+#   docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml -f docker-compose.monitoring.yml up -d --build
 #
 # It ships every container's stdout/stderr (Caddy's JSON access logs,
-# Mongo/Redis/backend console output, ...) into Loki via Alloy's Docker log
+# Postgres/Redis/backend console output, ...) into Loki via Alloy's Docker log
 # discovery. Prometheus scrapes cAdvisor (per-container CPU/mem) and
 # node-exporter (host CPU/mem/disk), which work with zero app
 # instrumentation, plus a `backend` job in monitoring/prometheus/prometheus.yml

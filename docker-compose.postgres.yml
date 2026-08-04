@@ -1,0 +1,61 @@
+# PostgreSQL for production, plus its automated S3 backup sidecar. Kept in
+# its own file so routine app work on docker-compose.prod.yml never has the
+# DB config in view.
+#
+# Always run together with the other prod files:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d --build
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: attendance-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-attendance_geotag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - db-net
+
+  pg-backup:
+    build:
+      context: ./scripts/backup
+    container_name: attendance-pg-backup
+    restart: unless-stopped
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGDATABASE=${POSTGRES_DB:-attendance_geotag}
+      - PGUSER=${POSTGRES_USER:-postgres}
+      - PGPASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BACKUP_CRON_SCHEDULE=${BACKUP_CRON_SCHEDULE:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - pg_backup_tmp:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - db-net
+
+volumes:
+  postgres_data:
+  pg_backup_tmp:
+
+networks:
+  db-net:
+    driver: bridge

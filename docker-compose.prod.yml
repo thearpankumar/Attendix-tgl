@@ -1,10 +1,10 @@
 # Production "app" stack: redis, backend, and the two frontends.
-# MongoDB and Caddy/fail2ban live in their own files on purpose (so routine
+# PostgreSQL and Caddy/fail2ban live in their own files on purpose (so routine
 # app work here never has the DB/proxy config in view) — always run all
 # three together:
 #   aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml pull
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d
+#   docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml pull
+#   docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d
 #
 # Images are built and pushed to ECR by .github/workflows/deploy-production.yml
 # on every push to the `production` branch, tagged `<service>-<git-sha>` and
@@ -48,7 +48,7 @@ services:
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=5000
-      - MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/attendance-geotag?replicaSet=rs0
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRE=7d
@@ -65,8 +65,8 @@ services:
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-xenkrypt.in}
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://xenkrypt.in}
       # Database Pool (names must match backend-rust/src/config/mod.rs::AppConfig::from_env)
-      - MONGODB_MAX_POOL_SIZE=${MONGODB_MAX_POOL_SIZE:-300}
-      - MONGODB_MIN_POOL_SIZE=${MONGODB_MIN_POOL_SIZE:-20}
+      - PG_MAX_POOL_SIZE=${PG_MAX_POOL_SIZE:-300}
+      - PG_MIN_POOL_SIZE=${PG_MIN_POOL_SIZE:-20}
       - DEV_BYPASS_ALL=${DEV_BYPASS_ALL:-false}
     deploy:
       replicas: 3
@@ -84,11 +84,7 @@ services:
       retries: 3
       start_period: 40s
     depends_on:
-      mongo1:
-        condition: service_healthy
-      mongo2:
-        condition: service_healthy
-      mongo3:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -96,7 +92,7 @@ services:
       - db-net
       - web-net
 
-  
+
   admin-frontend:
     image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:admin-frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped

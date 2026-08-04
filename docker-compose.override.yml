@@ -1,5 +1,5 @@
 services:
-  
+
   backend:
     build:
       context: ./backend-rust
@@ -8,11 +8,7 @@ services:
       replicas: 1
     environment:
       - NODE_ENV=development
-      - MONGODB_URI=mongodb://mongo1:27017/attendance-geotag
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
     volumes:
       - ./backend-rust/src:/app/src:ro
-
-  
-  mongodb-init:
-    entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]

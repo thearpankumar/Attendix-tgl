@@ -1,78 +1,27 @@
 services:
-  
-  mongodb-init:
-    image: mongo:7.0
-    container_name: attendance-mongo-init
-    volumes:
-      - ./scripts/init-mongo-replicaset.js:/init-mongo.js:ro
-    depends_on:
-      mongo1:
-        condition: service_healthy
-      mongo2:
-        condition: service_healthy
-      mongo3:
-        condition: service_healthy
-    entrypoint: ["mongosh", "--host", "mongo1", "--port", "27017", "/init-mongo.js"]
-    restart: on-failure
-    networks:
-      - db-net
 
-  
-  mongo1:
-    image: mongo:7.0
-    container_name: attendance-mongo1
+  postgres:
+    image: postgres:16-alpine
+    container_name: attendance-postgres
     restart: unless-stopped
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
     volumes:
-      - mongo1_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
     expose:
-      - "27017"
+      - "5432"
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-attendance_geotag}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 10s
     networks:
       - db-net
 
-  mongo2:
-    image: mongo:7.0
-    container_name: attendance-mongo2
-    restart: unless-stopped
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
-    volumes:
-      - mongo2_data:/data/db
-    expose:
-      - "27017"
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    networks:
-      - db-net
 
-  mongo3:
-    image: mongo:7.0
-    container_name: attendance-mongo3
-    restart: unless-stopped
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
-    volumes:
-      - mongo3_data:/data/db
-    expose:
-      - "27017"
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    networks:
-      - db-net
-
-  
   redis:
     image: redis:7-alpine
     container_name: attendance-redis
@@ -100,7 +49,7 @@ services:
     environment:
       - NODE_ENV=${NODE_ENV:-development}
       - PORT=3000
-      - MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/attendance-geotag?replicaSet=rs0
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRE=7d
@@ -110,8 +59,8 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - MONGODB_POOL_MAX=${MONGODB_POOL_MAX:-300}
-      - MONGODB_POOL_MIN=${MONGODB_POOL_MIN:-20}
+      - PG_MAX_POOL_SIZE=${PG_MAX_POOL_SIZE:-300}
+      - PG_MIN_POOL_SIZE=${PG_MIN_POOL_SIZE:-20}
       - DEV_BYPASS_ALL=${DEV_BYPASS_ALL:-false}
       - WEBAUTHN_RP_NAME=${WEBAUTHN_RP_NAME:-Attendix Attendance System}
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-localhost}
@@ -123,11 +72,7 @@ services:
       retries: 3
       start_period: 40s
     depends_on:
-      mongo1:
-        condition: service_healthy
-      mongo2:
-        condition: service_healthy
-      mongo3:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -223,9 +168,7 @@ services:
       - caddy
 
 volumes:
-  mongo1_data:
-  mongo2_data:
-  mongo3_data:
+  postgres_data:
   redis_data:
   caddy_data:
   caddy_config:

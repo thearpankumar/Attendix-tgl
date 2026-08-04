@@ -4,7 +4,7 @@
 # watches Caddy's own log volume and depends_on: caddy.
 #
 # Always run together with the other prod files:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+#   docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d --build
 services:
 
   caddy:
