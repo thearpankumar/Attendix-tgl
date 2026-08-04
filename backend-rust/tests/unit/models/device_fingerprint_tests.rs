@@ -9,7 +9,7 @@
 //! - add_user_agent: adds new user agent, updates lastSeen for existing
 //! - Static methods: getSuspiciousDevices, getBlockedDevices, findByRollNumber
 
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // Helper to create a new DeviceFingerprint for testing
 fn create_device_fingerprint(
@@ -246,7 +246,7 @@ mod record_successful_verification_tests {
         // - Expects updated.sessions[0].wasSuccessful to be true
 
         let mut device = create_device_fingerprint("fingerprint-success-test");
-        let session_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
 
         device.record_successful_verification(session_id, "ROLL001".to_string());
 
@@ -288,7 +288,7 @@ mod record_successful_verification_tests {
             "Should have 2 verification failures before success"
         );
 
-        let session_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
         device.record_successful_verification(session_id, "ROLL002".to_string());
 
         assert_eq!(
@@ -306,7 +306,7 @@ mod record_successful_verification_tests {
         // No failures initially
         assert_eq!(device.verification_failures, 0);
 
-        let session_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
         device.record_successful_verification(session_id, "ROLL001".to_string());
 
         assert_eq!(
@@ -327,7 +327,7 @@ mod record_successful_verification_tests {
         let mut device = create_device_fingerprint("fingerprint-trust-test");
 
         for i in 0..3 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 
@@ -351,7 +351,7 @@ mod record_successful_verification_tests {
         device.record_verification_failure(Some("Spoofing attempt".to_string()));
 
         for i in 0..3 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 
@@ -369,7 +369,7 @@ mod record_successful_verification_tests {
 
         // Only 2 successful sessions
         for i in 0..2 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 
@@ -389,7 +389,7 @@ mod record_successful_verification_tests {
         // Small delay to ensure time difference
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let session_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
         device.record_successful_verification(session_id, "ROLL001".to_string());
 
         assert!(
@@ -406,7 +406,7 @@ mod record_successful_verification_tests {
 
         // Add 51 sessions
         for i in 0..51 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 
@@ -632,7 +632,7 @@ mod static_methods_tests {
         // - Expects 1 device returned
 
         let mut device = create_device_fingerprint("roll-test-device");
-        let session_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
         device
             .sessions
             .push(attendance_geotag_backend::models::DeviceSession {
@@ -677,7 +677,10 @@ mod edge_case_tests {
         let device = create_device_fingerprint("comprehensive-test");
 
         assert_eq!(device.fingerprint_id, "comprehensive-test");
-        assert!(device.id.is_none(), "ID should be None for new device");
+        assert!(
+            !device.id.is_nil(),
+            "ID should be freshly generated for new device"
+        );
         assert_eq!(device.verification_failures, 0);
         assert_eq!(device.spoofing_attempts, 0);
         assert_eq!(device.last_spoofing_reason, None);
@@ -718,13 +721,13 @@ mod edge_case_tests {
     }
 
     #[test]
-    fn should_correctly_identify_collection_name() {
-        // Test collection name is correct
+    fn should_correctly_identify_table_name() {
+        // Test table name is correct
 
         assert_eq!(
-            attendance_geotag_backend::models::DeviceFingerprint::collection_name(),
-            "devicefingerprints",
-            "Collection name should be 'devicefingerprints'"
+            attendance_geotag_backend::models::DeviceFingerprint::table_name(),
+            "device_fingerprints",
+            "Table name should be 'device_fingerprints'"
         );
     }
 
@@ -736,7 +739,7 @@ mod edge_case_tests {
 
         // Add 3 successful sessions
         for i in 0..3 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 
@@ -754,7 +757,7 @@ mod edge_case_tests {
         device.spoofing_attempts = 1; // Simulate 1 spoofing attempt
 
         for i in 0..5 {
-            let session_id = ObjectId::new();
+            let session_id = Uuid::new_v4();
             device.record_successful_verification(session_id, format!("ROLL{}", i));
         }
 

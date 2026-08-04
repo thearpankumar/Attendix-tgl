@@ -26,9 +26,9 @@ mod tests {
     // Helper Functions
     // ============================================
 
-    /// Create a valid ObjectId string for testing
+    /// Create a valid UUID string for testing
     fn create_valid_object_id() -> String {
-        "507f1f77bcf86cd799439011".to_string()
+        uuid::Uuid::new_v4().to_string()
     }
 
     // ============================================
@@ -337,10 +337,10 @@ mod tests {
             assert!(result.is_ok(), "Valid session data should pass validation");
         }
 
-        /// Test: should reject invalid MongoDB ID
+        /// Test: should reject invalid UUID
         /// Node.js: lines 223-231
         #[test]
-        fn should_reject_invalid_mongodb_id() {
+        fn should_reject_invalid_uuid() {
             let req = SessionCreateRequest {
                 location_id: "invalid-id".to_string(),
                 duration_minutes: None,
@@ -648,11 +648,11 @@ mod tests {
     // ============================================
     mod auth_middleware_tests {
         use super::*;
-        use mongodb::bson::oid::ObjectId;
+        use uuid::Uuid;
 
         /// Helper: Generate a valid test token
-        fn create_test_token() -> (ObjectId, String) {
-            let admin_id = ObjectId::new();
+        fn create_test_token() -> (Uuid, String) {
+            let admin_id = Uuid::new_v4();
             let token = generate_token(&admin_id, JWT_SECRET, JWT_EXPIRE)
                 .expect("Failed to generate token");
             (admin_id, token)
@@ -688,7 +688,7 @@ mod tests {
             let claims = result.unwrap();
             assert_eq!(
                 claims.id,
-                admin_id.to_hex(),
+                admin_id.to_string(),
                 "Claims should contain correct admin ID"
             );
         }
@@ -700,12 +700,12 @@ mod tests {
             use chrono::Utc;
             use jsonwebtoken::{encode, EncodingKey, Header};
 
-            let admin_id = ObjectId::new();
+            let admin_id = Uuid::new_v4();
             let now = Utc::now().timestamp() as usize;
 
             // Create an expired token (expired 1 hour ago)
             let expired_claims = Claims {
-                id: admin_id.to_hex(),
+                id: admin_id.to_string(),
                 exp: now - 3600, // Expired 1 hour ago
                 iat: now - 7200, // Issued 2 hours ago
             };
@@ -764,7 +764,7 @@ mod tests {
         /// Test: generate_token should produce valid JWT
         #[test]
         fn generate_token_should_produce_valid_jwt() {
-            let admin_id = ObjectId::new();
+            let admin_id = Uuid::new_v4();
             let token = generate_token(&admin_id, JWT_SECRET, JWT_EXPIRE)
                 .expect("Token generation should succeed");
 
@@ -775,13 +775,13 @@ mod tests {
             // Should be verifiable
             let claims =
                 verify_token(&token, JWT_SECRET).expect("Generated token should be verifiable");
-            assert_eq!(claims.id, admin_id.to_hex());
+            assert_eq!(claims.id, admin_id.to_string());
         }
 
         /// Test: different expiry formats should work
         #[test]
         fn different_expiry_formats_should_work() {
-            let admin_id = ObjectId::new();
+            let admin_id = Uuid::new_v4();
 
             // Test various expiry formats
             let expiry_formats = vec!["1d", "7d", "1h", "60m", "3600s"];
@@ -791,7 +791,7 @@ mod tests {
                     .unwrap_or_else(|_| panic!("Failed with expiry: {}", expiry));
                 let claims = verify_token(&token, JWT_SECRET)
                     .unwrap_or_else(|_| panic!("Failed to verify token with expiry: {}", expiry));
-                assert_eq!(claims.id, admin_id.to_hex());
+                assert_eq!(claims.id, admin_id.to_string());
             }
         }
     }
@@ -821,20 +821,17 @@ mod tests {
         #[test]
         fn test_is_valid_objectid() {
             assert!(
-                is_valid_objectid("507f1f77bcf86cd799439011"),
-                "Valid ObjectId should pass"
+                is_valid_objectid("550e8400-e29b-41d4-a716-446655440000"),
+                "Valid Uuid should pass"
+            );
+            assert!(!is_valid_objectid("invalid-id"), "Invalid Uuid should fail");
+            assert!(
+                !is_valid_objectid("550e8400-e29b-41d4-a716-44665544000"),
+                "Truncated UUID should fail"
             );
             assert!(
-                !is_valid_objectid("invalid-id"),
-                "Invalid ObjectId should fail"
-            );
-            assert!(
-                !is_valid_objectid("507f1f77bcf86cd79943901"),
-                "23-char string should fail"
-            );
-            assert!(
-                !is_valid_objectid("507f1f77bcf86cd799439011z"),
-                "Non-hex char should fail"
+                !is_valid_objectid("507f1f77bcf86cd799439011"),
+                "Legacy 24-char hex ObjectId should no longer pass"
             );
         }
 

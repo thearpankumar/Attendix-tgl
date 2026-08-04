@@ -15,7 +15,7 @@
 //! - WebAuthn security tests
 
 use chrono::{Duration, Utc};
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // ============================================================================
 // WebAuthn Status Check Tests
@@ -637,11 +637,11 @@ mod challenge_expiry_tests {
         // Test case: Registration finish should reject expired challenge
 
         let challenge = WebAuthnChallenge {
-            id: None,
+            id: Uuid::new_v4(),
             student_id: "ABC123".to_string(),
             challenge: "test-challenge".to_string(),
             challenge_type: attendance_geotag_backend::models::WebAuthnChallengeType::Registration,
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             short_code: None,
             student_name: None,
             expires_at: Utc::now() - Duration::seconds(1), // Expired
@@ -700,11 +700,11 @@ mod challenge_expiry_tests {
         // Test case: Registration finish should reject already-used challenge
 
         let challenge = WebAuthnChallenge {
-            id: None,
+            id: Uuid::new_v4(),
             student_id: "ABC123".to_string(),
             challenge: "test-challenge".to_string(),
             challenge_type: attendance_geotag_backend::models::WebAuthnChallengeType::Registration,
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             short_code: None,
             student_name: None,
             expires_at: Utc::now() + Duration::minutes(5), // Not expired
@@ -1786,9 +1786,9 @@ mod webauthn_reenrollment_log_model_tests {
         // Test case: newCredentialId is optional (can be None)
 
         let log = WebAuthnReenrollmentLog {
-            id: None,
+            id: Uuid::new_v4(),
             student_id: "TEST001".to_string(),
-            admin_id: ObjectId::new(),
+            admin_id: Uuid::new_v4(),
             reason: None,
             previous_credential_id: None,
             new_credential_id: None, // Optional - can be None
@@ -2062,12 +2062,12 @@ mod webauthn_security_tests {
         // Test case: Challenges marked as used should not be usable again
 
         let challenge = WebAuthnChallenge {
-            id: None,
+            id: Uuid::new_v4(),
             student_id: "ABC123".to_string(),
             challenge: "test-challenge-unique".to_string(),
             challenge_type:
                 attendance_geotag_backend::models::WebAuthnChallengeType::Authentication,
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             short_code: None,
             student_name: None,
             expires_at: Utc::now() + Duration::minutes(5),
@@ -2456,9 +2456,9 @@ mod webauthn_audit_logging_tests {
     fn logs_all_admin_actions() {
         // Test case: Admin actions should be audit logged
 
-        let admin_id = ObjectId::new();
+        let admin_id = Uuid::new_v4();
         let log = WebAuthnReenrollmentLog {
-            id: None,
+            id: Uuid::new_v4(),
             student_id: "AUDIT001".to_string(),
             admin_id,
             reason: Some("Test audit".to_string()),
@@ -2641,7 +2641,7 @@ mod webauthn_error_handling_tests {
         // Test case: Database errors should be handled properly
 
         // In production, Database errors map to INTERNAL_SERVER_ERROR (500)
-        let error = attendance_geotag_backend::AppError::Database(mongodb::error::Error::from(
+        let error = attendance_geotag_backend::AppError::Database(sqlx::Error::Io(
             std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "Connection refused"),
         ));
 
@@ -2665,7 +2665,7 @@ use attendance_geotag_backend::models::{
 /// Creates a mock WebAuthnCredential with the given student ID and suspension status
 fn create_mock_webauthn_credential(student_id: &str, is_suspended: bool) -> WebAuthnCredential {
     WebAuthnCredential {
-        id: Some(ObjectId::new()),
+        id: Uuid::new_v4(),
         student_id: student_id.to_string(),
         credential_id: format!("cred-{}", student_id),
         public_key: vec![0u8; 32], // Mock public key
@@ -2700,11 +2700,11 @@ fn create_mock_webauthn_challenge(
     challenge_type: attendance_geotag_backend::models::WebAuthnChallengeType,
 ) -> WebAuthnChallenge {
     WebAuthnChallenge {
-        id: None,
+        id: Uuid::new_v4(),
         student_id: student_id.to_string(),
         challenge: generate_test_challenge(),
         challenge_type,
-        session_id: ObjectId::new(),
+        session_id: Uuid::new_v4(),
         short_code: Some("test123".to_string()),
         student_name: Some(format!("Student {}", student_id)),
         expires_at: Utc::now() + Duration::minutes(5),
@@ -2720,9 +2720,9 @@ fn create_mock_reenrollment_log(
     reason: &str,
 ) -> WebAuthnReenrollmentLog {
     WebAuthnReenrollmentLog {
-        id: None,
+        id: Uuid::new_v4(),
         student_id: student_id.to_string(),
-        admin_id: ObjectId::new(),
+        admin_id: Uuid::new_v4(),
         reason: Some(reason.to_string()),
         previous_credential_id: Some(format!("old-cred-{}", student_id)),
         new_credential_id: None,

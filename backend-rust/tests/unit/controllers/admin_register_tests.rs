@@ -56,7 +56,7 @@ mod register_admin_tests {
 
         // Verify the Admin model structure
         let admin = attendance_geotag_backend::models::Admin {
-            id: None,
+            id: uuid::Uuid::new_v4(),
             username: "newadmin".to_string(),
             email: "newadmin@example.com".to_string(),
             password: "hashed_password".to_string(),

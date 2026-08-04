@@ -10,7 +10,7 @@
 //! - GET /api/admin/sessions/:id/export - exports batch roster with Present/Absent statuses
 
 use chrono::Utc;
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // Note: These are unit tests for the export controller logic.
 // For full integration tests with database and Excel parsing, use the integration test suite.
@@ -51,7 +51,7 @@ mod export_session_attendance_tests {
         // Test case: GET /api/admin/sessions/:id/export should return 404 for non-existent session
         //
         // In Node.js test (line 73-80):
-        // - Creates a fake ObjectId
+        // - Creates a fake Uuid
         // - Makes authenticated GET request
         // - Expects status 404
         //
@@ -238,7 +238,7 @@ mod export_excel_structure_tests {
         // From session.rs line 558:
         // format: "attachment; filename=\"{}_{}.xlsx\""
 
-        let session_id = ObjectId::new().to_hex();
+        let session_id = Uuid::new_v4().to_string();
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let filename = format!("attendance_{}_{}.xlsx", session_id, timestamp);
 
@@ -307,11 +307,11 @@ mod export_session_ownership_tests {
         // Query: { "_id": session_id, "createdBy": auth.id }
         // This ensures admin can only export their own sessions
 
-        let admin_id = ObjectId::new();
+        let admin_id = Uuid::new_v4();
         let session = attendance_geotag_backend::models::Session {
-            id: Some(ObjectId::new()),
-            location_id: ObjectId::new(),
-            batch_id: None,
+            id: Uuid::new_v4(),
+            location_id: Uuid::new_v4(),
+            batch_id: Some(Uuid::new_v4()),
             token_hash: "test_hash".to_string(),
             token_prefix: "test".to_string(),
             description: None,
@@ -416,8 +416,8 @@ mod export_batch_merge_tests {
         // - Headers include 'College Name' for batch exports
         // - This comes from the batch.students array
 
-        // Student struct has college_name field (batch.rs line 24)
-        let student = attendance_geotag_backend::models::Student {
+        // StudentInput has college_name field (batch.rs)
+        let student = attendance_geotag_backend::models::StudentInput {
             name: "Test Student".to_string(),
             roll_number: "S001".to_string(),
             college_name: Some("Test College".to_string()),
@@ -535,10 +535,10 @@ mod export_object_id_validation_tests {
     fn should_reject_invalid_session_id_format() {
         // Test that invalid session ID returns BadRequest
         // From session.rs line 503-504:
-        // ObjectId::parse_str(&id) returns error if format is invalid
+        // Uuid::parse_str(&id) returns error if format is invalid
 
         let invalid_id = "not-a-valid-objectid";
-        let result = mongodb::bson::oid::ObjectId::parse_str(invalid_id);
+        let result = Uuid::parse_str(invalid_id);
 
         assert!(result.is_err());
     }
@@ -546,8 +546,8 @@ mod export_object_id_validation_tests {
     #[test]
     fn should_accept_valid_session_id_format() {
         // Test that valid session ID is accepted
-        let valid_id = ObjectId::new().to_hex();
-        let result = mongodb::bson::oid::ObjectId::parse_str(&valid_id);
+        let valid_id = Uuid::new_v4().to_string();
+        let result = Uuid::parse_str(&valid_id);
 
         assert!(result.is_ok());
     }

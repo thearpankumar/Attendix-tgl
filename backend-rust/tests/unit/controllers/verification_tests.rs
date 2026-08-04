@@ -13,7 +13,7 @@
 //! - Cross-admin ownership protection (403)
 //! - Bulk: empty ids array
 //! - Bulk: too many ids (>100)
-//! - Bulk: invalid ObjectId in ids array
+//! - Bulk: invalid Uuid in ids array
 //! - Bulk: records not belonging to session
 //! - Bulk: server-side homogeneity guard (mixed verified+unverified rejected)
 //! - Bulk: all verified -> mark unverified
@@ -21,7 +21,7 @@
 //! - Unauthenticated requests (401)
 
 use chrono::Utc;
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // ============================================================================
 // Single-record PATCH /api/admin/attendance/:id/verify tests
@@ -363,7 +363,7 @@ mod single_record_verify_tests {
     /// Original Node.js test (line 176-183):
     /// ```js
     /// test('returns 404 for a non-existent attendance ID', async () => {
-    ///   const fakeId = new mongoose.Types.ObjectId();
+    ///   const fakeId = new mongoose.Types.Uuid();
     ///   const res = await request(app)
     ///     .patch(`/api/admin/attendance/${fakeId}/verify`)
     ///     .set('Authorization', `Bearer ${token}`)
@@ -376,13 +376,13 @@ mod single_record_verify_tests {
         // Test case: PATCH /api/admin/attendance/:id/verify returns 404 for invalid ID
         //
         // In Node.js test (line 176-183):
-        // - Creates a valid but non-existent ObjectId
+        // - Creates a valid but non-existent Uuid
         // - Sends PATCH request
         // - Expects status 404
         //
         // This tests that the endpoint properly handles missing records.
 
-        let fake_id = ObjectId::new();
+        let fake_id = Uuid::new_v4();
 
         // Verify NotFound error type (error.rs line 19)
         let error = attendance_geotag_backend::AppError::NotFound(
@@ -396,10 +396,10 @@ mod single_record_verify_tests {
             _ => panic!("Expected NotFound error"),
         }
 
-        // ObjectId should be valid format
+        // Uuid should be valid format
         assert!(
-            fake_id.to_hex().len() == 24,
-            "ObjectId should be 24 hex characters"
+            fake_id.to_string().len() == 36,
+            "Uuid should be 36 characters"
         );
     }
 
@@ -735,7 +735,7 @@ mod bulk_verify_tests {
     /// Original Node.js test (line 307-315):
     /// ```js
     /// test('returns 400 when ids contains more than 100 entries', async () => {
-    ///   const fakeIds = Array.from({ length: 101 }, () => new mongoose.Types.ObjectId().toString());
+    ///   const fakeIds = Array.from({ length: 101 }, () => new mongoose.Types.Uuid().toString());
     ///   const res = await request(app)
     ///     .post(`/api/admin/sessions/${session._id}/attendance/bulk-verify`)
     ///     .set('Authorization', `Bearer ${token}`)
@@ -749,7 +749,7 @@ mod bulk_verify_tests {
         // Test case: POST bulk-verify rejects ids array > 100 entries
         //
         // In Node.js test (line 307-315):
-        // - Creates array of 101 fake ObjectId strings
+        // - Creates array of 101 fake Uuid strings
         // - Sends request with 101 ids
         // - Expects status 400
         // - Expects message mentioning "100"
@@ -770,11 +770,11 @@ mod bulk_verify_tests {
         }
     }
 
-    /// Test: returns 400 when ids contains an invalid ObjectId
+    /// Test: returns 400 when ids contains an invalid Uuid
     ///
     /// Original Node.js test (line 317-324):
     /// ```js
-    /// test('returns 400 when ids contains an invalid ObjectId', async () => {
+    /// test('returns 400 when ids contains an invalid Uuid', async () => {
     ///   const res = await request(app)
     ///     .post(`/api/admin/sessions/${session._id}/attendance/bulk-verify`)
     ///     .set('Authorization', `Bearer ${token}`)
@@ -785,15 +785,15 @@ mod bulk_verify_tests {
     /// ```
     #[test]
     fn returns_400_when_ids_contains_an_invalid_object_id() {
-        // Test case: POST bulk-verify rejects invalid ObjectId strings
+        // Test case: POST bulk-verify rejects invalid Uuid strings
         //
         // In Node.js test (line 317-324):
-        // - Sends request with invalid ObjectId string
+        // - Sends request with invalid Uuid string
         // - Expects status 400
         // - Expects message about invalid ID
 
         let error = attendance_geotag_backend::AppError::BadRequest(
-            "Invalid ObjectId in ids array".to_string(),
+            "Invalid Uuid in ids array".to_string(),
         );
 
         match &error {
@@ -1002,7 +1002,7 @@ mod bulk_verify_tests {
     /// ```js
     /// test('returns 404 for a non-existent session', async () => {
     ///   const r = await createAttendance(session._id, { rollNumber: 'BK010', verified: false });
-    ///   const fakeSessionId = new mongoose.Types.ObjectId();
+    ///   const fakeSessionId = new mongoose.Types.Uuid();
     ///   const res = await request(app)
     ///     .post(`/api/admin/sessions/${fakeSessionId}/attendance/bulk-verify`)
     ///     .set('Authorization', `Bearer ${token}`)
@@ -1015,11 +1015,11 @@ mod bulk_verify_tests {
         // Test case: POST bulk-verify returns 404 for invalid session ID
         //
         // In Node.js test (line 388-396):
-        // - Creates a valid but non-existent session ObjectId
+        // - Creates a valid but non-existent session Uuid
         // - Sends request to that session
         // - Expects status 404
 
-        let fake_session_id = ObjectId::new();
+        let fake_session_id = Uuid::new_v4();
 
         let error = attendance_geotag_backend::AppError::NotFound("Session not found".to_string());
 
@@ -1030,7 +1030,7 @@ mod bulk_verify_tests {
             _ => panic!("Expected NotFound error"),
         }
 
-        assert!(fake_session_id.to_hex().len() == 24);
+        assert!(fake_session_id.to_string().len() == 36);
     }
 
     /// Test: returns 400 when record IDs do not belong to the given session
@@ -1139,8 +1139,8 @@ fn create_mock_attendance_with_roll(
     verified: bool,
 ) -> attendance_geotag_backend::models::Attendance {
     attendance_geotag_backend::models::Attendance {
-        id: Some(ObjectId::new()),
-        session_id: ObjectId::new(),
+        id: Uuid::new_v4(),
+        session_id: Uuid::new_v4(),
         student_name: "Test Student".to_string(),
         roll_number: roll_number.to_string(),
         photo_url: "https://example.com/photo.jpg".to_string(),
@@ -1183,11 +1183,11 @@ fn create_mock_attendance_with_roll(
         gps_timestamp: None,
         gps_mock_location: false,
         gps_provider: None,
-        gps_anomalies: vec![],
+        gps_anomalies: sqlx::types::Json(vec![]),
         gps_confidence: None,
         emulator_detected: false,
-        emulator_flags: vec![],
-        integrity_checks: vec![],
+        emulator_flags: sqlx::types::Json(vec![]),
+        integrity_checks: sqlx::types::Json(vec![]),
     }
 }
 
@@ -1218,28 +1218,28 @@ mod dto_tests {
         // Both fields are required
 
         // Valid request
-        let ids = [ObjectId::new().to_hex(), ObjectId::new().to_hex()];
+        let ids = [Uuid::new_v4().to_string(), Uuid::new_v4().to_string()];
         let verified = true;
 
         assert!(!ids.is_empty());
         assert!(verified);
     }
 
-    /// Test: ObjectId validation
+    /// Test: Uuid validation
     #[test]
     fn object_id_validation() {
-        // Valid ObjectId string
-        let valid_id = ObjectId::new().to_hex();
-        assert_eq!(valid_id.len(), 24);
-        assert!(valid_id.chars().all(|c| c.is_ascii_hexdigit()));
+        // Valid Uuid string
+        let valid_id = Uuid::new_v4().to_string();
+        assert_eq!(valid_id.len(), 36);
+        assert!(Uuid::parse_str(&valid_id).is_ok());
 
-        // Invalid ObjectId strings should be rejected
+        // Invalid Uuid strings should be rejected
         let invalid_ids = vec!["not-valid", "123", "", "gggggggggggggggggggggggg"];
         for invalid_id in invalid_ids {
-            let parsed = ObjectId::parse_str(invalid_id);
+            let parsed = Uuid::parse_str(invalid_id);
             assert!(
                 parsed.is_err(),
-                "Should reject invalid ObjectId: {}",
+                "Should reject invalid Uuid: {}",
                 invalid_id
             );
         }
@@ -1249,11 +1249,11 @@ mod dto_tests {
     #[test]
     fn bulk_operation_limit() {
         let max_ids = 100;
-        let test_ids: Vec<String> = (0..max_ids).map(|_| ObjectId::new().to_hex()).collect();
+        let test_ids: Vec<String> = (0..max_ids).map(|_| Uuid::new_v4().to_string()).collect();
         assert_eq!(test_ids.len(), 100);
 
         // 101 IDs should be rejected
-        let over_limit_ids: Vec<String> = (0..101).map(|_| ObjectId::new().to_hex()).collect();
+        let over_limit_ids: Vec<String> = (0..101).map(|_| Uuid::new_v4().to_string()).collect();
         assert!(over_limit_ids.len() > 100);
     }
 }
@@ -1358,10 +1358,10 @@ mod model_structure_tests {
     #[test]
     fn attendance_model_has_session_id_field() {
         // Verify that Attendance model (models/attendance.rs line 10) has:
-        // pub session_id: ObjectId,
+        // pub session_id: Uuid,
 
         let attendance = create_mock_attendance(false);
-        // session_id is an ObjectId
+        // session_id is an Uuid
         let _session_id = attendance.session_id;
     }
 
@@ -1369,7 +1369,7 @@ mod model_structure_tests {
     #[test]
     fn session_model_has_created_by_field() {
         // Verify that Session model (models/session.rs line 16) has:
-        // pub created_by: ObjectId,
+        // pub created_by: Uuid,
         // This test just verifies the field exists by accessing it
 
         // We can verify this by checking the model structure

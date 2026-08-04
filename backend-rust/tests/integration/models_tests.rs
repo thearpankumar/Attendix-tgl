@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
-    use mongodb::bson::oid::ObjectId;
+    use uuid::Uuid;
 
     // =========================================================================
     // Mock/Stub implementations for testing
@@ -15,7 +15,7 @@ mod tests {
     /// Mock Admin struct for testing (mirrors Node.js Admin model)
     #[derive(Debug, Clone)]
     struct MockAdmin {
-        _id: ObjectId,
+        _id: Uuid,
         username: String,
         email: String,
         password: String,
@@ -40,7 +40,7 @@ mod tests {
             let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(|e| e.to_string())?;
 
             Ok(Self {
-                _id: ObjectId::new(),
+                _id: Uuid::new_v4(),
                 username: username.to_string(),
                 email: normalized_email,
                 password: hashed,
@@ -55,13 +55,13 @@ mod tests {
     /// Mock Location struct for testing (mirrors Node.js Location model)
     #[derive(Debug, Clone)]
     struct MockLocation {
-        _id: ObjectId,
+        _id: Uuid,
         name: String,
         latitude: f64,
         longitude: f64,
         radius_meters: i32,
         is_active: bool,
-        _created_by: ObjectId,
+        _created_by: Uuid,
     }
 
     impl MockLocation {
@@ -70,7 +70,7 @@ mod tests {
             latitude: f64,
             longitude: f64,
             radius_meters: i32,
-            created_by: ObjectId,
+            created_by: Uuid,
         ) -> Result<Self, String> {
             // Validate latitude (-90 to 90)
             if !(-90.0..=90.0).contains(&latitude) {
@@ -88,7 +88,7 @@ mod tests {
             }
 
             Ok(Self {
-                _id: ObjectId::new(),
+                _id: Uuid::new_v4(),
                 name: name.to_string(),
                 latitude,
                 longitude,
@@ -121,22 +121,22 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct MockSessionRecord {
-        _id: ObjectId,
-        _location_id: ObjectId,
+        _id: Uuid,
+        _location_id: Uuid,
         token_hash: String,
         token_prefix: String,
         is_active: bool,
         rotation_count: i32,
-        _created_by: ObjectId,
+        _created_by: Uuid,
         _expires_at: chrono::DateTime<Utc>,
     }
 
     impl MockSessionRecord {
         fn new(
-            location_id: ObjectId,
+            location_id: Uuid,
             token_hash: String,
             token_prefix: String,
-            created_by: ObjectId,
+            created_by: Uuid,
             expires_at: chrono::DateTime<Utc>,
         ) -> Result<Self, String> {
             if expires_at <= Utc::now() {
@@ -144,7 +144,7 @@ mod tests {
             }
 
             Ok(Self {
-                _id: ObjectId::new(),
+                _id: Uuid::new_v4(),
                 _location_id: location_id,
                 token_hash,
                 token_prefix,
@@ -156,10 +156,10 @@ mod tests {
         }
 
         fn new_with_active_flag(
-            location_id: ObjectId,
+            location_id: Uuid,
             token_hash: String,
             token_prefix: String,
-            created_by: ObjectId,
+            created_by: Uuid,
             expires_at: chrono::DateTime<Utc>,
             is_active: bool,
         ) -> Result<Self, String> {
@@ -178,8 +178,8 @@ mod tests {
     /// Mock Attendance struct for testing (mirrors Node.js Attendance model)
     #[derive(Debug, Clone)]
     struct MockAttendance {
-        _id: ObjectId,
-        _session_id: ObjectId,
+        _id: Uuid,
+        _session_id: Uuid,
         student_name: String,
         roll_number: String,
         _photo_url: String,
@@ -193,7 +193,7 @@ mod tests {
     impl MockAttendance {
         #[allow(clippy::too_many_arguments)]
         fn new(
-            session_id: ObjectId,
+            session_id: Uuid,
             student_name: &str,
             roll_number: &str,
             photo_url: &str,
@@ -222,7 +222,7 @@ mod tests {
             let roll_number_upper = roll_number.to_uppercase();
 
             Ok(Self {
-                _id: ObjectId::new(),
+                _id: Uuid::new_v4(),
                 _session_id: session_id,
                 student_name: student_name.to_string(),
                 roll_number: roll_number_upper,
@@ -242,7 +242,7 @@ mod tests {
         static ADMIN_USERNAMES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
         static ADMIN_EMAILS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
         static SESSION_TOKEN_HASHES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
-        static ATTENDANCE_SESSION_ROLL: std::cell::RefCell<HashSet<(ObjectId, String)>> = std::cell::RefCell::new(HashSet::new());
+        static ATTENDANCE_SESSION_ROLL: std::cell::RefCell<HashSet<(Uuid, String)>> = std::cell::RefCell::new(HashSet::new());
     }
 
     fn reset_test_data() {
@@ -372,8 +372,8 @@ mod tests {
     mod location_model_tests {
         use super::*;
 
-        fn setup_admin() -> ObjectId {
-            ObjectId::new()
+        fn setup_admin() -> Uuid {
+            Uuid::new_v4()
         }
 
         #[test]
@@ -471,10 +471,10 @@ mod tests {
     mod session_model_tests {
         use super::*;
 
-        fn setup() -> (ObjectId, ObjectId) {
+        fn setup() -> (Uuid, Uuid) {
             reset_test_data();
-            let admin_id = ObjectId::new();
-            let location_id = ObjectId::new();
+            let admin_id = Uuid::new_v4();
+            let location_id = Uuid::new_v4();
             (admin_id, location_id)
         }
 
@@ -573,11 +573,11 @@ mod tests {
     mod attendance_model_tests {
         use super::*;
 
-        fn setup() -> (ObjectId, ObjectId, ObjectId) {
+        fn setup() -> (Uuid, Uuid, Uuid) {
             reset_test_data();
-            let admin_id = ObjectId::new();
-            let location_id = ObjectId::new();
-            let session_id = ObjectId::new();
+            let admin_id = Uuid::new_v4();
+            let location_id = Uuid::new_v4();
+            let session_id = Uuid::new_v4();
             (admin_id, location_id, session_id)
         }
 
@@ -641,7 +641,7 @@ mod tests {
         #[test]
         fn should_allow_same_roll_number_in_different_sessions() {
             let (_, _, session_id) = setup();
-            let session2_id = ObjectId::new();
+            let session2_id = Uuid::new_v4();
 
             // Create attendance in first session
             let _att1 = MockAttendance::new(

@@ -13,14 +13,16 @@ use attendance_geotag_backend::{
     services::GpsHistoryService,
     AppState,
 };
-use mongodb::Client;
 use tokio::sync::RwLock;
 
 /// Creates a test application router
 async fn create_test_app() -> axum::Router {
     let config = AppConfig::default();
-    let client = Client::with_uri_str("mongodb://localhost:27017")
-        .await
+    // Lazy pool: none of the routes exercised in this file's tests actually
+    // reach the database (they either 401 before a handler runs, or hit
+    // handlers with no DB access), so no real Postgres connection is needed.
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy(&config.database_url)
         .unwrap();
 
     let rate_limiter = Arc::new(RateLimiter::with_redis(None));
@@ -36,8 +38,7 @@ async fn create_test_app() -> axum::Router {
 
     let state = Arc::new(AppState {
         config: config.clone(),
-        db: client,
-        db_name: "test_auth_routes".to_string(),
+        db,
         redis: None,
         rate_limiter,
         session_cache,

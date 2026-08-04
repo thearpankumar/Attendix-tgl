@@ -12,7 +12,7 @@
 // For full integration tests with database, use the integration test suite.
 
 use chrono::Utc;
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 mod get_config_tests {
 
@@ -45,7 +45,7 @@ mod get_config_tests {
         let config = attendance_geotag_backend::models::SystemConfig::default();
 
         assert!(!config.dev_bypass_enabled);
-        assert!(config.id.is_none());
+        assert!(config.id.is_nil());
         assert!(config.updated_by.is_none());
 
         // Verify nested configs exist
@@ -147,7 +147,7 @@ mod toggle_dev_bypass_tests {
         // After successful update, devBypassEnabled should be true
         let updated_config = attendance_geotag_backend::models::SystemConfig {
             dev_bypass_enabled: true,
-            updated_by: Some(ObjectId::new()),
+            updated_by: Some(Uuid::new_v4()),
             ..attendance_geotag_backend::models::SystemConfig::default()
         };
 
@@ -188,7 +188,7 @@ mod admin_password_verification_tests {
 
         // Create an admin with this hash
         let admin = attendance_geotag_backend::models::Admin {
-            id: Some(ObjectId::new()),
+            id: Uuid::new_v4(),
             username: "testadmin".to_string(),
             email: "admin@test.com".to_string(),
             password: hash,
@@ -248,7 +248,7 @@ mod jwt_token_tests {
         // Test that generate_token creates a valid JWT for admin authentication
         // This is used in tests that require authenticated admin
 
-        let admin_id = ObjectId::new();
+        let admin_id = Uuid::new_v4();
         let jwt_secret = "test-secret";
         let jwt_expire = "7d";
 
@@ -263,7 +263,7 @@ mod jwt_token_tests {
         let claims = attendance_geotag_backend::middleware::verify_token(&token, jwt_secret)
             .expect("Failed to verify token");
 
-        assert_eq!(claims.id, admin_id.to_hex());
+        assert_eq!(claims.id, admin_id.to_string());
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod jwt_token_tests {
     #[test]
     fn should_reject_token_with_wrong_secret() {
         // Token signed with different secret should be rejected
-        let admin_id = ObjectId::new();
+        let admin_id = Uuid::new_v4();
 
         let token = attendance_geotag_backend::middleware::generate_token(
             &admin_id,

@@ -16,14 +16,14 @@
 //! - Session Expiry Tests
 
 use chrono::{Duration, Utc};
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // Mock implementations for testing purposes
 // These simulate the behavior of the actual models
 
 /// Mock Admin for testing
 pub struct MockAdmin {
-    pub id: ObjectId,
+    pub id: Uuid,
     pub _username: String,
     pub _email: String,
     pub _password: String,
@@ -32,7 +32,7 @@ pub struct MockAdmin {
 impl MockAdmin {
     pub fn new(username: &str, email: &str, password: &str) -> Self {
         Self {
-            id: ObjectId::new(),
+            id: Uuid::new_v4(),
             _username: username.to_string(),
             _email: email.to_string(),
             _password: password.to_string(),
@@ -42,12 +42,12 @@ impl MockAdmin {
 
 /// Mock Location for testing
 pub struct MockLocation {
-    pub id: ObjectId,
+    pub id: Uuid,
     pub _name: String,
     pub latitude: f64,
     pub longitude: f64,
     pub _radius_meters: f64,
-    pub _created_by: ObjectId,
+    pub _created_by: Uuid,
 }
 
 impl MockLocation {
@@ -56,10 +56,10 @@ impl MockLocation {
         latitude: f64,
         longitude: f64,
         radius_meters: f64,
-        created_by: ObjectId,
+        created_by: Uuid,
     ) -> Self {
         Self {
-            id: ObjectId::new(),
+            id: Uuid::new_v4(),
             _name: name.to_string(),
             latitude,
             longitude,
@@ -71,11 +71,11 @@ impl MockLocation {
 
 /// Mock Session for testing
 pub struct MockSession {
-    pub id: ObjectId,
-    pub location_id: ObjectId,
+    pub id: Uuid,
+    pub location_id: Uuid,
     pub token_hash: String,
     pub token_prefix: String,
-    pub created_by: ObjectId,
+    pub created_by: Uuid,
     pub expires_at: chrono::DateTime<Utc>,
     pub is_active: bool,
 }
@@ -96,14 +96,10 @@ impl MockSession {
         hex::encode(hasher.finalize())
     }
 
-    pub fn new(
-        location_id: ObjectId,
-        created_by: ObjectId,
-        expires_at: chrono::DateTime<Utc>,
-    ) -> Self {
+    pub fn new(location_id: Uuid, created_by: Uuid, expires_at: chrono::DateTime<Utc>) -> Self {
         let token = Self::generate_token();
         let s = Self {
-            id: ObjectId::new(),
+            id: Uuid::new_v4(),
             location_id,
             token_hash: Self::hash_token(&token),
             token_prefix: token.chars().take(4).collect(),
@@ -121,14 +117,14 @@ impl MockSession {
     }
 
     pub fn new_with_active_status(
-        location_id: ObjectId,
-        created_by: ObjectId,
+        location_id: Uuid,
+        created_by: Uuid,
         expires_at: chrono::DateTime<Utc>,
         is_active: bool,
     ) -> Self {
         let token = Self::generate_token();
         Self {
-            id: ObjectId::new(),
+            id: Uuid::new_v4(),
             location_id,
             token_hash: Self::hash_token(&token),
             token_prefix: token.chars().take(4).collect(),
@@ -142,8 +138,8 @@ impl MockSession {
 /// Mock Attendance for testing
 #[derive(Debug, Clone)]
 pub struct MockAttendance {
-    pub _id: ObjectId,
-    pub session_id: ObjectId,
+    pub _id: Uuid,
+    pub session_id: Uuid,
     pub student_name: String,
     pub roll_number: String,
     pub _photo_url: String,
@@ -165,7 +161,7 @@ impl MockAttendance {
     /// Create a new attendance record with roll number validation
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        session_id: ObjectId,
+        session_id: Uuid,
         student_name: &str,
         roll_number: &str,
         photo_url: &str,
@@ -195,7 +191,7 @@ impl MockAttendance {
         let roll_number = roll_number.to_uppercase();
 
         Ok(Self {
-            _id: ObjectId::new(),
+            _id: Uuid::new_v4(),
             session_id,
             student_name: student_name.to_string(),
             roll_number,
@@ -218,7 +214,7 @@ impl MockAttendance {
     /// Create attendance with optional fields
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_options(
-        session_id: ObjectId,
+        session_id: Uuid,
         student_name: &str,
         roll_number: &str,
         photo_url: &str,

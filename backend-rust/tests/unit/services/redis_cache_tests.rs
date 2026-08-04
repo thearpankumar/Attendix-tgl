@@ -12,7 +12,7 @@
 //! - Security edge cases
 
 use chrono::{Duration, Utc};
-use mongodb::bson::oid::ObjectId;
+use uuid::Uuid;
 
 // Import from the main crate (adjust imports based on actual availability)
 use attendance_geotag_backend::middleware::{CachedSession, SessionCache};
@@ -48,9 +48,9 @@ mod get_cached_session {
         let cache = SessionCache::new_memory_only(300);
 
         // Create mock session data with location
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         let cached_session = CachedSession {
@@ -90,9 +90,9 @@ mod get_cached_session {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         // Create an inactive session
@@ -134,9 +134,9 @@ mod get_cached_session {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         // Create an expired session (expires_at in the past)
@@ -190,9 +190,9 @@ mod session_validation_flow {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
         let expires_at = Utc::now() + Duration::minutes(30);
 
@@ -230,9 +230,9 @@ mod session_validation_flow {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         let cached_session = CachedSession {
@@ -279,9 +279,9 @@ mod token_rotation {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
 
         // Generate initial token
         let initial_token = Session::generate_token();
@@ -366,9 +366,9 @@ mod redis_configuration {
         // Arrange: Create memory-only cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token = Session::generate_token();
         let token_hash = Session::hash_token(&token);
 
@@ -414,9 +414,9 @@ mod cache_ttl_behavior {
         let ttl = 1_i64; // 1 second
         let cache = SessionCache::new_memory_only(ttl);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         // Create session with short expiration time (simulating actual session expiry)
@@ -500,9 +500,9 @@ mod security_edge_cases {
         // Arrange: Create session cache
         let cache = SessionCache::new_memory_only(300);
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         let cached_session = CachedSession {
@@ -538,9 +538,9 @@ mod security_edge_cases {
         let cache = SessionCache::new_memory_only(300);
 
         // Create session for user 1
-        let session_id_1 = ObjectId::new();
-        let location_id_1 = ObjectId::new();
-        let admin_id_1 = ObjectId::new();
+        let session_id_1 = Uuid::new_v4();
+        let location_id_1 = Uuid::new_v4();
+        let admin_id_1 = Uuid::new_v4();
         let token_hash_1 = Session::hash_token(&Session::generate_token());
 
         let session_1 = CachedSession {
@@ -563,9 +563,9 @@ mod security_edge_cases {
         cache.set(token_hash_1.clone(), session_1).await;
 
         // Create session for user 2
-        let session_id_2 = ObjectId::new();
-        let location_id_2 = ObjectId::new();
-        let admin_id_2 = ObjectId::new();
+        let session_id_2 = Uuid::new_v4();
+        let location_id_2 = Uuid::new_v4();
+        let admin_id_2 = Uuid::new_v4();
         let token_hash_2 = Session::hash_token(&Session::generate_token());
 
         let session_2 = CachedSession {
@@ -603,9 +603,9 @@ mod security_edge_cases {
         // Arrange: Create session cache
         let cache = std::sync::Arc::new(SessionCache::new_memory_only(300));
 
-        let session_id = ObjectId::new();
-        let location_id = ObjectId::new();
-        let admin_id = ObjectId::new();
+        let session_id = Uuid::new_v4();
+        let location_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
         let token_hash = Session::hash_token(&Session::generate_token());
 
         let cached_session = CachedSession {

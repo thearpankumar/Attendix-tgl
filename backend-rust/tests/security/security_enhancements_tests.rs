@@ -17,9 +17,9 @@
 
 use chrono::{Duration, Utc};
 use image::{GenericImageView, ImageBuffer, Rgb};
-use mongodb::bson::oid::ObjectId;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
+use uuid::Uuid;
 
 // ============================================================================
 // Mock/Stub Implementations for Testing
@@ -52,10 +52,10 @@ pub struct ImageValidationResult {
 /// Mock PhotoHash record for testing
 #[derive(Debug, Clone)]
 pub struct MockPhotoHash {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub roll_number: String,
     pub photo_hash: String,
-    pub session_id: ObjectId,
+    pub session_id: Uuid,
     pub captured_at: chrono::DateTime<Utc>,
     pub confidence: Option<f64>,
     pub flags: Vec<MockFlagEntry>,
@@ -71,7 +71,7 @@ pub struct MockFlagEntry {
 /// Mock Flag record for testing
 #[derive(Debug, Clone)]
 pub struct MockFlag {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub flag_type: String,
     pub details: Option<String>,
     pub timestamp: chrono::DateTime<Utc>,
@@ -80,11 +80,11 @@ pub struct MockFlag {
 /// Mock WebAuthn Challenge for testing
 #[derive(Debug, Clone)]
 pub struct MockWebAuthnChallenge {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub student_id: String,
     pub challenge: String,
     pub challenge_type: String,
-    pub session_id: ObjectId,
+    pub session_id: Uuid,
     pub short_code: Option<String>,
     pub expires_at: chrono::DateTime<Utc>,
 }
@@ -92,7 +92,7 @@ pub struct MockWebAuthnChallenge {
 /// Mock WebAuthn Credential for testing
 #[derive(Debug, Clone)]
 pub struct MockWebAuthnCredential {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub student_id: String,
     pub credential_id: String,
     pub public_key: Vec<u8>,
@@ -102,11 +102,11 @@ pub struct MockWebAuthnCredential {
 /// Mock Session for testing
 #[derive(Debug, Clone)]
 pub struct MockSession {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub token_hash: String,
     pub token_prefix: String,
-    pub location_id: ObjectId,
-    pub created_by: ObjectId,
+    pub location_id: Uuid,
+    pub created_by: Uuid,
     pub expires_at: chrono::DateTime<Utc>,
     pub is_active: bool,
 }
@@ -114,28 +114,28 @@ pub struct MockSession {
 /// Mock Location for testing
 #[derive(Debug, Clone)]
 pub struct MockLocation {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub name: String,
     pub latitude: f64,
     pub longitude: f64,
     pub radius_meters: f64,
-    pub created_by: ObjectId,
+    pub created_by: Uuid,
 }
 
 /// Mock ShortLink for testing
 #[derive(Debug, Clone)]
 pub struct MockShortLink {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub short_code: String,
-    pub session_id: ObjectId,
-    pub created_by: ObjectId,
+    pub session_id: Uuid,
+    pub created_by: Uuid,
     pub is_active: bool,
 }
 
 /// Mock Admin for testing
 #[derive(Debug, Clone)]
 pub struct MockAdmin {
-    pub id: Option<ObjectId>,
+    pub id: Option<Uuid>,
     pub username: String,
     pub email: String,
     pub password: String,
@@ -145,7 +145,7 @@ pub struct MockAdmin {
 #[test]
 fn verify_mock_struct_fields() {
     let admin = MockAdmin {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         username: "u".to_string(),
         email: "e".to_string(),
         password: "p".to_string(),
@@ -160,12 +160,12 @@ fn verify_mock_struct_fields() {
     );
 
     let location = MockLocation {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         name: "n".to_string(),
         latitude: 0.0,
         longitude: 0.0,
         radius_meters: 10.0,
-        created_by: ObjectId::new(),
+        created_by: Uuid::new_v4(),
     };
     let _ = (
         &location.id,
@@ -177,11 +177,11 @@ fn verify_mock_struct_fields() {
     );
 
     let session = MockSession {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         token_hash: "th".to_string(),
         token_prefix: "tp".to_string(),
-        location_id: ObjectId::new(),
-        created_by: ObjectId::new(),
+        location_id: Uuid::new_v4(),
+        created_by: Uuid::new_v4(),
         expires_at: Utc::now(),
         is_active: true,
     };
@@ -196,10 +196,10 @@ fn verify_mock_struct_fields() {
     );
 
     let short_link = MockShortLink {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         short_code: "sc".to_string(),
-        session_id: ObjectId::new(),
-        created_by: ObjectId::new(),
+        session_id: Uuid::new_v4(),
+        created_by: Uuid::new_v4(),
         is_active: true,
     };
     let _ = (
@@ -211,11 +211,11 @@ fn verify_mock_struct_fields() {
     );
 
     let challenge = MockWebAuthnChallenge {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         student_id: "s".to_string(),
         challenge: "c".to_string(),
         challenge_type: "ct".to_string(),
-        session_id: ObjectId::new(),
+        session_id: Uuid::new_v4(),
         short_code: Some("sc".to_string()),
         expires_at: Utc::now(),
     };
@@ -230,7 +230,7 @@ fn verify_mock_struct_fields() {
     );
 
     let cred = MockWebAuthnCredential {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         student_id: "s".to_string(),
         credential_id: "ci".to_string(),
         public_key: vec![],
@@ -245,7 +245,7 @@ fn verify_mock_struct_fields() {
     );
 
     let flag = MockFlag {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         flag_type: "ft".to_string(),
         details: Some("d".to_string()),
         timestamp: Utc::now(),
@@ -259,10 +259,10 @@ fn verify_mock_struct_fields() {
     let _ = (&flag_entry.flag_type, &flag_entry.details);
 
     let photo_hash = MockPhotoHash {
-        id: Some(ObjectId::new()),
+        id: Some(Uuid::new_v4()),
         roll_number: "rn".to_string(),
         photo_hash: "ph".to_string(),
-        session_id: ObjectId::new(),
+        session_id: Uuid::new_v4(),
         captured_at: Utc::now(),
         confidence: Some(0.9),
         flags: vec![],
@@ -633,7 +633,7 @@ mod uv_flag_enforcement_tests {
 
     fn setup_test_admin() -> MockAdmin {
         MockAdmin {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             username: format!("testadmin{}", chrono::Utc::now().timestamp_millis()),
             email: format!("test-{}@example.com", chrono::Utc::now().timestamp_millis()),
             password: "hashedpassword".to_string(),
@@ -643,7 +643,7 @@ mod uv_flag_enforcement_tests {
 
     fn setup_test_location(admin: &MockAdmin) -> MockLocation {
         MockLocation {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             name: "Test Location".to_string(),
             latitude: 40.7128,
             longitude: -74.0060,
@@ -654,7 +654,7 @@ mod uv_flag_enforcement_tests {
 
     fn setup_test_session(location: &MockLocation, admin: &MockAdmin) -> MockSession {
         MockSession {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             token_hash: format!("test-hash-uv-{}", chrono::Utc::now().timestamp_millis()),
             token_prefix: "test-prefix".to_string(),
             location_id: location.id.unwrap(),
@@ -666,7 +666,7 @@ mod uv_flag_enforcement_tests {
 
     fn setup_test_short_link(session: &MockSession, admin: &MockAdmin) -> MockShortLink {
         MockShortLink {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             short_code: format!("uvtest{}", chrono::Utc::now().timestamp_millis()),
             session_id: session.id.unwrap(),
             created_by: admin.id.unwrap(),
@@ -683,7 +683,7 @@ mod uv_flag_enforcement_tests {
 
         // Create mock WebAuthn credential
         let _credential = MockWebAuthnCredential {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             student_id: "UVTEST001".to_string(),
             credential_id: "uv-test-cred".to_string(),
             public_key: b"test-public-key".to_vec(),
@@ -692,7 +692,7 @@ mod uv_flag_enforcement_tests {
 
         // Create mock challenge
         let challenge = MockWebAuthnChallenge {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             student_id: "UVTEST001".to_string(),
             challenge: "test-challenge-uv".to_string(),
             challenge_type: "authentication".to_string(),
@@ -709,7 +709,7 @@ mod uv_flag_enforcement_tests {
     #[test]
     fn should_create_flag_when_uv_verification_fails() {
         let flag = MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "WEBAUTHN_NO_UV".to_string(),
             details: Some("User verification flag not set for test user".to_string()),
             timestamp: Utc::now(),
@@ -986,10 +986,10 @@ mod photo_reuse_tests {
     fn should_detect_exact_photo_hash_match() {
         let test_hash = "abc123def456ghi789jkl012mno345pqr678stu901vwx234yz";
         let stored_hashes = vec![MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "REUSE001".to_string(),
             photo_hash: test_hash.to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now(),
             confidence: Some(0.95),
             flags: Vec::new(),
@@ -1027,10 +1027,10 @@ mod photo_reuse_tests {
         let similar_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab";
 
         let stored_hashes = vec![MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "SIMILAR001".to_string(),
             photo_hash: original_hash.to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now() - Duration::hours(24),
             confidence: None,
             flags: Vec::new(),
@@ -1048,10 +1048,10 @@ mod photo_reuse_tests {
         let hash2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
         let stored_hashes = vec![MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "DIFF001".to_string(),
             photo_hash: hash1.to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now() - Duration::hours(24),
             confidence: None,
             flags: Vec::new(),
@@ -1099,10 +1099,10 @@ mod photo_hash_model_tests {
     #[test]
     fn should_create_photo_hash_record() {
         let photo_hash = MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "PHOTO001".to_string(),
             photo_hash: "testhash123".to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now(),
             confidence: Some(0.95),
             flags: Vec::new(),
@@ -1121,10 +1121,10 @@ mod photo_hash_model_tests {
 
         // Valid creation with all required fields
         let valid = MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "TEST".to_string(),
             photo_hash: "hash".to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now(),
             confidence: None,
             flags: Vec::new(),
@@ -1137,10 +1137,10 @@ mod photo_hash_model_tests {
     #[test]
     fn should_support_flags_array() {
         let photo_hash = MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "FLAGTEST".to_string(),
             photo_hash: "flaghashtest".to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now(),
             confidence: None,
             flags: vec![MockFlagEntry {
@@ -1156,10 +1156,10 @@ mod photo_hash_model_tests {
     #[test]
     fn should_enforce_index_on_roll_number_and_session_id() {
         let photo_hash = MockPhotoHash {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             roll_number: "INDEXTEST".to_string(),
             photo_hash: "indexhashtest".to_string(),
-            session_id: ObjectId::new(),
+            session_id: Uuid::new_v4(),
             captured_at: Utc::now(),
             confidence: None,
             flags: Vec::new(),
@@ -1227,7 +1227,7 @@ mod flag_types_tests {
         let mut flags = setup_flags();
 
         flags.push(MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "WEBAUTHN_REPLAY_ATTACK".to_string(),
             details: Some("Counter mismatch detected".to_string()),
             timestamp: Utc::now(),
@@ -1244,7 +1244,7 @@ mod flag_types_tests {
         let mut flags = setup_flags();
 
         flags.push(MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "NO_FACE_DETECTED".to_string(),
             details: Some("No face in submitted photo".to_string()),
             timestamp: Utc::now(),
@@ -1259,7 +1259,7 @@ mod flag_types_tests {
         let mut flags = setup_flags();
 
         flags.push(MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "REUSED_PHOTO".to_string(),
             details: Some("Photo hash matched previous submission".to_string()),
             timestamp: Utc::now(),
@@ -1274,7 +1274,7 @@ mod flag_types_tests {
         let mut flags = setup_flags();
 
         flags.push(MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "WEBAUTHN_NO_UV".to_string(),
             details: Some("User verification flag not set".to_string()),
             timestamp: Utc::now(),
@@ -1342,7 +1342,7 @@ mod replay_attack_regression_tests {
     #[test]
     fn should_create_replay_attack_flag_with_timestamp() {
         let flag_data = MockFlag {
-            id: Some(ObjectId::new()),
+            id: Some(Uuid::new_v4()),
             flag_type: "WEBAUTHN_REPLAY_ATTACK".to_string(),
             details: Some("Counter decreased from 10 to 5".to_string()),
             timestamp: Utc::now(),
