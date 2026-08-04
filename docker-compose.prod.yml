@@ -2,7 +2,16 @@
 # MongoDB and Caddy/fail2ban live in their own files on purpose (so routine
 # app work here never has the DB/proxy config in view) — always run all
 # three together:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+#   aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml pull
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d
+#
+# Images are built and pushed to ECR by .github/workflows/deploy-production.yml
+# on every push to the `production` branch, tagged `<service>-<git-sha>` and
+# `<service>-latest`. Set IMAGE_TAG to a git sha in .env to pin a specific
+# build instead of always pulling latest.
+# ECR_REGISTRY / ECR_REPOSITORY default to the tgl/attendix repo below;
+# override in .env only if the registry ever changes.
 
 x-logging: &default-logging
   driver: "json-file"
@@ -33,9 +42,7 @@ services:
 
   
   backend:
-    build:
-      context: ./backend-rust
-      dockerfile: Dockerfile
+    image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:backend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -91,10 +98,7 @@ services:
 
   
   admin-frontend:
-    build:
-      context: ./frontend/admin
-      args:
-        VITE_BASE_PATH: /owner-of-attendix-xyz/
+    image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:admin-frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -113,10 +117,7 @@ services:
 
   
   student-frontend:
-    build:
-      context: ./frontend/student
-      args:
-        VITE_DEV_BYPASS_ALL: ${DEV_BYPASS_ALL:-false}
+    image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:student-frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -135,8 +136,7 @@ services:
 
 
   home-frontend:
-    build:
-      context: ./frontend/home
+    image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:home-frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     logging: *default-logging
     deploy:
