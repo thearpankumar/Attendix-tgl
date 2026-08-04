@@ -4,7 +4,6 @@ use axum::{
     response::IntoResponse,
     Extension,
 };
-use mongodb::Collection;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -50,30 +49,17 @@ pub async fn register(
         return Err(AppError::Unauthorized("Invalid admin secret".to_string()));
     }
 
-    let collection: Collection<Admin> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Admin::collection_name());
-
-    let existing = collection
-        .find_one(mongodb::bson::doc! { "username": &payload.username })
+    let existing: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE username = $1")
+        .bind(&payload.username)
+        .fetch_optional(&state.db)
         .await?;
     if existing.is_some() {
         return Err(AppError::BadRequest("Username already exists".to_string()));
     }
 
-    let existing_email = collection
-        .find_one(mongodb::bson::doc! { "email": &payload.email })
+    let existing_email: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE email = $1")
+        .bind(&payload.email)
+        .fetch_optional(&state.db)
         .await?;
     if existing_email.is_some() {
         return Err(AppError::BadRequest("Email already exists".to_string()));
@@ -81,25 +67,21 @@ pub async fn register(
 
     let hashed_password = Admin::hash_password(&payload.password)?;
 
-    let admin = Admin {
-        id: None,
-        username: payload.username,
-        email: payload.email,
-        password: hashed_password,
-        role: "admin".to_string(),
-        failed_login_attempts: 0,
-        lock_until: None,
-        created_at: chrono::Utc::now(),
-    };
-
-    let result = collection.insert_one(&admin).await?;
-    let admin_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    let admin: Admin = sqlx::query_as(
+        "INSERT INTO admins (id, username, email, password, role, failed_login_attempts, created_at) \
+         VALUES ($1, $2, $3, $4, $5, 0, now()) \
+         RETURNING *",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&payload.username)
+    .bind(&payload.email)
+    .bind(&hashed_password)
+    .bind("admin")
+    .fetch_one(&state.db)
+    .await?;
 
     let token = generate_token(
-        &admin_id,
+        &admin.id,
         &state.config.jwt_secret,
         &state.config.jwt_expire,
     )?;
@@ -110,7 +92,7 @@ pub async fn register(
             token,
             expires_in: state.config.jwt_expire.clone(),
             admin: AdminResponse {
-                id: admin_id.to_hex(),
+                id: admin.id.to_string(),
                 username: admin.username,
                 email: admin.email,
                 role: admin.role,
@@ -129,23 +111,9 @@ pub async fn login(
     };
     validate_request(&validation_req)?;
 
-    let collection: Collection<Admin> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Admin::collection_name());
-
-    let admin = collection
-        .find_one(mongodb::bson::doc! { "username": &payload.username })
+    let admin: Admin = sqlx::query_as("SELECT * FROM admins WHERE username = $1")
+        .bind(&payload.username)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::Unauthorized("Invalid credentials".to_string()))?;
 
@@ -166,36 +134,31 @@ pub async fn login(
             None
         };
 
-        collection
-            .update_one(
-                mongodb::bson::doc! { "_id": admin.id },
-                mongodb::bson::doc! { "$set": { "failedLoginAttempts": attempts, "lockUntil": lock_until.map(|dt| mongodb::bson::DateTime::from_millis(dt.timestamp_millis())) } },
-            )
+        sqlx::query("UPDATE admins SET failed_login_attempts = $1, lock_until = $2 WHERE id = $3")
+            .bind(attempts)
+            .bind(lock_until)
+            .bind(admin.id)
+            .execute(&state.db)
             .await?;
 
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
     }
 
     if admin.failed_login_attempts > 0 {
-        collection
-            .update_one(
-                mongodb::bson::doc! { "_id": admin.id },
-                mongodb::bson::doc! { "$set": { "failedLoginAttempts": 0, "lockUntil": null } },
-            )
+        sqlx::query("UPDATE admins SET failed_login_attempts = 0, lock_until = NULL WHERE id = $1")
+            .bind(admin.id)
+            .execute(&state.db)
             .await?;
     }
 
-    let admin_id = admin
-        .id
-        .ok_or_else(|| AppError::Internal("No admin ID".to_string()))?;
+    let admin_id = admin.id;
 
     if admin.should_rehash() {
         let new_hash = Admin::hash_password(&payload.password)?;
-        collection
-            .update_one(
-                mongodb::bson::doc! { "_id": admin_id },
-                mongodb::bson::doc! { "$set": { "password": new_hash } },
-            )
+        sqlx::query("UPDATE admins SET password = $1 WHERE id = $2")
+            .bind(&new_hash)
+            .bind(admin_id)
+            .execute(&state.db)
             .await?;
     }
     let token = generate_token(
@@ -208,7 +171,7 @@ pub async fn login(
         token,
         expires_in: state.config.jwt_expire.clone(),
         admin: AdminResponse {
-            id: admin_id.to_hex(),
+            id: admin_id.to_string(),
             username: admin.username,
             email: admin.email,
             role: admin.role,
@@ -220,28 +183,14 @@ pub async fn get_profile(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Admin> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Admin::collection_name());
-
-    let admin = collection
-        .find_one(mongodb::bson::doc! { "_id": auth.id })
+    let admin: Admin = sqlx::query_as("SELECT * FROM admins WHERE id = $1")
+        .bind(auth.id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Admin not found".to_string()))?;
 
     Ok(Json(AdminResponse {
-        id: auth.id.to_hex(),
+        id: auth.id.to_string(),
         username: admin.username,
         email: admin.email,
         role: admin.role,

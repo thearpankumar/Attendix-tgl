@@ -5,12 +5,9 @@ use axum::{
     Extension,
 };
 use chrono::Utc;
-use mongodb::{
-    bson::{doc, oid::ObjectId},
-    Collection,
-};
 use serde::Serialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
@@ -38,7 +35,7 @@ pub struct LocationResponse {
 impl From<Location> for LocationResponse {
     fn from(loc: Location) -> Self {
         Self {
-            id: loc.id.map(|id| id.to_hex()).unwrap_or_default(),
+            id: loc.id.to_string(),
             name: loc.name,
             latitude: loc.latitude,
             longitude: loc.longitude,
@@ -62,27 +59,14 @@ pub async fn create_location(
     };
     validate_request(&validation_req)?;
 
-    let collection: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
+    let radius_meters = payload.radius_meters.unwrap_or(100.0);
 
     let location = Location {
-        id: None,
+        id: Uuid::new_v4(),
         name: payload.name,
         latitude: payload.latitude,
         longitude: payload.longitude,
-        radius_meters: payload.radius_meters.unwrap_or(100.0),
+        radius_meters,
         description: payload.description,
         created_by: auth.id,
         is_active: true,
@@ -91,49 +75,39 @@ pub async fn create_location(
 
     location.validate()?;
 
-    let result = collection.insert_one(&location).await?;
-    let location_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    let inserted = sqlx::query_as::<_, Location>(
+        "INSERT INTO locations (id, name, latitude, longitude, radius_meters, description, created_by, is_active, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         RETURNING *",
+    )
+    .bind(location.id)
+    .bind(&location.name)
+    .bind(location.latitude)
+    .bind(location.longitude)
+    .bind(location.radius_meters)
+    .bind(&location.description)
+    .bind(location.created_by)
+    .bind(location.is_active)
+    .bind(location.created_at)
+    .fetch_one(&state.db)
+    .await?;
 
-    let mut response = LocationResponse::from(location);
-    response.id = location_id.to_hex();
-
-    Ok((StatusCode::CREATED, Json(response)))
+    Ok((StatusCode::CREATED, Json(LocationResponse::from(inserted))))
 }
 
 pub async fn get_locations(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
+    let locations =
+        sqlx::query_as::<_, Location>("SELECT * FROM locations ORDER BY created_at DESC")
+            .fetch_all(&state.db)
+            .await?;
 
-    let mut cursor = collection
-        .find(doc! {})
-        .sort(doc! { "createdAt": -1 })
-        .await?;
-    let mut locations = Vec::new();
+    let response: Vec<LocationResponse> =
+        locations.into_iter().map(LocationResponse::from).collect();
 
-    while cursor.advance().await? {
-        let loc = cursor.deserialize_current()?;
-        locations.push(LocationResponse::from(loc));
-    }
-
-    Ok(Json(locations))
+    Ok(Json(response))
 }
 
 pub async fn get_location(
@@ -141,26 +115,12 @@ pub async fn get_location(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
-
-    let location_id = ObjectId::parse_str(&id)
+    let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let location = collection
-        .find_one(doc! { "_id": location_id })
+    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+        .bind(location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
@@ -187,55 +147,42 @@ pub async fn update_location(
         }
     }
 
-    let collection: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
-
-    let location_id = ObjectId::parse_str(&id)
+    let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let mut update_doc = doc! {};
-
-    if let Some(name) = payload.name {
-        update_doc.insert("name", name);
-    }
-    if let Some(lat) = payload.latitude {
-        update_doc.insert("latitude", lat);
-    }
-    if let Some(lon) = payload.longitude {
-        update_doc.insert("longitude", lon);
-    }
-    if let Some(radius) = payload.radius_meters {
-        update_doc.insert("radiusMeters", radius);
-    }
-    if let Some(desc) = payload.description {
-        update_doc.insert("description", desc);
-    }
-    if let Some(active) = payload.is_active {
-        update_doc.insert("isActive", active);
-    }
-
-    collection
-        .update_one(doc! { "_id": location_id }, doc! { "$set": update_doc })
-        .await?;
-
-    let location = collection
-        .find_one(doc! { "_id": location_id })
+    let existing = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+        .bind(location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
-    Ok(Json(LocationResponse::from(location)))
+    let merged = Location {
+        id: existing.id,
+        name: payload.name.unwrap_or(existing.name),
+        latitude: payload.latitude.unwrap_or(existing.latitude),
+        longitude: payload.longitude.unwrap_or(existing.longitude),
+        radius_meters: payload.radius_meters.unwrap_or(existing.radius_meters),
+        description: payload.description.or(existing.description),
+        created_by: existing.created_by,
+        is_active: payload.is_active.unwrap_or(existing.is_active),
+        created_at: existing.created_at,
+    };
+
+    let updated = sqlx::query_as::<_, Location>(
+        "UPDATE locations SET name = $1, latitude = $2, longitude = $3, radius_meters = $4, \
+         description = $5, is_active = $6 WHERE id = $7 RETURNING *",
+    )
+    .bind(&merged.name)
+    .bind(merged.latitude)
+    .bind(merged.longitude)
+    .bind(merged.radius_meters)
+    .bind(&merged.description)
+    .bind(merged.is_active)
+    .bind(location_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(LocationResponse::from(updated)))
 }
 
 pub async fn delete_location(
@@ -243,25 +190,13 @@ pub async fn delete_location(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
-
-    let location_id = ObjectId::parse_str(&id)
+    let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    collection.delete_one(doc! { "_id": location_id }).await?;
+    sqlx::query("DELETE FROM locations WHERE id = $1")
+        .bind(location_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Json(serde_json::json!({
         "message": "Location deleted successfully"

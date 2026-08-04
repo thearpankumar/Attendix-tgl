@@ -4,12 +4,9 @@ use axum::{
     Extension,
 };
 use chrono::Utc;
-use mongodb::{
-    bson::{doc, oid::ObjectId, DateTime as BsonDateTime},
-    Collection,
-};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
@@ -43,61 +40,47 @@ pub async fn get_security_summary(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let attendances: Collection<Attendance> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Attendance::collection_name());
-
-    let session_oid = ObjectId::parse_str(&session_id)
+    let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let total_submissions = attendances
-        .count_documents(doc! { "sessionId": session_oid })
-        .await?;
+    let total_submissions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(&state.db)
+            .await?;
 
-    let flagged_submissions = attendances
-        .count_documents(doc! { "sessionId": session_oid, "flagged": true })
-        .await?;
+    let flagged_submissions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND flagged = true",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
-    let unreviewed_gps = attendances
-        .count_documents(doc! {
-            "sessionId": session_oid,
-            "flagged": true,
-            "flagReviewed": false,
-            "$or": [
-                { "gpsAnomalies": { "$exists": true, "$not": { "$size": 0 } } },
-                { "gpsMockLocation": true }
-            ]
-        })
-        .await?;
+    let unreviewed_gps: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances \
+         WHERE session_id = $1 AND flagged = true AND flag_reviewed = false \
+           AND (jsonb_array_length(gps_anomalies) > 0 OR gps_mock_location = true)",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
-    let unreviewed_emulator = attendances
-        .count_documents(doc! {
-            "sessionId": session_oid,
-            "flagged": true,
-            "flagReviewed": false,
-            "emulatorDetected": true
-        })
-        .await?;
+    let unreviewed_emulator: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances \
+         WHERE session_id = $1 AND flagged = true AND flag_reviewed = false AND emulator_detected = true",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
-    let unreviewed_integrity = attendances
-        .count_documents(doc! {
-            "sessionId": session_oid,
-            "flagged": true,
-            "flagReviewed": false,
-            "integrityChecks": { "$exists": true, "$not": { "$size": 0 } }
-        })
-        .await?;
+    let unreviewed_integrity: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances \
+         WHERE session_id = $1 AND flagged = true AND flag_reviewed = false \
+           AND jsonb_array_length(integrity_checks) > 0",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
     let flag_percentage = if total_submissions > 0 {
         format!(
@@ -109,12 +92,12 @@ pub async fn get_security_summary(
     };
 
     Ok(Json(SecuritySummary {
-        total_submissions: total_submissions as i64,
-        flagged_submissions: flagged_submissions as i64,
+        total_submissions,
+        flagged_submissions,
         unreviewed_flags: UnreviewedFlagsSummary {
-            gps_anomalies: unreviewed_gps as i64,
-            emulator_detected: unreviewed_emulator as i64,
-            integrity_issues: unreviewed_integrity as i64,
+            gps_anomalies: unreviewed_gps,
+            emulator_detected: unreviewed_emulator,
+            integrity_issues: unreviewed_integrity,
         },
         flag_percentage,
     }))
@@ -133,69 +116,49 @@ pub async fn review_submission(
     Path(attendance_id): Path<String>,
     Json(payload): Json<ReviewSubmissionRequest>,
 ) -> Result<impl IntoResponse> {
-    let attendances: Collection<Attendance> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Attendance::collection_name());
-
-    let attendance_oid = ObjectId::parse_str(&attendance_id)
+    let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
     // Verify attendance exists before reviewing
-    let _existing = attendances
-        .find_one(doc! { "_id": attendance_oid })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Attendance record not found".to_string()))?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attendances WHERE id = $1)")
+        .bind(attendance_uuid)
+        .fetch_one(&state.db)
+        .await?;
+    if !exists {
+        return Err(AppError::NotFound(
+            "Attendance record not found".to_string(),
+        ));
+    }
 
     let message = match payload.action.as_str() {
         "approve" => {
-            // Clear flags, mark verified
-            attendances
-                .update_one(
-                    doc! { "_id": attendance_oid },
-                    doc! {
-                        "$set": {
-                            "flagged": false,
-                            "flagReviewed": true,
-                            "flagReviewedBy": auth.id,
-                            "flagReviewedAt": BsonDateTime::now(),
-                            "flagNotes": payload.notes,
-                            "verified": true,
-                        }
-                    },
-                )
-                .await?;
+            // Clear flags, mark verified. `notes` is persisted into flag_details,
+            // the closest existing column (the Mongo-era "flagNotes" field this
+            // mirrored was never modeled on the Attendance document either).
+            sqlx::query(
+                "UPDATE attendances SET flagged = false, flag_reviewed = true, flag_reviewed_by = $1, \
+                 flag_reviewed_at = now(), flag_details = $2, verified = true WHERE id = $3",
+            )
+            .bind(auth.id)
+            .bind(&payload.notes)
+            .bind(attendance_uuid)
+            .execute(&state.db)
+            .await?;
 
             // TODO: Update device trust score (when device_trust is available)
 
             "Attendance submission approved and verified successfully"
         }
         "reject" => {
-            // Keep flagged, mark reviewed
-            attendances
-                .update_one(
-                    doc! { "_id": attendance_oid },
-                    doc! {
-                        "$set": {
-                            "flagReviewed": true,
-                            "flagReviewedBy": auth.id,
-                            "flagReviewedAt": BsonDateTime::now(),
-                            "flagNotes": payload.notes,
-                            "verified": false,
-                        }
-                    },
-                )
-                .await?;
+            sqlx::query(
+                "UPDATE attendances SET flag_reviewed = true, flag_reviewed_by = $1, \
+                 flag_reviewed_at = now(), flag_details = $2, verified = false WHERE id = $3",
+            )
+            .bind(auth.id)
+            .bind(&payload.notes)
+            .bind(attendance_uuid)
+            .execute(&state.db)
+            .await?;
 
             "Attendance submission rejected and marked as unverified"
         }
@@ -211,7 +174,7 @@ pub async fn review_submission(
         "message": message,
         "attendance_id": attendance_id,
         "action": payload.action,
-        "reviewed_by": auth.id.to_hex(),
+        "reviewed_by": auth.id.to_string(),
     })))
 }
 
@@ -238,7 +201,7 @@ pub struct FlaggedSubmissionResponse {
 impl FlaggedSubmissionResponse {
     fn from_attendance(a: Attendance) -> Self {
         Self {
-            id: a.id.unwrap_or_default().to_hex(),
+            id: a.id.to_string(),
             roll_number: a.roll_number,
             student_name: a.student_name,
             captured_at: a.captured_at,
@@ -246,10 +209,10 @@ impl FlaggedSubmissionResponse {
             flag_reason: a.flag_reason,
             flag_reviewed: a.flag_reviewed,
             gps_confidence: a.gps_confidence,
-            gps_anomalies: a.gps_anomalies,
+            gps_anomalies: a.gps_anomalies.0,
             emulator_detected: a.emulator_detected,
-            emulator_flags: a.emulator_flags,
-            integrity_checks: a.integrity_checks,
+            emulator_flags: a.emulator_flags.0,
+            integrity_checks: a.integrity_checks.0,
         }
     }
 }
@@ -259,34 +222,20 @@ pub async fn get_flagged_submissions(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let attendances: Collection<Attendance> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Attendance::collection_name());
-
-    let session_oid = ObjectId::parse_str(&session_id)
+    let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let mut cursor = attendances
-        .find(doc! { "sessionId": session_oid, "flagged": true })
-        .limit(100)
-        .await?;
-    let mut submissions = Vec::new();
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = $1 AND flagged = true LIMIT 100",
+    )
+    .bind(session_id)
+    .fetch_all(&state.db)
+    .await?;
 
-    while cursor.advance().await? {
-        let a = cursor.deserialize_current()?;
-        submissions.push(FlaggedSubmissionResponse::from_attendance(a));
-    }
+    let submissions: Vec<FlaggedSubmissionResponse> = attendances
+        .into_iter()
+        .map(FlaggedSubmissionResponse::from_attendance)
+        .collect();
 
     Ok(Json(serde_json::json!({ "submissions": submissions })))
 }
@@ -314,40 +263,27 @@ pub async fn get_submission_details(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(attendance_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
-    let admins: Collection<Admin> = db.collection(Admin::collection_name());
-
-    let attendance_oid = ObjectId::parse_str(&attendance_id)
+    let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
-    let attendance = attendances
-        .find_one(doc! { "_id": attendance_oid })
+    let attendance: Attendance = sqlx::query_as("SELECT * FROM attendances WHERE id = $1")
+        .bind(attendance_uuid)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Attendance record not found".to_string()))?;
 
-    let has_security_data = !attendance.gps_anomalies.is_empty()
-        || !attendance.emulator_flags.is_empty()
-        || !attendance.integrity_checks.is_empty()
+    let has_security_data = !attendance.gps_anomalies.0.is_empty()
+        || !attendance.emulator_flags.0.is_empty()
+        || !attendance.integrity_checks.0.is_empty()
         || attendance.gps_accuracy.is_some();
 
     let flag_reviewed_by_id = attendance.flag_reviewed_by;
     let flag_reviewed_at = attendance.flag_reviewed_at;
 
     let flag_reviewed_by = if let Some(admin_id) = flag_reviewed_by_id {
-        admins
-            .find_one(doc! { "_id": admin_id })
+        sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .fetch_optional(&state.db)
             .await?
             .map(|admin| ReviewedByInfo {
                 username: admin.username,
@@ -379,21 +315,7 @@ pub async fn get_security_settings(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    let configs: Collection<SystemConfig> = db.collection(SystemConfig::collection_name());
-
-    let config = configs.find_one(doc! {}).await?.unwrap_or_default();
+    let config = SystemConfig::load(&state.db).await?.unwrap_or_default();
 
     Ok(Json(SecuritySettingsResponse {
         gps_validation: config.gps_validation,
@@ -414,21 +336,7 @@ pub async fn update_security_settings(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<UpdateSecuritySettingsRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    let configs: Collection<SystemConfig> = db.collection(SystemConfig::collection_name());
-
-    let mut config = configs.find_one(doc! {}).await?.unwrap_or_default();
+    let mut config = SystemConfig::load(&state.db).await?.unwrap_or_default();
 
     if let Some(gps) = payload.gps_validation {
         config.gps_validation = gps;
@@ -443,13 +351,7 @@ pub async fn update_security_settings(
     config.updated_by = Some(auth.id);
     config.updated_at = Utc::now();
 
-    configs
-        .update_one(
-            doc! {},
-            doc! { "$set": mongodb::bson::to_document(&config).map_err(|e| AppError::Internal(e.to_string()))? },
-        )
-        .upsert(true)
-        .await?;
+    let config = config.save(&state.db).await?;
 
     Ok(Json(serde_json::json!({
         "message": "Security settings updated",

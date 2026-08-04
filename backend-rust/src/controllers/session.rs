@@ -5,12 +5,9 @@ use axum::{
     Extension,
 };
 use chrono::{DateTime, Utc};
-use mongodb::{
-    bson::{doc, oid::ObjectId},
-    Collection,
-};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     constants::*,
@@ -19,7 +16,7 @@ use crate::{
         validators::{validate_request, SessionCreateRequest},
         AuthenticatedAdmin,
     },
-    models::{Admin, Attendance, Batch, Location, Session, ShortLink},
+    models::{Admin, Attendance, Batch, Location, Session, ShortLink, Student},
 };
 
 #[derive(Debug, Deserialize)]
@@ -76,20 +73,6 @@ pub async fn create_session(
     };
     validate_request(&validation_req)?;
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let db = state.db.database(db_name);
-    let collection: Collection<Session> = db.collection(Session::collection_name());
-    let shortlink_collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
     let mode = payload.shortlink_mode.as_deref().unwrap_or("auto");
 
     // Pre-validate short link requirements before creating session
@@ -108,9 +91,11 @@ pub async fn create_session(
                 "Custom short code must be 3-20 alphanumeric characters or hyphens".to_string(),
             ));
         }
-        let existing = shortlink_collection
-            .find_one(doc! { "shortCode": &code })
-            .await?;
+        let existing: Option<ShortLink> =
+            sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
+                .bind(&code)
+                .fetch_optional(&state.db)
+                .await?;
         if existing.is_some() {
             return Err(AppError::BadRequest(format!(
                 "Short link '/s/{}' is already taken. Please choose another custom code.",
@@ -129,9 +114,11 @@ pub async fn create_session(
                 "Please select an existing short link".to_string(),
             ));
         }
-        let existing = shortlink_collection
-            .find_one(doc! { "shortCode": code })
-            .await?;
+        let existing: Option<ShortLink> =
+            sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
+                .bind(code)
+                .fetch_optional(&state.db)
+                .await?;
         if existing.is_none() {
             return Err(AppError::NotFound(format!(
                 "Existing short link '/s/{}' not found",
@@ -143,55 +130,57 @@ pub async fn create_session(
         None
     };
 
-    let location_id = ObjectId::parse_str(&payload.location_id)
+    let location_id = Uuid::parse_str(&payload.location_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
     let batch_id = payload
         .batch_id
-        .and_then(|id| ObjectId::parse_str(&id).ok());
+        .as_ref()
+        .and_then(|id| Uuid::parse_str(id).ok());
 
     let token = Session::generate_token();
     let duration_minutes = payload.duration_minutes.unwrap_or(30) as i64;
     let expires_at = Utc::now() + chrono::Duration::minutes(duration_minutes);
 
-    let session = Session {
-        id: None,
-        location_id,
-        batch_id,
-        token_hash: Session::hash_token(&token),
-        token_prefix: Session::get_token_prefix(&token),
-        description: payload.description,
-        created_by: auth.id,
-        is_active: true,
-        expires_at,
-        rotation_count: 0,
-        totp_secret: Some(Session::generate_totp_secret()),
-        created_at: Utc::now(),
-    };
+    let session: Session = sqlx::query_as(
+        "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, is_active, expires_at, rotation_count, totp_secret, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, 0, $9, now()) \
+         RETURNING *",
+    )
+    .bind(Uuid::new_v4())
+    .bind(location_id)
+    .bind(batch_id)
+    .bind(Session::hash_token(&token))
+    .bind(Session::get_token_prefix(&token))
+    .bind(&payload.description)
+    .bind(auth.id)
+    .bind(expires_at)
+    .bind(Session::generate_totp_secret())
+    .fetch_one(&state.db)
+    .await?;
 
-    let result = collection.insert_one(&session).await?;
-    let session_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    let session_id = session.id;
 
     // Atomically create or assign short link
     let created_short_code = match mode {
         "custom" => {
             let code = custom_code_to_use.unwrap();
-            let short_link = ShortLink {
-                id: None,
-                short_code: code.clone(),
-                session_id: Some(session_id),
-                created_by: auth.id,
-                is_active: true,
-                expires_at: Some(session.expires_at),
-                click_count: 0,
-                last_clicked_at: None,
-                created_at: Utc::now(),
-            };
-            if let Err(e) = shortlink_collection.insert_one(&short_link).await {
-                let _ = collection.delete_one(doc! { "_id": session_id }).await;
+            let insert_res: sqlx::Result<ShortLink> = sqlx::query_as(
+                "INSERT INTO short_links (id, short_code, session_id, created_by, is_active, expires_at, click_count, created_at) \
+                 VALUES ($1, $2, $3, $4, true, $5, 0, now()) RETURNING *",
+            )
+            .bind(Uuid::new_v4())
+            .bind(&code)
+            .bind(session_id)
+            .bind(auth.id)
+            .bind(session.expires_at)
+            .fetch_one(&state.db)
+            .await;
+            if let Err(e) = insert_res {
+                let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+                    .bind(session_id)
+                    .execute(&state.db)
+                    .await;
                 return Err(AppError::Internal(format!(
                     "Failed to create short link: {}",
                     e
@@ -201,20 +190,19 @@ pub async fn create_session(
         }
         "existing" => {
             let code = existing_code_to_use.unwrap();
-            let update_res = shortlink_collection
-                .update_one(
-                    doc! { "shortCode": &code },
-                    doc! {
-                        "$set": {
-                            "sessionId": session_id,
-                            "isActive": true,
-                            "expiresAt": mongodb::bson::DateTime::from_millis(session.expires_at.timestamp_millis()),
-                        }
-                    },
-                )
-                .await;
+            let update_res = sqlx::query(
+                "UPDATE short_links SET session_id = $1, is_active = true, expires_at = $2 WHERE short_code = $3",
+            )
+            .bind(session_id)
+            .bind(session.expires_at)
+            .bind(&code)
+            .execute(&state.db)
+            .await;
             if let Err(e) = update_res {
-                let _ = collection.delete_one(doc! { "_id": session_id }).await;
+                let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+                    .bind(session_id)
+                    .execute(&state.db)
+                    .await;
                 return Err(AppError::Internal(format!(
                     "Failed to attach short link: {}",
                     e
@@ -226,33 +214,41 @@ pub async fn create_session(
             let mut attempts = 0;
             let code = loop {
                 let candidate = ShortLink::generate_short_code(6);
-                let existing = shortlink_collection
-                    .find_one(doc! { "shortCode": &candidate })
-                    .await?;
+                let existing: Option<ShortLink> =
+                    sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
+                        .bind(&candidate)
+                        .fetch_optional(&state.db)
+                        .await?;
                 if existing.is_none() {
                     break candidate;
                 }
                 attempts += 1;
                 if attempts > 10 {
-                    let _ = collection.delete_one(doc! { "_id": session_id }).await;
+                    let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+                        .bind(session_id)
+                        .execute(&state.db)
+                        .await;
                     return Err(AppError::Internal(
                         "Failed to generate unique short code".to_string(),
                     ));
                 }
             };
-            let short_link = ShortLink {
-                id: None,
-                short_code: code.clone(),
-                session_id: Some(session_id),
-                created_by: auth.id,
-                is_active: true,
-                expires_at: Some(session.expires_at),
-                click_count: 0,
-                last_clicked_at: None,
-                created_at: Utc::now(),
-            };
-            if let Err(e) = shortlink_collection.insert_one(&short_link).await {
-                let _ = collection.delete_one(doc! { "_id": session_id }).await;
+            let insert_res: sqlx::Result<ShortLink> = sqlx::query_as(
+                "INSERT INTO short_links (id, short_code, session_id, created_by, is_active, expires_at, click_count, created_at) \
+                 VALUES ($1, $2, $3, $4, true, $5, 0, now()) RETURNING *",
+            )
+            .bind(Uuid::new_v4())
+            .bind(&code)
+            .bind(session_id)
+            .bind(auth.id)
+            .bind(session.expires_at)
+            .fetch_one(&state.db)
+            .await;
+            if let Err(e) = insert_res {
+                let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+                    .bind(session_id)
+                    .execute(&state.db)
+                    .await;
                 return Err(AppError::Internal(format!(
                     "Failed to create short link: {}",
                     e
@@ -262,22 +258,19 @@ pub async fn create_session(
         }
     };
 
-    let location = state
-        .database()
-        .collection(Location::collection_name())
-        .find_one(doc! { "_id": location_id })
+    let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+        .bind(location_id)
+        .fetch_optional(&state.db)
         .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(SessionResponse {
-            id: session_id.to_hex(),
+            id: session_id.to_string(),
             token,
             location_id: payload.location_id,
-            location_name: location
-                .as_ref()
-                .map(|l: &crate::models::Location| l.name.clone()),
-            batch_id: session.batch_id.map(|b| b.to_hex()),
+            location_name: location.as_ref().map(|l| l.name.clone()),
+            batch_id: session.batch_id.map(|b| b.to_string()),
             batch_name: None,
             description: session.description,
             is_active: true,
@@ -303,91 +296,89 @@ pub async fn get_sessions(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<GetSessionsQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.database();
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let locations: Collection<Location> = db.collection(Location::collection_name());
-    let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
-    let batches: Collection<Batch> = db.collection(Batch::collection_name());
+    let location_filter = query
+        .location_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| Uuid::parse_str(s).ok());
 
-    let mut filter_doc = doc! {};
-
-    if let Some(ref loc_id_str) = query.location_id {
-        let trimmed = loc_id_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(loc_oid) = ObjectId::parse_str(trimmed) {
-                filter_doc.insert("locationId", loc_oid);
-            }
-        }
-    }
-
-    if let Some(ref date_str) = query.date {
+    let (start_utc, end_utc) = if let Some(ref date_str) = query.date {
         let trimmed = date_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-                if let Some(start_of_day) = naive_date.and_hms_opt(0, 0, 0) {
-                    if let Some(end_of_day) = naive_date.and_hms_opt(23, 59, 59) {
-                        let start_utc =
-                            DateTime::<Utc>::from_naive_utc_and_offset(start_of_day, Utc);
-                        let end_utc = DateTime::<Utc>::from_naive_utc_and_offset(end_of_day, Utc);
-                        filter_doc.insert("createdAt", doc! {
-                            "$gte": mongodb::bson::DateTime::from_millis(start_utc.timestamp_millis()),
-                            "$lte": mongodb::bson::DateTime::from_millis(end_utc.timestamp_millis()),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let shortlinks: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-    let mut cursor = sessions
-        .find(filter_doc)
-        .sort(doc! { "createdAt": -1 })
-        .limit(DASHBOARD_PAGE_SIZE)
-        .await?;
-    let mut sessions_list = Vec::new();
-
-    while cursor.advance().await? {
-        let session = cursor.deserialize_current()?;
-
-        let location = locations
-            .find_one(doc! { "_id": session.location_id })
-            .await?;
-
-        let batch = if let Some(batch_id) = session.batch_id {
-            batches.find_one(doc! { "_id": batch_id }).await?
+        if trimmed.is_empty() {
+            (None, None)
+        } else if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+            let start = naive_date
+                .and_hms_opt(0, 0, 0)
+                .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
+            let end = naive_date
+                .and_hms_opt(23, 59, 59)
+                .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
+            (start, end)
         } else {
-            None
-        };
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
 
-        let attendance_count = attendances
-            .count_documents(doc! { "sessionId": session.id })
+    let sessions: Vec<Session> = sqlx::query_as(
+        "SELECT * FROM sessions \
+         WHERE ($1::uuid IS NULL OR location_id = $1) \
+           AND ($2::timestamptz IS NULL OR created_at >= $2) \
+           AND ($3::timestamptz IS NULL OR created_at <= $3) \
+         ORDER BY created_at DESC \
+         LIMIT $4",
+    )
+    .bind(location_filter)
+    .bind(start_utc)
+    .bind(end_utc)
+    .bind(DASHBOARD_PAGE_SIZE)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut sessions_list = Vec::with_capacity(sessions.len());
+
+    for session in sessions {
+        let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+            .bind(session.location_id)
+            .fetch_optional(&state.db)
             .await?;
 
-        let short_link = if let Some(sid) = session.id {
-            shortlinks
-                .find_one(doc! { "sessionId": sid, "isActive": true })
+        let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
+            sqlx::query_as("SELECT * FROM batches WHERE id = $1")
+                .bind(batch_id)
+                .fetch_optional(&state.db)
                 .await?
         } else {
             None
         };
 
+        let attendance_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
+                .bind(session.id)
+                .fetch_one(&state.db)
+                .await?;
+
+        let short_link: Option<ShortLink> =
+            sqlx::query_as("SELECT * FROM short_links WHERE session_id = $1 AND is_active = true")
+                .bind(session.id)
+                .fetch_optional(&state.db)
+                .await?;
+
         sessions_list.push(SessionResponse {
-            id: session
-                .id
-                .ok_or_else(|| AppError::Internal("No ID".to_string()))?
-                .to_hex(),
+            id: session.id.to_string(),
             token: String::new(),
-            location_id: session.location_id.to_hex(),
+            location_id: session.location_id.to_string(),
             location_name: location.map(|l| l.name),
-            batch_id: session.batch_id.map(|b| b.to_hex()),
+            batch_id: session.batch_id.map(|b| b.to_string()),
             batch_name: batch.map(|b| b.name),
             description: session.description,
             is_active: session.is_active,
             expires_at: session.expires_at,
             token_prefix: Some(session.token_prefix),
             created_at: Some(session.created_at),
-            attendance_count: Some(attendance_count as i64),
+            attendance_count: Some(attendance_count),
             short_code: short_link.map(|s| s.short_code),
         });
     }
@@ -400,55 +391,54 @@ pub async fn get_session(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.database();
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let locations: Collection<Location> = db.collection(Location::collection_name());
-    let batches: Collection<Batch> = db.collection(Batch::collection_name());
-    let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
-    let shortlinks: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = sessions
-        .find_one(doc! { "_id": session_id })
+    let session: Session = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let location = locations
-        .find_one(doc! { "_id": session.location_id })
+    let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+        .bind(session.location_id)
+        .fetch_optional(&state.db)
         .await?;
 
-    let batch = if let Some(batch_id) = session.batch_id {
-        batches.find_one(doc! { "_id": batch_id }).await?
+    let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
+        sqlx::query_as("SELECT * FROM batches WHERE id = $1")
+            .bind(batch_id)
+            .fetch_optional(&state.db)
+            .await?
     } else {
         None
     };
 
-    let attendance_count = attendances
-        .count_documents(doc! { "sessionId": session.id })
-        .await?;
+    let attendance_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
+            .bind(session.id)
+            .fetch_one(&state.db)
+            .await?;
 
-    let short_link = shortlinks
-        .find_one(doc! { "sessionId": session.id, "isActive": true })
-        .await?;
+    let short_link: Option<ShortLink> =
+        sqlx::query_as("SELECT * FROM short_links WHERE session_id = $1 AND is_active = true")
+            .bind(session.id)
+            .fetch_optional(&state.db)
+            .await?;
 
     Ok(Json(SessionResponse {
-        id: session
-            .id
-            .ok_or_else(|| AppError::Internal("No ID".to_string()))?
-            .to_hex(),
+        id: session.id.to_string(),
         token: String::new(),
-        location_id: session.location_id.to_hex(),
+        location_id: session.location_id.to_string(),
         location_name: location.map(|l| l.name),
-        batch_id: session.batch_id.map(|b| b.to_hex()),
+        batch_id: session.batch_id.map(|b| b.to_string()),
         batch_name: batch.map(|b| b.name),
         description: session.description,
         is_active: session.is_active,
         expires_at: session.expires_at,
         token_prefix: Some(session.token_prefix),
         created_at: Some(session.created_at),
-        attendance_count: Some(attendance_count as i64),
+        attendance_count: Some(attendance_count),
         short_code: short_link.map(|s| s.short_code),
     }))
 }
@@ -458,29 +448,12 @@ pub async fn deactivate_session(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    collection
-        .update_one(
-            doc! { "_id": session_id },
-            doc! { "$set": { "isActive": false } },
-        )
+    sqlx::query("UPDATE sessions SET is_active = false WHERE id = $1")
+        .bind(session_id)
+        .execute(&state.db)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -500,26 +473,23 @@ pub async fn delete_session(
     Path(id): Path<String>,
     Json(payload): Json<DeleteSessionRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.database();
-
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
-    let admins: Collection<Admin> = db.collection(Admin::collection_name());
-    let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
     // Parse session ID
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
     // First verify session ownership (so cross-admin deletions get 404, not 401)
-    let _session = sessions
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let _session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     // Verify password - re-fetch admin with password field
-    let admin = admins
-        .find_one(doc! { "_id": auth.id })
+    let admin: Admin = sqlx::query_as("SELECT * FROM admins WHERE id = $1")
+        .bind(auth.id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::Unauthorized("Admin not found".to_string()))?;
 
@@ -533,24 +503,12 @@ pub async fn delete_session(
     }
 
     // Find all attendance records with photos before deleting them
-    let mut attendance_cursor = attendances
-        .find(doc! {
-            "sessionId": session_id,
-            "photoPublicId": { "$exists": true, "$ne": "" }
-        })
-        .projection(doc! { "photoPublicId": 1 })
-        .await?;
-
-    let mut photo_ids_to_delete = Vec::new();
-    while attendance_cursor.advance().await? {
-        let attendance: Attendance = attendance_cursor.deserialize_current()?;
-        if !attendance.photo_public_id.is_empty() {
-            photo_ids_to_delete.push(attendance.photo_public_id.clone());
-        }
-    }
-
-    // Drop cursor to release any remaining resources
-    drop(attendance_cursor);
+    let photo_ids_to_delete: Vec<String> = sqlx::query_scalar(
+        "SELECT photo_public_id FROM attendances WHERE session_id = $1 AND photo_public_id <> ''",
+    )
+    .bind(session_id)
+    .fetch_all(&state.db)
+    .await?;
 
     // Delete photos from storage
     for public_id in &photo_ids_to_delete {
@@ -563,20 +521,24 @@ pub async fn delete_session(
     }
 
     // Delete all attendance records for this session
-    attendances
-        .delete_many(doc! { "sessionId": session_id })
+    sqlx::query("DELETE FROM attendances WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&state.db)
         .await?;
 
     // Detach any short links that pointed to this session so they can be reattached
-    short_links
-        .update_many(
-            doc! { "sessionId": session_id },
-            doc! { "$set": { "sessionId": null, "isActive": false } },
-        )
-        .await?;
+    sqlx::query(
+        "UPDATE short_links SET session_id = NULL, is_active = false WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .execute(&state.db)
+    .await?;
 
     // Delete the session
-    sessions.delete_one(doc! { "_id": session_id }).await?;
+    sqlx::query("DELETE FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
 
     Ok((
         StatusCode::OK,
@@ -592,44 +554,27 @@ pub async fn rotate_token(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = collection
-        .find_one(doc! { "_id": session_id })
+    let session: Session = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let new_token = Session::generate_token();
 
-    collection
-        .update_one(
-            doc! { "_id": session_id },
-            doc! {
-                "$set": {
-                    "tokenHash": Session::hash_token(&new_token),
-                    "tokenPrefix": Session::get_token_prefix(&new_token),
-                    "totpSecret": Session::generate_totp_secret(),
-                    "rotationCount": session.rotation_count + 1
-                }
-            },
-        )
-        .await?;
+    sqlx::query(
+        "UPDATE sessions SET token_hash = $1, token_prefix = $2, totp_secret = $3, rotation_count = $4 WHERE id = $5",
+    )
+    .bind(Session::hash_token(&new_token))
+    .bind(Session::get_token_prefix(&new_token))
+    .bind(Session::generate_totp_secret())
+    .bind(session.rotation_count + 1)
+    .bind(session_id)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({ "token": new_token })))
 }
@@ -645,42 +590,50 @@ pub async fn export_session_attendance(
     Path(id): Path<String>,
     Query(_query): Query<ExportQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.database();
-
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-    let attendances: Collection<Attendance> = db.collection(Attendance::collection_name());
-    let locations: Collection<Location> = db.collection(Location::collection_name());
-    let batches: Collection<Batch> = db.collection(Batch::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = sessions
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let location = locations
-        .find_one(doc! { "_id": session.location_id })
+    let location: Location = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+        .bind(session.location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
-    let batch = if let Some(batch_id) = session.batch_id {
-        batches.find_one(doc! { "_id": batch_id }).await?
+    let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
+        sqlx::query_as("SELECT * FROM batches WHERE id = $1")
+            .bind(batch_id)
+            .fetch_optional(&state.db)
+            .await?
     } else {
         None
     };
 
-    let mut cursor = attendances
-        .find(doc! { "sessionId": session_id })
-        .sort(doc! { "capturedAt": 1 })
-        .await?;
+    let students: Vec<Student> = if let Some(batch_id) = session.batch_id {
+        sqlx::query_as("SELECT * FROM students WHERE batch_id = $1 ORDER BY position")
+            .bind(batch_id)
+            .fetch_all(&state.db)
+            .await?
+    } else {
+        Vec::new()
+    };
 
-    let mut attendance_data: Vec<AttendanceExportRow> = Vec::new();
+    let attendances: Vec<Attendance> =
+        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at ASC")
+            .bind(session_id)
+            .fetch_all(&state.db)
+            .await?;
 
-    while cursor.advance().await? {
-        let attendance = cursor.deserialize_current()?;
-        attendance_data.push(AttendanceExportRow {
+    let mut attendance_data: Vec<AttendanceExportRow> = attendances
+        .into_iter()
+        .map(|attendance| AttendanceExportRow {
             roll_number: attendance.roll_number.clone(),
             student_name: attendance.student_name.clone(),
             verified: attendance.verified,
@@ -688,18 +641,18 @@ pub async fn export_session_attendance(
             captured_at: attendance.captured_at.to_rfc3339(),
             webauthn_verified: attendance.webauthn_verified,
             device_flag: None,
-        });
-    }
+        })
+        .collect();
 
-    if let Some(ref batch) = batch {
-        attendance_data = merge_with_batch(attendance_data, batch, &session, &location);
+    if batch.is_some() {
+        attendance_data = merge_with_batch(attendance_data, &students);
     }
 
     let excel_data = generate_excel(&attendance_data, &session, &location, batch.as_ref())?;
 
     let filename = format!(
         "attendance_{}_{}.xlsx",
-        session_id.to_hex(),
+        session_id,
         Utc::now().format("%Y%m%d_%H%M%S")
     );
 
@@ -732,9 +685,7 @@ pub struct AttendanceExportRow {
 
 fn merge_with_batch(
     attendance: Vec<AttendanceExportRow>,
-    batch: &Batch,
-    _session: &Session,
-    _location: &Location,
+    students: &[Student],
 ) -> Vec<AttendanceExportRow> {
     let mut result = Vec::new();
     let submitted: std::collections::HashMap<String, &AttendanceExportRow> = attendance
@@ -742,7 +693,7 @@ fn merge_with_batch(
         .map(|a| (a.roll_number.to_uppercase(), a))
         .collect();
 
-    for student in &batch.students {
+    for student in students {
         if let Some(att) = submitted.get(&student.roll_number.to_uppercase()) {
             result.push(AttendanceExportRow {
                 roll_number: att.roll_number.clone(),
@@ -868,11 +819,7 @@ fn generate_excel(
         .write_string(row + 4, 0, "Session ID:")
         .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
     worksheet
-        .write_string(
-            row + 4,
-            1,
-            session.id.map(|id| id.to_hex()).unwrap_or_default(),
-        )
+        .write_string(row + 4, 1, session.id.to_string())
         .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
     worksheet
         .write_string(row + 5, 0, "Description:")

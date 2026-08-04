@@ -6,18 +6,15 @@ use axum::{
 };
 use calamine::{open_workbook_from_rs, Ods, Reader, Xls, Xlsx};
 use chrono::{DateTime, Utc};
-use mongodb::{
-    bson::{doc, oid::ObjectId},
-    Collection,
-};
 use serde::Serialize;
 use std::io::Cursor;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Batch, BatchCreate, Student},
+    models::{Batch, BatchCreate, Student, StudentInput},
 };
 
 #[derive(Debug, Serialize)]
@@ -52,53 +49,73 @@ pub struct BatchDetailResponse {
     pub created_at: DateTime<Utc>,
 }
 
+/// Inserts `students` for `batch_id`, in order, inside `tx`.
+async fn insert_students(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch_id: Uuid,
+    students: &[StudentInput],
+) -> Result<()> {
+    for (position, student) in students.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO students (id, batch_id, position, name, roll_number, college_name, email) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(batch_id)
+        .bind(position as i32)
+        .bind(&student.name)
+        .bind(&student.roll_number)
+        .bind(&student.college_name)
+        .bind(&student.email)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn fetch_students(pool: &sqlx::PgPool, batch_id: Uuid) -> Result<Vec<Student>> {
+    let students = sqlx::query_as::<_, Student>(
+        "SELECT * FROM students WHERE batch_id = $1 ORDER BY position",
+    )
+    .bind(batch_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(students)
+}
+
 pub async fn create_batch(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<BatchCreate>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Batch> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Batch::collection_name());
+    let mut tx = state.db.begin().await?;
 
-    let batch = Batch {
-        id: None,
-        name: payload.name,
-        description: payload.description,
-        students: payload.students,
-        created_by: auth.id,
-        created_at: Utc::now(),
-    };
+    let batch = sqlx::query_as::<_, Batch>(
+        "INSERT INTO batches (id, name, description, created_by, created_at) \
+         VALUES ($1, $2, $3, $4, $5) RETURNING *",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&payload.name)
+    .bind(&payload.description)
+    .bind(auth.id)
+    .bind(Utc::now())
+    .fetch_one(&mut *tx)
+    .await?;
 
-    let result = collection.insert_one(&batch).await?;
-    let batch_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    insert_students(&mut tx, batch.id, &payload.students).await?;
 
-    let batch_created_at = batch.created_at;
+    tx.commit().await?;
 
     Ok((
         StatusCode::CREATED,
         Json(BatchCreateResponse {
             message: "Batch created successfully".to_string(),
             batch: BatchResponse {
-                id: batch_id.to_hex(),
+                id: batch.id.to_string(),
                 name: batch.name,
                 description: batch.description,
-                student_count: batch.students.len(),
-                created_at: batch_created_at.to_rfc3339(),
+                student_count: payload.students.len(),
+                created_at: batch.created_at.to_rfc3339(),
             },
         }),
     ))
@@ -108,42 +125,34 @@ pub async fn get_batches(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Batch> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Batch::collection_name());
-
-    let mut cursor = collection
-        .find(doc! {})
-        .sort(doc! { "createdAt": -1 })
+    let batches = sqlx::query_as::<_, Batch>("SELECT * FROM batches ORDER BY created_at DESC")
+        .fetch_all(&state.db)
         .await?;
-    let mut batches = Vec::new();
 
-    while cursor.advance().await? {
-        let batch = cursor.deserialize_current()?;
-        batches.push(BatchResponse {
-            id: batch
-                .id
-                .ok_or_else(|| AppError::Internal("No ID".to_string()))?
-                .to_hex(),
+    let counts: Vec<(Uuid, i64)> =
+        sqlx::query_as("SELECT batch_id, COUNT(*) FROM students GROUP BY batch_id")
+            .fetch_all(&state.db)
+            .await?;
+    let count_for = |batch_id: Uuid| -> usize {
+        counts
+            .iter()
+            .find(|(id, _)| *id == batch_id)
+            .map(|(_, c)| *c as usize)
+            .unwrap_or(0)
+    };
+
+    let response: Vec<BatchResponse> = batches
+        .into_iter()
+        .map(|batch| BatchResponse {
+            id: batch.id.to_string(),
+            student_count: count_for(batch.id),
             name: batch.name,
             description: batch.description,
-            student_count: batch.students.len(),
             created_at: batch.created_at.to_rfc3339(),
-        });
-    }
+        })
+        .collect();
 
-    Ok(Json(batches))
+    Ok(Json(response))
 }
 
 pub async fn get_batch(
@@ -151,36 +160,24 @@ pub async fn get_batch(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Batch> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Batch::collection_name());
-
-    let batch_id = ObjectId::parse_str(&id)
+    let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    let batch = collection
-        .find_one(doc! { "_id": batch_id })
+    let batch = sqlx::query_as::<_, Batch>("SELECT * FROM batches WHERE id = $1")
+        .bind(batch_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
 
+    let students = fetch_students(&state.db, batch_id).await?;
+
     Ok(Json(BatchDetailResponse {
-        id: batch.id.unwrap().to_hex(),
+        id: batch.id.to_string(),
         name: batch.name,
         description: batch.description,
-        students: batch.students.clone(),
-        student_count: batch.students.len(),
-        created_by: batch.created_by.to_hex(),
+        student_count: students.len(),
+        students,
+        created_by: batch.created_by.to_string(),
         created_at: batch.created_at,
     }))
 }
@@ -190,25 +187,13 @@ pub async fn delete_batch(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Batch> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Batch::collection_name());
-
-    let batch_id = ObjectId::parse_str(&id)
+    let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    collection.delete_one(doc! { "_id": batch_id }).await?;
+    sqlx::query("DELETE FROM batches WHERE id = $1")
+        .bind(batch_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Json(serde_json::json!({
         "message": "Batch deleted successfully"
@@ -276,40 +261,28 @@ pub async fn upload_batch_excel(
 
     let (students, errors) = parse_excel(&file_data)?;
 
-    let collection: Collection<Batch> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Batch::collection_name());
+    let mut tx = state.db.begin().await?;
 
-    let batch = Batch {
-        id: None,
-        name: batch_name.clone(),
-        description,
-        students: students.clone(),
-        created_by: auth.id,
-        created_at: Utc::now(),
-    };
+    let batch = sqlx::query_as::<_, Batch>(
+        "INSERT INTO batches (id, name, description, created_by, created_at) \
+         VALUES ($1, $2, $3, $4, $5) RETURNING *",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&batch_name)
+    .bind(&description)
+    .bind(auth.id)
+    .bind(Utc::now())
+    .fetch_one(&mut *tx)
+    .await?;
 
-    let result = collection.insert_one(&batch).await?;
-    let batch_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    insert_students(&mut tx, batch.id, &students).await?;
+
+    tx.commit().await?;
 
     Ok((
         StatusCode::CREATED,
         Json(UploadBatchResponse {
-            batch_id: batch_id.to_hex(),
+            batch_id: batch.id.to_string(),
             name: batch_name,
             students_imported: students.len(),
             students_skipped: 0,
@@ -349,7 +322,7 @@ fn normalize_header(s: &str) -> String {
         .collect()
 }
 
-fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
+fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     let cursor = Cursor::new(data);
     let mut raw_rows: Vec<Vec<String>> = Vec::new();
 
@@ -537,7 +510,7 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<Student>, Vec<String>)> {
 
         match (&name, &roll_number) {
             (Some(n), Some(r)) if !n.trim().is_empty() && !r.trim().is_empty() => {
-                students.push(Student {
+                students.push(StudentInput {
                     name: n.trim().to_string(),
                     roll_number: r.trim().to_string(),
                     email: email.map(|e| e.trim().to_string()),

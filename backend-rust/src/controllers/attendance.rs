@@ -5,10 +5,10 @@ use axum::{
 };
 use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
-use mongodb::{bson::doc, Collection};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     constants::*,
@@ -293,56 +293,30 @@ pub async fn validate_token(
     State(state): State<Arc<crate::AppState>>,
     Path(token): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-
     let token_hash = Session::hash_token(&token);
 
-    let session = collection
-        .find_one(doc! { "tokenHash": &token_hash, "isActive": true })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+    let session = sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE token_hash = $1 AND is_active = true",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
 
     if session.is_expired() {
         return Err(AppError::BadRequest("Session has expired".to_string()));
     }
 
-    let locations: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
-
-    let location = locations
-        .find_one(doc! { "_id": session.location_id })
+    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+        .bind(session.location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
     Ok(Json(serde_json::json!({
         "valid": true,
         "session": {
-            "_id": session.id.unwrap().to_hex(),
+            "_id": session.id.to_string(),
             "locationName": location.name,
             "expiresAt": session.expires_at
         }
@@ -354,47 +328,23 @@ pub async fn check_attendance_status(
     Path(token): Path<String>,
     Query(query): Query<StatusQuery>,
 ) -> Result<impl IntoResponse> {
-    let sessions: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-    let attendances: Collection<Attendance> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Attendance::collection_name());
-
     let token_hash = Session::hash_token(&token);
 
-    let session = sessions
-        .find_one(doc! { "tokenHash": &token_hash })
+    let session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE token_hash = $1")
+        .bind(&token_hash)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let roll_number = query.roll_number.to_uppercase();
 
-    let existing = attendances
-        .find_one(doc! { "sessionId": session.id, "rollNumber": &roll_number })
-        .await?;
+    let existing = sqlx::query_as::<_, Attendance>(
+        "SELECT * FROM attendances WHERE session_id = $1 AND roll_number = $2",
+    )
+    .bind(session.id)
+    .bind(&roll_number)
+    .fetch_optional(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({
         "alreadySubmitted": existing.is_some(),
@@ -416,27 +366,15 @@ pub async fn get_upload_url(
     State(state): State<Arc<crate::AppState>>,
     Path(token): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let sessions: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-
     let token_hash = Session::hash_token(&token);
 
-    let _session = sessions
-        .find_one(doc! { "tokenHash": &token_hash, "isActive": true })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+    let _session = sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE token_hash = $1 AND is_active = true",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
 
     let key = format!("attendance_{}.jpg", uuid::Uuid::new_v4());
 
@@ -493,6 +431,81 @@ pub async fn get_captcha(
     })))
 }
 
+/// Inserts a fully-built `Attendance` row and returns the persisted row
+/// (including anything the DB itself computed/defaulted).
+async fn insert_attendance(pool: &sqlx::PgPool, a: &Attendance) -> sqlx::Result<Attendance> {
+    sqlx::query_as::<_, Attendance>(
+        "INSERT INTO attendances (
+            id, session_id, student_name, roll_number, photo_url, photo_public_id, photo_hash,
+            photo_reuse_detected, student_latitude, student_longitude, distance_from_location,
+            ip_address, user_agent, network_provider, network_org, verified, face_detected,
+            device_fingerprint, device_fingerprint_hash, device_first_seen, totp_code, totp_valid,
+            device_flag, webauthn_credential_id, webauthn_verified, webauthn_device_type,
+            webauthn_authenticator_attachment, webauthn_counter, webauthn_replay_attack,
+            flag_reviewed, flag_reviewed_by, flag_reviewed_at, flagged, flag_reason, flag_details,
+            captured_at, gps_accuracy, gps_altitude, gps_altitude_accuracy, gps_speed, gps_heading,
+            gps_timestamp, gps_mock_location, gps_provider, gps_anomalies, gps_confidence,
+            emulator_detected, emulator_flags, integrity_checks
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36,
+            $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49
+        )
+        RETURNING *",
+    )
+    .bind(a.id)
+    .bind(a.session_id)
+    .bind(&a.student_name)
+    .bind(&a.roll_number)
+    .bind(&a.photo_url)
+    .bind(&a.photo_public_id)
+    .bind(&a.photo_hash)
+    .bind(a.photo_reuse_detected)
+    .bind(a.student_latitude)
+    .bind(a.student_longitude)
+    .bind(a.distance_from_location)
+    .bind(&a.ip_address)
+    .bind(&a.user_agent)
+    .bind(&a.network_provider)
+    .bind(&a.network_org)
+    .bind(a.verified)
+    .bind(a.face_detected)
+    .bind(&a.device_fingerprint)
+    .bind(&a.device_fingerprint_hash)
+    .bind(a.device_first_seen)
+    .bind(&a.totp_code)
+    .bind(a.totp_valid)
+    .bind(a.device_flag.clone())
+    .bind(&a.webauthn_credential_id)
+    .bind(a.webauthn_verified)
+    .bind(a.webauthn_device_type.clone())
+    .bind(a.webauthn_authenticator_attachment.clone())
+    .bind(a.webauthn_counter)
+    .bind(a.webauthn_replay_attack)
+    .bind(a.flag_reviewed)
+    .bind(a.flag_reviewed_by)
+    .bind(a.flag_reviewed_at)
+    .bind(a.flagged)
+    .bind(&a.flag_reason)
+    .bind(&a.flag_details)
+    .bind(a.captured_at)
+    .bind(a.gps_accuracy)
+    .bind(a.gps_altitude)
+    .bind(a.gps_altitude_accuracy)
+    .bind(a.gps_speed)
+    .bind(a.gps_heading)
+    .bind(a.gps_timestamp)
+    .bind(a.gps_mock_location)
+    .bind(&a.gps_provider)
+    .bind(a.gps_anomalies.clone())
+    .bind(a.gps_confidence.clone())
+    .bind(a.emulator_detected)
+    .bind(a.emulator_flags.clone())
+    .bind(a.integrity_checks.clone())
+    .fetch_one(pool)
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn submit_attendance(
     State(state): State<Arc<crate::AppState>>,
@@ -535,58 +548,41 @@ pub async fn submit_attendance(
         }
     }
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let sessions: Collection<Session> = state
-        .db
-        .database(db_name)
-        .collection(Session::collection_name());
-    let attendances: Collection<Attendance> = state
-        .db
-        .database(db_name)
-        .collection(Attendance::collection_name());
-    let locations: Collection<Location> = state
-        .db
-        .database(db_name)
-        .collection(Location::collection_name());
     let sys_config = state.get_system_config().await;
     let is_dev_bypass_all = sys_config.dev_bypass_enabled
         || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true";
 
     let token_hash = Session::hash_token(&token);
 
-    let session = match sessions
-        .find_one(doc! { "tokenHash": &token_hash, "isActive": true })
-        .await?
+    let session = match sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE token_hash = $1 AND is_active = true",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await?
     {
         Some(session) => session,
         // This handler is shared by /api/attend/:token (real session token)
         // and /api/s/:shortCode/submit (short link code), so fall back to
         // resolving `token` as a short code when it isn't a token hash match.
         None => {
-            let short_links: Collection<ShortLink> = state
-                .db
-                .database(db_name)
-                .collection(ShortLink::collection_name());
-            let link = short_links
-                .find_one(doc! { "shortCode": token.to_lowercase(), "isActive": true })
-                .await?
-                .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
+            let link = sqlx::query_as::<_, ShortLink>(
+                "SELECT * FROM short_links WHERE short_code = $1 AND is_active = true",
+            )
+            .bind(token.to_lowercase())
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
             let session_id = link
                 .session_id
                 .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?;
-            sessions
-                .find_one(doc! { "_id": session_id, "isActive": true })
-                .await?
-                .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?
+            sqlx::query_as::<_, Session>(
+                "SELECT * FROM sessions WHERE id = $1 AND is_active = true",
+            )
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Invalid or expired session".to_string()))?
         }
     };
 
@@ -597,14 +593,12 @@ pub async fn submit_attendance(
     let roll_upper = payload.roll_number.to_uppercase();
 
     // Check WebAuthn credential enrollment time for grace period
-    let webauthn_credentials: Collection<WebAuthnCredential> = state
-        .db
-        .database(db_name)
-        .collection(WebAuthnCredential::collection_name());
-
-    let webauthn_required = if let Some(credential) = webauthn_credentials
-        .find_one(doc! { "studentId": &roll_upper })
-        .await?
+    let webauthn_required = if let Some(credential) = sqlx::query_as::<_, WebAuthnCredential>(
+        "SELECT * FROM webauthn_credentials WHERE student_id = $1",
+    )
+    .bind(&roll_upper)
+    .fetch_optional(&state.db)
+    .await?
     {
         // Grace period dynamically loaded from SystemConfig
         let enrolled_at = credential.enrolled_at;
@@ -626,9 +620,13 @@ pub async fn submit_attendance(
         ));
     }
 
-    let existing = attendances
-        .find_one(doc! { "sessionId": session.id.unwrap(), "rollNumber": &roll_upper })
-        .await?;
+    let existing = sqlx::query_as::<_, Attendance>(
+        "SELECT * FROM attendances WHERE session_id = $1 AND roll_number = $2",
+    )
+    .bind(session.id)
+    .bind(&roll_upper)
+    .fetch_optional(&state.db)
+    .await?;
 
     if existing.is_some() {
         return Err(AppError::BadRequest(
@@ -636,8 +634,9 @@ pub async fn submit_attendance(
         ));
     }
 
-    let location = locations
-        .find_one(doc! { "_id": session.location_id })
+    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+        .bind(session.location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
@@ -776,10 +775,6 @@ pub async fn submit_attendance(
         .unwrap_or(true);
 
     // Compute photo hash and check for reuse
-    let photo_hashes: Collection<PhotoHash> = state
-        .db
-        .database(db_name)
-        .collection(PhotoHash::collection_name());
     let (photo_hash_value, photo_reuse_detected) = if let Some(photo_public_id) =
         &payload.photo_public_id
     {
@@ -797,28 +792,25 @@ pub async fn submit_attendance(
 
                 // Check for reuse in same session
                 let reuse_detected = if let Some(ref hash) = hash_str {
-                    if let Some(session_id) = session.id {
-                        match photo_hashes
-                            .find_one(doc! {
-                                "sessionId": session_id,
-                                "rollNumber": { "$ne": &roll_upper }
-                            })
-                            .await
-                        {
-                            Ok(Some(existing)) => {
-                                // Compare with existing hash using similarity threshold from system_config
-                                let existing_hash = existing.photo_hash;
-                                let threshold = sys_config.photo_verification.similarity_threshold;
-                                is_same_photo(hash, &existing_hash, threshold)
-                            }
-                            Ok(None) => false,
-                            Err(e) => {
-                                tracing::warn!("Failed to check photo reuse: {}", e);
-                                false
-                            }
+                    match sqlx::query_as::<_, PhotoHash>(
+                        "SELECT * FROM photo_hashes WHERE session_id = $1 AND roll_number <> $2 LIMIT 1",
+                    )
+                    .bind(session.id)
+                    .bind(&roll_upper)
+                    .fetch_optional(&state.db)
+                    .await
+                    {
+                        Ok(Some(existing)) => {
+                            // Compare with existing hash using similarity threshold from system_config
+                            let existing_hash = existing.photo_hash;
+                            let threshold = sys_config.photo_verification.similarity_threshold;
+                            is_same_photo(hash, &existing_hash, threshold)
                         }
-                    } else {
-                        false
+                        Ok(None) => false,
+                        Err(e) => {
+                            tracing::warn!("Failed to check photo reuse: {}", e);
+                            false
+                        }
                     }
                 } else {
                     false
@@ -828,7 +820,7 @@ pub async fn submit_attendance(
                     tracing::warn!(
                         "Photo reuse detected for roll_number={} in session={}",
                         roll_upper,
-                        session.id.map(|id| id.to_hex()).unwrap_or_default()
+                        session.id
                     );
                 }
 
@@ -844,8 +836,8 @@ pub async fn submit_attendance(
     };
 
     let attendance = Attendance {
-        id: None,
-        session_id: session.id.unwrap(),
+        id: Uuid::new_v4(),
+        session_id: session.id,
         student_name: payload.student_name,
         roll_number: roll_upper.clone(),
         photo_url: payload.photo_url.unwrap_or_default(),
@@ -903,38 +895,47 @@ pub async fn submit_attendance(
             .and_then(|g| g.is_mock_location)
             .unwrap_or(false),
         gps_provider: gps_metadata.and_then(|g| g.provider.clone()),
-        gps_anomalies,
+        gps_anomalies: sqlx::types::Json(gps_anomalies),
         gps_confidence,
         emulator_detected: emulator_detection.detected,
-        emulator_flags,
-        integrity_checks,
+        emulator_flags: sqlx::types::Json(emulator_flags),
+        integrity_checks: sqlx::types::Json(integrity_checks),
     };
 
-    let result = attendances.insert_one(&attendance).await?;
-    let attendance_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    let attendance = insert_attendance(&state.db, &attendance).await?;
+    let attendance_id = attendance.id;
 
-    if let (Some(ref fingerprint), Some(session_id)) = (&payload.device_fingerprint, session.id) {
+    if let Some(ref fingerprint) = payload.device_fingerprint {
         if let Err(e) =
-            record_device_success(&state, fingerprint, session_id, &roll_upper, &user_agent).await
+            record_device_success(&state, fingerprint, session.id, &roll_upper, &user_agent).await
         {
             tracing::warn!("Failed to record device success: {}", e);
         }
     }
 
     // Store photo hash for reuse detection
-    if let (Some(hash), Some(session_id)) = (photo_hash_value, session.id) {
-        let photo_hash_doc = PhotoHash {
-            id: None,
+    if let Some(hash) = photo_hash_value {
+        let photo_hash_row = PhotoHash {
+            id: Uuid::new_v4(),
             roll_number: roll_upper.clone(),
             photo_hash: hash,
-            session_id,
+            session_id: session.id,
             captured_at: Utc::now(),
             confidence: None,
         };
-        if let Err(e) = photo_hashes.insert_one(&photo_hash_doc).await {
+        let insert_result = sqlx::query(
+            "INSERT INTO photo_hashes (id, roll_number, photo_hash, session_id, captured_at, confidence)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(photo_hash_row.id)
+        .bind(&photo_hash_row.roll_number)
+        .bind(&photo_hash_row.photo_hash)
+        .bind(photo_hash_row.session_id)
+        .bind(photo_hash_row.captured_at)
+        .bind(photo_hash_row.confidence)
+        .execute(&state.db)
+        .await;
+        if let Err(e) = insert_result {
             tracing::warn!("Failed to store photo hash: {}", e);
         }
     }
@@ -952,8 +953,8 @@ pub async fn submit_attendance(
         Json(serde_json::json!({
             "message": response_message,
             "attendance": {
-                "_id": attendance_id.to_hex(),
-                "sessionId": session.id.unwrap().to_hex(),
+                "_id": attendance_id.to_string(),
+                "sessionId": session.id.to_string(),
                 "studentName": attendance.student_name,
                 "rollNumber": attendance.roll_number,
                 "verified": attendance.verified,

@@ -3,12 +3,9 @@ use axum::{
     response::IntoResponse,
     Extension,
 };
-use mongodb::{
-    bson::{doc, DateTime as BsonDateTime},
-    Collection,
-};
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
@@ -23,49 +20,36 @@ pub async fn get_flagged_attendance(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<FlaggedQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
+    let session_id_filter = match query.session_id {
+        Some(session_id_str) => {
+            let session_id = Uuid::parse_str(&session_id_str)
+                .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    use mongodb::bson::oid::ObjectId;
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
-    let mut filter = doc! { "deviceFlag": { "$ne": null } };
-
-    if let Some(session_id_str) = query.session_id {
-        let session_id = ObjectId::parse_str(&session_id_str)
-            .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
-
-        // Verify session ownership
-        sessions_collection
-            .find_one(doc! { "_id": session_id, "createdBy": auth.id })
+            // Verify session ownership
+            sqlx::query_as::<_, Session>(
+                "SELECT * FROM sessions WHERE id = $1 AND created_by = $2",
+            )
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
             .await?
             .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-        filter.insert("sessionId", session_id);
-    }
+            Some(session_id)
+        }
+        None => None,
+    };
 
-    let mut cursor = attendances_collection
-        .find(filter)
-        .sort(doc! { "capturedAt": -1 })
-        .limit(100)
-        .await?;
-
-    let mut result = Vec::new();
-    while cursor.advance().await? {
-        let attendance = cursor.deserialize_current()?;
-        result.push(attendance);
-    }
+    let result = sqlx::query_as::<_, Attendance>(
+        "SELECT * FROM attendances \
+         WHERE device_flag IS NOT NULL \
+           AND ($1::uuid IS NULL OR session_id = $1) \
+         ORDER BY captured_at DESC \
+         LIMIT 100",
+    )
+    .bind(session_id_filter)
+    .fetch_all(&state.db)
+    .await?;
 
     Ok(Json(result))
 }
@@ -88,37 +72,18 @@ pub async fn review_attendance(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(payload): Json<AttendanceReviewRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
-    let attendance_id = ObjectId::parse_str(&id)
+    let attendance_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
-    attendances_collection
-        .update_one(
-            doc! { "_id": attendance_id },
-            doc! {
-                "$set": {
-                    "flagReviewed": payload.reviewed,
-                    "flagReviewedBy": auth.id,
-                    "flagReviewedAt": BsonDateTime::now()
-                }
-            },
-        )
-        .await?;
+    sqlx::query(
+        "UPDATE attendances SET flag_reviewed = $1, flag_reviewed_by = $2, flag_reviewed_at = now() \
+         WHERE id = $3",
+    )
+    .bind(payload.reviewed)
+    .bind(auth.id)
+    .bind(attendance_id)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -135,43 +100,28 @@ pub async fn verify_attendance(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(payload): Json<VerifyRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-
-    let attendance_id = ObjectId::parse_str(&id)
+    let attendance_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
     // Get attendance and verify ownership
-    let attendance = attendances_collection
-        .find_one(doc! { "_id": attendance_id })
+    let attendance = sqlx::query_as::<_, Attendance>("SELECT * FROM attendances WHERE id = $1")
+        .bind(attendance_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Attendance not found".to_string()))?;
 
     // Verify session ownership
-    sessions_collection
-        .find_one(doc! { "_id": attendance.session_id, "createdBy": auth.id })
+    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+        .bind(attendance.session_id)
+        .bind(auth.id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    attendances_collection
-        .update_one(
-            doc! { "_id": attendance_id },
-            doc! { "$set": { "verified": payload.verified } },
-        )
+    sqlx::query("UPDATE attendances SET verified = $1 WHERE id = $2")
+        .bind(payload.verified)
+        .bind(attendance_id)
+        .execute(&state.db)
         .await?;
 
     Ok(Json(serde_json::json!({
@@ -193,23 +143,6 @@ pub async fn bulk_verify_attendance(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     Json(payload): Json<BulkVerifyRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
     if payload.ids.is_empty() {
         return Err(AppError::BadRequest(
             "ids must be a non-empty array".to_string(),
@@ -221,33 +154,36 @@ pub async fn bulk_verify_attendance(
         ));
     }
 
-    let session_oid = ObjectId::parse_str(&session_id)
+    let session_uuid = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
     // Verify session ownership
-    sessions_collection
-        .find_one(doc! { "_id": session_oid, "createdBy": auth.id })
+    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+        .bind(session_uuid)
+        .bind(auth.id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let ids: Result<Vec<ObjectId>> = payload
+    let ids: Result<Vec<Uuid>> = payload
         .ids
         .iter()
         .map(|id| {
-            ObjectId::parse_str(id)
+            Uuid::parse_str(id)
                 .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))
         })
         .collect();
     let ids = ids?;
 
-    let result = attendances_collection
-        .update_many(
-            doc! { "_id": { "$in": ids }, "sessionId": session_oid },
-            doc! { "$set": { "verified": payload.verified } },
-        )
-        .await?;
+    let result =
+        sqlx::query("UPDATE attendances SET verified = $1 WHERE id = ANY($2) AND session_id = $3")
+            .bind(payload.verified)
+            .bind(&ids)
+            .bind(session_uuid)
+            .execute(&state.db)
+            .await?;
 
     Ok(Json(
-        serde_json::json!({ "updated": result.modified_count }),
+        serde_json::json!({ "updated": result.rows_affected() }),
     ))
 }

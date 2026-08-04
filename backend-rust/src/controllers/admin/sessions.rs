@@ -4,14 +4,14 @@ use axum::{
     Extension,
 };
 use chrono::{DateTime, Utc};
-use mongodb::{bson::doc, Collection};
 use serde::Serialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Attendance, Batch, Session},
+    models::{Attendance, Batch, Session, Student},
     utils::generate_qr_token,
 };
 
@@ -29,45 +29,31 @@ pub async fn get_session_attendance(
     Extension(auth): Extension<AuthenticatedAdmin>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
-    use mongodb::bson::oid::ObjectId;
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
     // Verify session ownership
-    sessions_collection
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let _session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let mut cursor = attendances_collection
-        .find(doc! { "sessionId": session_id })
-        .sort(doc! { "capturedAt": -1 })
-        .await?;
+    let attendances: Vec<Attendance> =
+        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at DESC")
+            .bind(session_id)
+            .fetch_all(&state.db)
+            .await?;
 
-    let mut result = Vec::new();
-    while cursor.advance().await? {
-        let attendance = cursor.deserialize_current()?;
-        result.push(SessionAttendanceResponse {
+    let result: Vec<SessionAttendanceResponse> = attendances
+        .into_iter()
+        .map(|attendance| SessionAttendanceResponse {
             attendance,
             signed_photo_url: None,
-        });
-    }
+        })
+        .collect();
 
     Ok(Json(result))
 }
@@ -92,37 +78,28 @@ pub async fn get_session_stats(
     Extension(auth): Extension<AuthenticatedAdmin>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
-    use mongodb::bson::oid::ObjectId;
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = sessions_collection
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let total_attendance = attendances_collection
-        .count_documents(doc! { "sessionId": session_id })
-        .await? as i64;
-    let verified_attendance = attendances_collection
-        .count_documents(doc! { "sessionId": session_id, "verified": true })
-        .await? as i64;
+    let total_attendance: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(&state.db)
+            .await?;
+    let verified_attendance: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND verified = true",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
     Ok(Json(SessionStatsResponse {
         total_attendance,
@@ -152,36 +129,22 @@ pub async fn get_session_totp(
     Extension(auth): Extension<AuthenticatedAdmin>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = sessions_collection
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    // Generate QR token for anti-sharing using session ID hex and totp_secret
-    let qr_token = if let Some(ref totp_secret) = session.totp_secret {
-        let session_hex = session_id.to_hex();
-        Some(generate_qr_token(&session_hex, totp_secret))
-    } else {
-        None
-    };
+    // Generate QR token for anti-sharing using session ID and totp_secret
+    let qr_token = session
+        .totp_secret
+        .as_ref()
+        .map(|totp_secret| generate_qr_token(&session_id.to_string(), totp_secret));
 
     Ok(Json(TOTPResponse {
         session_id: id,
@@ -198,43 +161,24 @@ pub async fn get_session_devices(
     Extension(auth): Extension<AuthenticatedAdmin>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let devices_collection: Collection<crate::models::Device> =
-        db.collection(crate::models::Device::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    sessions_collection
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let _session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let mut cursor = devices_collection
-        .find(doc! { "sessionId": session_id })
-        .sort(doc! { "lastSeenAt": -1 })
-        .await?;
+    let devices: Vec<crate::models::Device> =
+        sqlx::query_as("SELECT * FROM devices WHERE session_id = $1 ORDER BY last_seen_at DESC")
+            .bind(session_id)
+            .fetch_all(&state.db)
+            .await?;
 
-    let mut result = Vec::new();
-    while cursor.advance().await? {
-        let device = cursor.deserialize_current()?;
-        result.push(device);
-    }
-
-    Ok(Json(result))
+    Ok(Json(devices))
 }
 
 #[derive(Debug, Serialize)]
@@ -250,56 +194,48 @@ pub async fn get_session_absent(
     Extension(auth): Extension<AuthenticatedAdmin>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-
-    use mongodb::bson::oid::ObjectId;
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let batches_collection: Collection<Batch> = db.collection(Batch::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
-    let session_id = ObjectId::parse_str(&id)
+    let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = sessions_collection
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let batch_id = match session.batch_id {
         Some(id) => id,
         None => return Ok(Json::<Vec<AbsentStudent>>(vec![])),
     };
 
-    let batch = batches_collection
-        .find_one(doc! { "_id": batch_id })
+    let _batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = $1")
+        .bind(batch_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
 
+    let students: Vec<Student> =
+        sqlx::query_as("SELECT * FROM students WHERE batch_id = $1 ORDER BY position")
+            .bind(batch_id)
+            .fetch_all(&state.db)
+            .await?;
+
     // Get present roll numbers
-    let mut cursor = attendances_collection
-        .find(doc! { "sessionId": session_id, "verified": true })
-        .projection(doc! { "rollNumber": 1 })
-        .await?;
+    let present_roll_numbers: Vec<String> = sqlx::query_scalar(
+        "SELECT roll_number FROM attendances WHERE session_id = $1 AND verified = true",
+    )
+    .bind(session_id)
+    .fetch_all(&state.db)
+    .await?;
 
-    let mut present_rolls = std::collections::HashSet::new();
-    while cursor.advance().await? {
-        let attendance = cursor.deserialize_current()?;
-        present_rolls.insert(attendance.roll_number.to_uppercase());
-    }
+    let present_rolls: std::collections::HashSet<String> = present_roll_numbers
+        .into_iter()
+        .map(|r| r.to_uppercase())
+        .collect();
 
-    let absent_students: Vec<AbsentStudent> = batch
-        .students
+    let absent_students: Vec<AbsentStudent> = students
         .into_iter()
         .filter(|s| !present_rolls.contains(&s.roll_number.to_uppercase()))
         .map(|s| AbsentStudent {

@@ -5,12 +5,9 @@ use axum::{
     Extension,
 };
 use chrono::Utc;
-use mongodb::{
-    bson::{doc, oid::ObjectId, DateTime as BsonDateTime},
-    Collection,
-};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
@@ -60,52 +57,42 @@ pub async fn create_short_link(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<CreateShortLinkRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-
-    let session_id = payload
-        .session_id
-        .and_then(|id| ObjectId::parse_str(&id).ok());
+    let session_id = payload.session_id.and_then(|id| Uuid::parse_str(&id).ok());
 
     if let Some(sid) = session_id {
-        let _session = sessions
-            .find_one(doc! { "_id": sid, "createdBy": auth.id })
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
+        let _session = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE id = $1 AND created_by = $2",
+        )
+        .bind(sid)
+        .bind(auth.id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
 
-        let existing_link = collection
-            .find_one(doc! { "sessionId": sid, "isActive": true })
-            .await?;
+        let existing_link: Option<ShortLink> =
+            sqlx::query_as("SELECT * FROM short_links WHERE session_id = $1 AND is_active = true")
+                .bind(sid)
+                .fetch_optional(&state.db)
+                .await?;
         if existing_link.is_some() {
             return Err(AppError::BadRequest(
                 "Session already has an active short link".to_string(),
             ));
         }
 
-        sessions
-            .update_one(
-                doc! { "_id": sid },
-                doc! { "$set": { "totpEnabled": true } },
-            )
-            .await?;
+        // Note: the original Mongo code also set an untyped `totpEnabled` field
+        // on the session document here. That field was never read back anywhere
+        // in the codebase (dead write) and has no corresponding column in the
+        // Postgres schema, so it's intentionally dropped.
     }
 
     let short_code = resolve_short_code(payload.short_code);
 
-    let existing = collection
-        .find_one(doc! { "shortCode": &short_code })
-        .await?;
+    let existing: Option<ShortLink> =
+        sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_optional(&state.db)
+            .await?;
     if existing.is_some() {
         return Err(AppError::BadRequest(
             "Short code already exists".to_string(),
@@ -118,35 +105,30 @@ pub async fn create_short_link(
             .map(|d| d.with_timezone(&Utc))
     });
 
-    let short_link = ShortLink {
-        id: None,
-        short_code: short_code.clone(),
-        session_id,
-        created_by: auth.id,
-        is_active: true,
-        expires_at,
-        click_count: 0,
-        last_clicked_at: None,
-        created_at: Utc::now(),
-    };
-
-    let result = collection.insert_one(&short_link).await?;
-    let link_id = result
-        .inserted_id
-        .as_object_id()
-        .ok_or_else(|| AppError::Internal("Failed to get inserted ID".to_string()))?;
+    let inserted = sqlx::query_as::<_, ShortLink>(
+        "INSERT INTO short_links (id, short_code, session_id, created_by, is_active, expires_at, click_count, last_clicked_at, created_at) \
+         VALUES ($1, $2, $3, $4, true, $5, 0, NULL, $6) RETURNING *",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&short_code)
+    .bind(session_id)
+    .bind(auth.id)
+    .bind(expires_at)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(ShortLinkResponse {
-            id: link_id.to_hex(),
-            short_code: short_code.clone(),
-            url: format!("{}/s/{}", state.config.webauthn.origin, short_code),
-            session_id: session_id.map(|id| id.to_hex()),
-            expires_at: expires_at.map(|d| d.to_rfc3339()),
-            is_active: true,
-            click_count: 0,
-            created_at: Utc::now().to_rfc3339(),
+            id: inserted.id.to_string(),
+            short_code: inserted.short_code.clone(),
+            url: format!("{}/s/{}", state.config.webauthn.origin, inserted.short_code),
+            session_id: inserted.session_id.map(|id| id.to_string()),
+            expires_at: inserted.expires_at.map(|d| d.to_rfc3339()),
+            is_active: inserted.is_active,
+            click_count: inserted.click_count,
+            created_at: inserted.created_at.to_rfc3339(),
         }),
     ))
 }
@@ -164,53 +146,44 @@ pub async fn get_short_links(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<ShortLinksQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
     let page = query.page.unwrap_or(1);
     let limit = query.limit.unwrap_or(20);
 
-    let mut filter = doc! {};
-    if let Some(sid) = &query.session_id {
-        filter.insert("sessionId", sid);
-    }
-    if let Some(active) = &query.is_active {
-        filter.insert("isActive", active == "true");
-    }
+    let session_id_filter = query
+        .session_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    let is_active_filter = query.is_active.as_deref().map(|s| s == "true");
 
-    let mut cursor = collection
-        .find(filter)
-        .sort(doc! { "createdAt": -1 })
-        .skip(((page - 1) * limit) as u64)
-        .limit(limit)
-        .await?;
-    let mut links = Vec::new();
+    let links = sqlx::query_as::<_, ShortLink>(
+        "SELECT * FROM short_links \
+         WHERE ($1::uuid IS NULL OR session_id = $1) \
+           AND ($2::bool IS NULL OR is_active = $2) \
+         ORDER BY created_at DESC \
+         OFFSET $3 LIMIT $4",
+    )
+    .bind(session_id_filter)
+    .bind(is_active_filter)
+    .bind((page - 1) * limit)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
 
-    while cursor.advance().await? {
-        let link = cursor.deserialize_current()?;
-        links.push(ShortLinkResponse {
-            id: link.id.unwrap().to_hex(),
+    let response: Vec<ShortLinkResponse> = links
+        .into_iter()
+        .map(|link| ShortLinkResponse {
+            id: link.id.to_string(),
             short_code: link.short_code.clone(),
             url: format!("{}/s/{}", state.config.webauthn.origin, link.short_code),
-            session_id: link.session_id.map(|id| id.to_hex()),
+            session_id: link.session_id.map(|id| id.to_string()),
             expires_at: link.expires_at.map(|d| d.to_rfc3339()),
             is_active: link.is_active,
             click_count: link.click_count,
             created_at: link.created_at.to_rfc3339(),
-        });
-    }
+        })
+        .collect();
 
-    Ok(Json(serde_json::json!({ "shortLinks": links })))
+    Ok(Json(serde_json::json!({ "shortLinks": response })))
 }
 
 pub async fn get_short_link_by_code(
@@ -218,22 +191,9 @@ pub async fn get_short_link_by_code(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-
-    let link = collection
-        .find_one(doc! { "shortCode": short_code.to_lowercase() })
+    let link = sqlx::query_as::<_, ShortLink>("SELECT * FROM short_links WHERE short_code = $1")
+        .bind(short_code.to_lowercase())
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
@@ -251,8 +211,9 @@ pub async fn get_short_link_by_code(
         .session_id
         .ok_or_else(|| AppError::NotFound("Short link not attached to any session".to_string()))?;
 
-    let session = sessions
-        .find_one(doc! { "_id": session_id })
+    let session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
@@ -263,14 +224,14 @@ pub async fn get_short_link_by_code(
     }
 
     Ok(Json(serde_json::json!({
-        "_id": link.id.unwrap().to_hex(),
+        "_id": link.id.to_string(),
         "shortCode": link.short_code,
-        "sessionId": session_id.to_hex(),
+        "sessionId": session_id.to_string(),
         "isActive": link.is_active,
         "expiresAt": link.expires_at,
         "clickCount": link.click_count,
         "session": {
-            "_id": session.id.unwrap().to_hex(),
+            "_id": session.id.to_string(),
             "description": session.description,
             "isActive": session.is_active,
             "expiresAt": session.expires_at
@@ -291,34 +252,23 @@ pub async fn attach_short_link(
     Path(short_code): Path<String>,
     Json(payload): Json<AttachRequest>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let short_links: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
-
-    let link = short_links
-        .find_one(doc! { "shortCode": short_code.to_lowercase() })
+    let link = sqlx::query_as::<_, ShortLink>("SELECT * FROM short_links WHERE short_code = $1")
+        .bind(short_code.to_lowercase())
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
-    let session_id = ObjectId::parse_str(&payload.session_id)
+    let session_id = Uuid::parse_str(&payload.session_id)
         .map_err(|_| AppError::BadRequest("Invalid session ID format".to_string()))?;
 
     // Check if the link is already attached to an active session
     if let Some(current_session_id) = link.session_id {
         if current_session_id != session_id {
-            if let Some(current_session) = sessions
-                .find_one(doc! { "_id": current_session_id })
-                .await?
+            if let Some(current_session) =
+                sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1")
+                    .bind(current_session_id)
+                    .fetch_optional(&state.db)
+                    .await?
             {
                 if current_session.is_active {
                     return Err(AppError::BadRequest(
@@ -329,42 +279,39 @@ pub async fn attach_short_link(
         }
     }
 
-    let _session = sessions
-        .find_one(doc! { "_id": session_id, "createdBy": auth.id })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
+    let _session =
+        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
 
-    let existing_link = short_links
-        .find_one(doc! { "sessionId": session_id, "isActive": true, "_id": { "$ne": link.id } })
-        .await?;
+    let existing_link: Option<ShortLink> = sqlx::query_as(
+        "SELECT * FROM short_links WHERE session_id = $1 AND is_active = true AND id != $2",
+    )
+    .bind(session_id)
+    .bind(link.id)
+    .fetch_optional(&state.db)
+    .await?;
 
     if let Some(existing) = existing_link {
-        short_links
-            .update_one(
-                doc! { "_id": existing.id },
-                doc! { "$set": { "sessionId": null, "isActive": false } },
-            )
+        sqlx::query("UPDATE short_links SET session_id = NULL, is_active = false WHERE id = $1")
+            .bind(existing.id)
+            .execute(&state.db)
             .await?;
     }
 
-    short_links
-        .update_one(
-            doc! { "_id": link.id },
-            doc! { "$set": { "sessionId": session_id, "isActive": true } },
-        )
-        .await?;
-
-    sessions
-        .update_one(
-            doc! { "_id": session_id },
-            doc! { "$set": { "totpEnabled": true } },
-        )
+    sqlx::query("UPDATE short_links SET session_id = $1, is_active = true WHERE id = $2")
+        .bind(session_id)
+        .bind(link.id)
+        .execute(&state.db)
         .await?;
 
     Ok(Json(serde_json::json!({
         "message": "Short link attached successfully",
         "shortCode": short_code,
-        "sessionId": session_id.to_hex()
+        "sessionId": session_id.to_string()
     })))
 }
 
@@ -373,29 +320,15 @@ pub async fn detach_short_link(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
-    let link = collection
-        .find_one(doc! { "shortCode": short_code.to_lowercase() })
+    let link = sqlx::query_as::<_, ShortLink>("SELECT * FROM short_links WHERE short_code = $1")
+        .bind(short_code.to_lowercase())
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
-    collection
-        .update_one(
-            doc! { "_id": link.id },
-            doc! { "$set": { "sessionId": null, "isActive": false } },
-        )
+    sqlx::query("UPDATE short_links SET session_id = NULL, is_active = false WHERE id = $1")
+        .bind(link.id)
+        .execute(&state.db)
         .await?;
 
     Ok(Json(
@@ -408,24 +341,12 @@ pub async fn delete_short_link(
     Extension(_auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let collection: Collection<ShortLink> = db.collection(ShortLink::collection_name());
-
-    let result = collection
-        .delete_one(doc! { "shortCode": short_code.to_lowercase() })
+    let result = sqlx::query("DELETE FROM short_links WHERE short_code = $1")
+        .bind(short_code.to_lowercase())
+        .execute(&state.db)
         .await?;
 
-    if result.deleted_count == 0 {
+    if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Short link not found".to_string()));
     }
 
@@ -438,34 +359,24 @@ pub async fn get_available_sessions(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default")
-            .split('?')
-            .next()
-            .unwrap_or("default"),
-    );
-    let sessions: Collection<Session> = db.collection(Session::collection_name());
+    let sessions = sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE is_active = true AND created_by = $1 ORDER BY created_at DESC",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
 
-    let mut cursor = sessions
-        .find(doc! { "isActive": true, "createdBy": auth.id })
-        .sort(doc! { "createdAt": -1 })
-        .await?;
-    let mut results = Vec::new();
-
-    while cursor.advance().await? {
-        let session = cursor.deserialize_current()?;
-        results.push(serde_json::json!({
-            "_id": session.id.unwrap().to_hex(),
-            "description": session.description,
-            "expiresAt": session.expires_at,
-            "createdAt": session.created_at
-        }));
-    }
+    let results: Vec<serde_json::Value> = sessions
+        .into_iter()
+        .map(|session| {
+            serde_json::json!({
+                "_id": session.id.to_string(),
+                "description": session.description,
+                "expiresAt": session.expires_at,
+                "createdAt": session.created_at
+            })
+        })
+        .collect();
 
     Ok(Json(results))
 }
@@ -474,35 +385,21 @@ pub async fn resolve_short_link(
     State(state): State<Arc<crate::AppState>>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let collection: Collection<ShortLink> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(ShortLink::collection_name());
-
-    let link = collection
-        .find_one(doc! { "shortCode": &short_code, "isActive": true })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
+    let link = sqlx::query_as::<_, ShortLink>(
+        "SELECT * FROM short_links WHERE short_code = $1 AND is_active = true",
+    )
+    .bind(&short_code)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
     if link.is_expired() {
         return Err(AppError::NotFound("Short link has expired".to_string()));
     }
 
-    collection
-        .update_one(
-            doc! { "_id": link.id },
-            doc! { "$inc": { "clickCount": 1 }, "$set": { "lastClickedAt": BsonDateTime::now() } },
-        )
+    sqlx::query("UPDATE short_links SET click_count = click_count + 1, last_clicked_at = now() WHERE id = $1")
+        .bind(link.id)
+        .execute(&state.db)
         .await?;
 
     let redirect_url = format!("{}/attend/{}", state.config.webauthn.origin, short_code);
@@ -514,66 +411,27 @@ pub async fn get_short_link_session(
     State(state): State<Arc<crate::AppState>>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let short_links: Collection<ShortLink> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(ShortLink::collection_name());
-    let sessions: Collection<Session> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Session::collection_name());
-
-    let link = short_links
-        .find_one(doc! { "shortCode": &short_code, "isActive": true })
-        .await?
-        .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
+    let link = sqlx::query_as::<_, ShortLink>(
+        "SELECT * FROM short_links WHERE short_code = $1 AND is_active = true",
+    )
+    .bind(&short_code)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
     let session_id = link
         .session_id
         .ok_or_else(|| AppError::NotFound("No session associated with this link".to_string()))?;
 
-    let session = sessions
-        .find_one(doc! { "_id": session_id })
+    let session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let locations: Collection<Location> = state
-        .db
-        .database(
-            state
-                .config
-                .mongodb_uri
-                .split('/')
-                .next_back()
-                .unwrap_or("default")
-                .split('?')
-                .next()
-                .unwrap_or("default"),
-        )
-        .collection(Location::collection_name());
-
-    let location = locations
-        .find_one(doc! { "_id": session.location_id })
+    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+        .bind(session.location_id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
@@ -584,8 +442,8 @@ pub async fn get_short_link_session(
     Ok(Json(serde_json::json!({
         "valid": true,
         "session": {
-            "sessionId": session.id.unwrap().to_hex(),
-            "locationId": session.location_id.to_hex(),
+            "sessionId": session.id.to_string(),
+            "locationId": session.location_id.to_string(),
             "locationName": location.name,
             "description": session.description,
             "expiresAt": session.expires_at,

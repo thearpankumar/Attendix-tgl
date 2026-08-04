@@ -4,12 +4,9 @@ use axum::{
     Extension,
 };
 use chrono::{DateTime, Datelike, Utc};
-use mongodb::{
-    bson::{doc, DateTime as BsonDateTime},
-    Collection,
-};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     constants::*,
@@ -220,82 +217,67 @@ pub struct LowBatch {
     pub attendance: i64,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct IdName {
+    id: Uuid,
+    name: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct BatchIdCount {
+    batch_id: Uuid,
+    cnt: i64,
+}
+
 pub async fn get_dashboard_stats(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<DashboardQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default"),
-    );
+    // Build session filter query dynamically
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM sessions WHERE created_by = ");
+    qb.push_bind(auth.id);
 
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendance_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-    let batches_collection: Collection<Batch> = db.collection(Batch::collection_name());
-    let _locations_collection: Collection<Location> = db.collection(Location::collection_name());
-
-    // Build session filter query
-    let mut session_filter = doc! { "createdBy": auth.id };
-
-    // Apply batch filter if provided
     if let Some(batch_id_str) = &query.batch_id {
         if batch_id_str != "all" {
-            use mongodb::bson::oid::ObjectId;
-            if let Ok(batch_oid) = ObjectId::parse_str(batch_id_str) {
-                session_filter.insert("batchId", batch_oid);
+            if let Ok(batch_uuid) = Uuid::parse_str(batch_id_str) {
+                qb.push(" AND batch_id = ");
+                qb.push_bind(batch_uuid);
             }
         }
     }
 
-    // Apply location filter if provided
     if let Some(location_id_str) = &query.location_id {
         if location_id_str != "all" {
-            use mongodb::bson::oid::ObjectId;
-            if let Ok(location_oid) = ObjectId::parse_str(location_id_str) {
-                session_filter.insert("locationId", location_oid);
+            if let Ok(location_uuid) = Uuid::parse_str(location_id_str) {
+                qb.push(" AND location_id = ");
+                qb.push_bind(location_uuid);
             }
         }
     }
 
-    // Apply timeframe filter if provided
-    let timeframe_range =
-        if let (Some(start_str), Some(end_str)) = (&query.start_date, &query.end_date) {
-            Some((start_str.clone(), end_str.clone()))
-        } else {
-            None
-        };
-
-    if let Some((start, end)) = &timeframe_range {
-        session_filter.insert(
-            "createdAt",
-            doc! {
-                "$gte": start,
-                "$lte": end
-            },
-        );
+    if let (Some(start_str), Some(end_str)) = (&query.start_date, &query.end_date) {
+        if let (Ok(start), Ok(end)) = (
+            DateTime::parse_from_rfc3339(start_str),
+            DateTime::parse_from_rfc3339(end_str),
+        ) {
+            qb.push(" AND created_at >= ");
+            qb.push_bind(start.with_timezone(&Utc));
+            qb.push(" AND created_at <= ");
+            qb.push_bind(end.with_timezone(&Utc));
+        }
     }
 
-    // Get sessions for this admin
-    let mut sessions_cursor = sessions_collection.find(session_filter).await?;
+    let sessions: Vec<Session> = qb.build_query_as().fetch_all(&state.db).await?;
 
-    let mut session_ids = Vec::new();
-    let mut session_batch_map: std::collections::HashMap<
-        mongodb::bson::oid::ObjectId,
-        Option<mongodb::bson::oid::ObjectId>,
-    > = std::collections::HashMap::new();
+    let mut session_ids: Vec<Uuid> = Vec::new();
+    let mut session_batch_map: std::collections::HashMap<Uuid, Option<Uuid>> =
+        std::collections::HashMap::new();
 
-    while sessions_cursor.advance().await? {
-        let session = sessions_cursor.deserialize_current()?;
-        if let Some(id) = session.id {
-            session_ids.push(id);
-            session_batch_map.insert(id, session.batch_id);
-        }
+    for session in &sessions {
+        session_ids.push(session.id);
+        session_batch_map.insert(session.id, session.batch_id);
     }
 
     // If no sessions exist, return default zeroed payload
@@ -410,40 +392,33 @@ pub async fn get_dashboard_stats(
         }));
     }
 
-    // Build attendance match filter
-    let attendance_match = doc! { "sessionId": { "$in": session_ids.clone() } };
-
     // Get total checkins, device flags, gps flags, and quarantine counts
-    let total_checkins = attendance_collection
-        .count_documents(attendance_match.clone())
-        .await? as i64;
+    let total_checkins: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1)")
+            .bind(&session_ids)
+            .fetch_one(&state.db)
+            .await?;
 
-    let device_flags_count = attendance_collection
-        .count_documents(doc! {
-            "$and": [
-                &attendance_match,
-                doc! { "deviceFlag": { "$ne": null } }
-            ]
-        })
-        .await? as i64;
+    let device_flags_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND device_flag IS NOT NULL",
+    )
+    .bind(&session_ids)
+    .fetch_one(&state.db)
+    .await?;
 
-    let gps_flags_count = attendance_collection
-        .count_documents(doc! {
-            "$and": [
-                &attendance_match,
-                doc! { "distanceFromLocation": { "$gt": 100 } }
-            ]
-        })
-        .await? as i64;
+    let gps_flags_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND distance_from_location > 100",
+    )
+    .bind(&session_ids)
+    .fetch_one(&state.db)
+    .await?;
 
-    let quarantine_count = attendance_collection
-        .count_documents(doc! {
-            "$and": [
-                &attendance_match,
-                doc! { "verified": false, "deviceFlag": { "$ne": null } }
-            ]
-        })
-        .await? as i64;
+    let quarantine_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND verified = false AND device_flag IS NOT NULL",
+    )
+    .bind(&session_ids)
+    .fetch_one(&state.db)
+    .await?;
 
     let total_anomalies = device_flags_count + gps_flags_count;
     let integrity_score = if total_checkins > 0 {
@@ -456,28 +431,29 @@ pub async fn get_dashboard_stats(
     let mut batch_session_counts: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
     for batch_id in session_batch_map.values().flatten() {
-        let key = batch_id.to_hex();
+        let key = batch_id.to_string();
         *batch_session_counts.entry(key).or_insert(0) += 1;
     }
 
     // Get unique students with their checkin counts
-    let mut attendance_cursor = attendance_collection
-        .find(doc! { "sessionId": { "$in": session_ids.clone() } })
-        .await?;
+    let attendances: Vec<Attendance> =
+        sqlx::query_as("SELECT * FROM attendances WHERE session_id = ANY($1)")
+            .bind(&session_ids)
+            .fetch_all(&state.db)
+            .await?;
 
     // Group students by roll number + name + batch
     let mut student_map: std::collections::HashMap<(String, String, String, String), i64> =
         std::collections::HashMap::new();
 
-    while attendance_cursor.advance().await? {
-        let attendance = attendance_cursor.deserialize_current()?;
+    for attendance in &attendances {
         let batch_name = session_batch_map
             .get(&attendance.session_id)
-            .and_then(|batch_id_opt| batch_id_opt.map(|id| id.to_hex()))
+            .and_then(|batch_id_opt| batch_id_opt.map(|id| id.to_string()))
             .unwrap_or_default();
         let key = (
             attendance.roll_number.to_uppercase(),
-            attendance.student_name,
+            attendance.student_name.clone(),
             batch_name.clone(),
             batch_name,
         );
@@ -490,21 +466,16 @@ pub async fn get_dashboard_stats(
     let mut rescue_list: Vec<RescueItem> = Vec::new();
 
     // Get batch names
-    let batch_ids: Vec<mongodb::bson::oid::ObjectId> =
-        session_batch_map.values().filter_map(|b| *b).collect();
+    let batch_ids: Vec<Uuid> = session_batch_map.values().filter_map(|b| *b).collect();
 
-    let mut batch_names: std::collections::HashMap<mongodb::bson::oid::ObjectId, String> =
-        std::collections::HashMap::new();
+    let mut batch_names: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
     if !batch_ids.is_empty() {
-        let mut batch_cursor = batches_collection
-            .find(doc! { "_id": { "$in": batch_ids } })
-            .projection(doc! { "_id": 1, "name": 1 })
+        let rows: Vec<IdName> = sqlx::query_as("SELECT id, name FROM batches WHERE id = ANY($1)")
+            .bind(&batch_ids)
+            .fetch_all(&state.db)
             .await?;
-        while batch_cursor.advance().await? {
-            let batch = batch_cursor.deserialize_current()?;
-            if let Some(id) = batch.id {
-                batch_names.insert(id, batch.name);
-            }
+        for row in rows {
+            batch_names.insert(row.id, row.name);
         }
     }
 
@@ -532,9 +503,9 @@ pub async fn get_dashboard_stats(
         }
 
         if is_medium_risk || is_high_risk {
-            let batch_name = mongodb::bson::oid::ObjectId::parse_str(batch_id_str)
+            let batch_name = Uuid::parse_str(batch_id_str)
                 .ok()
-                .and_then(|oid| batch_names.get(&oid).cloned())
+                .and_then(|uuid| batch_names.get(&uuid).cloned())
                 .unwrap_or_else(|| "N/A".to_string());
 
             rescue_list.push(RescueItem {
@@ -568,16 +539,16 @@ pub async fn get_dashboard_stats(
 
     // Weekly trends - get daily attendance for last 7 days
     let week_ago = Utc::now() - chrono::Duration::days(7);
-    let mut weekly_cursor = attendance_collection
-        .find(doc! {
-            "sessionId": { "$in": session_ids.clone() },
-            "capturedAt": { "$gte": BsonDateTime::from_millis(week_ago.timestamp_millis()) }
-        })
-        .await?;
+    let weekly_attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2",
+    )
+    .bind(&session_ids)
+    .bind(week_ago)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut daily_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    while weekly_cursor.advance().await? {
-        let attendance = weekly_cursor.deserialize_current()?;
+    for attendance in &weekly_attendances {
         let date_str = attendance.captured_at.format("%b %d").to_string();
         *daily_counts.entry(date_str).or_insert(0) += 1;
     }
@@ -608,85 +579,98 @@ pub async fn get_dashboard_stats(
     }
 
     // Quarantine list - flagged and unverified attendance
-    let mut quarantine_cursor = attendance_collection
-        .find(doc! {
-            "sessionId": { "$in": session_ids.clone() },
-            "verified": false,
-            "deviceFlag": { "$ne": null }
-        })
-        .sort(doc! { "capturedAt": -1 })
-        .limit(DASHBOARD_QUARANTINE_LIST_LIMIT)
-        .await?;
+    let quarantine_attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND verified = false \
+         AND device_flag IS NOT NULL ORDER BY captured_at DESC LIMIT $2",
+    )
+    .bind(&session_ids)
+    .bind(DASHBOARD_QUARANTINE_LIST_LIMIT)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut quarantine_list: Vec<QuarantineItem> = Vec::new();
-    while quarantine_cursor.advance().await? {
-        let attendance = quarantine_cursor.deserialize_current()?;
-        if let Some(id) = attendance.id {
-            quarantine_list.push(QuarantineItem {
-                _id: id.to_hex(),
-                roll_no: attendance.roll_number,
-                name: attendance.student_name,
-                flag: match attendance.device_flag.as_ref() {
-                    Some(f) => serde_json::to_string(f)
-                        .unwrap_or_else(|_| "\"Unknown\"".to_string())
-                        .trim_matches('"')
-                        .to_string(),
-                    None => "None".to_string(),
-                },
-                distance: attendance.distance_from_location.round() as i64,
-                face: if attendance.face_detected { "Y" } else { "N" }.to_string(),
-            });
-        }
+    for attendance in quarantine_attendances {
+        quarantine_list.push(QuarantineItem {
+            _id: attendance.id.to_string(),
+            roll_no: attendance.roll_number,
+            name: attendance.student_name,
+            flag: match attendance.device_flag.as_ref() {
+                Some(f) => serde_json::to_string(f)
+                    .unwrap_or_else(|_| "\"Unknown\"".to_string())
+                    .trim_matches('"')
+                    .to_string(),
+                None => "None".to_string(),
+            },
+            distance: attendance.distance_from_location.round() as i64,
+            face: if attendance.face_detected { "Y" } else { "N" }.to_string(),
+        });
     }
 
     // Low engagement batches
-    let mut batch_cursor = batches_collection
-        .find(doc! { "createdBy": auth.id })
+    let batches: Vec<Batch> = sqlx::query_as("SELECT * FROM batches WHERE created_by = $1")
+        .bind(auth.id)
+        .fetch_all(&state.db)
         .await?;
 
+    let batch_ids_for_student_count: Vec<Uuid> = batches.iter().map(|b| b.id).collect();
+    let mut batch_student_counts: std::collections::HashMap<Uuid, i64> =
+        std::collections::HashMap::new();
+    if !batch_ids_for_student_count.is_empty() {
+        let rows: Vec<BatchIdCount> = sqlx::query_as(
+            "SELECT batch_id, COUNT(*) as cnt FROM students WHERE batch_id = ANY($1) GROUP BY batch_id",
+        )
+        .bind(&batch_ids_for_student_count)
+        .fetch_all(&state.db)
+        .await?;
+        for row in rows {
+            batch_student_counts.insert(row.batch_id, row.cnt);
+        }
+    }
+
     let mut low_batches: Vec<LowBatch> = Vec::new();
-    while batch_cursor.advance().await? {
-        let batch = batch_cursor.deserialize_current()?;
-        if let Some(batch_id) = batch.id {
-            // Get sessions for this batch
-            let batch_session_count = batch_session_counts
-                .get(&batch_id.to_hex())
-                .copied()
-                .unwrap_or(0);
-            if batch_session_count == 0 {
-                continue;
-            }
+    for batch in &batches {
+        let batch_id = batch.id;
+        // Get sessions for this batch
+        let batch_session_count = batch_session_counts
+            .get(&batch_id.to_string())
+            .copied()
+            .unwrap_or(0);
+        if batch_session_count == 0 {
+            continue;
+        }
 
-            // Count attendance for this batch's sessions
-            let batch_session_ids: Vec<_> = session_batch_map
-                .iter()
-                .filter(|(_, bid)| bid.as_ref() == Some(&batch_id))
-                .map(|(sid, _)| *sid)
-                .collect();
+        // Count attendance for this batch's sessions
+        let batch_session_ids: Vec<Uuid> = session_batch_map
+            .iter()
+            .filter(|(_, bid)| bid.as_ref() == Some(&batch_id))
+            .map(|(sid, _)| *sid)
+            .collect();
 
-            if batch_session_ids.is_empty() {
-                continue;
-            }
+        if batch_session_ids.is_empty() {
+            continue;
+        }
 
-            let batch_checkins = attendance_collection
-                .count_documents(doc! { "sessionId": { "$in": batch_session_ids } })
-                .await? as i64;
+        let batch_checkins: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1)")
+                .bind(&batch_session_ids)
+                .fetch_one(&state.db)
+                .await?;
 
-            let total_possible = (batch.students.len() as i64) * batch_session_count;
-            let attendance_pct = if total_possible > 0 {
-                (batch_checkins * 100 / total_possible).min(100)
-            } else {
-                0
-            };
+        let student_count = batch_student_counts.get(&batch_id).copied().unwrap_or(0);
+        let total_possible = student_count * batch_session_count;
+        let attendance_pct = if total_possible > 0 {
+            (batch_checkins * 100 / total_possible).min(100)
+        } else {
+            0
+        };
 
-            if attendance_pct < 80 {
-                low_batches.push(LowBatch {
-                    name: batch.name,
-                    center: "Main Campus".to_string(),
-                    trainer: "System".to_string(),
-                    attendance: attendance_pct,
-                });
-            }
+        if attendance_pct < 80 {
+            low_batches.push(LowBatch {
+                name: batch.name.clone(),
+                center: "Main Campus".to_string(),
+                trainer: "System".to_string(),
+                attendance: attendance_pct,
+            });
         }
     }
 
@@ -866,52 +850,36 @@ pub async fn get_dashboard_filters(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default"),
-    );
-
-    let batches_collection: Collection<Batch> = db.collection(Batch::collection_name());
-    let locations_collection: Collection<Location> = db.collection(Location::collection_name());
-
-    let mut batches_cursor = batches_collection
-        .find(doc! { "createdBy": auth.id })
-        .sort(doc! { "name": 1 })
-        .await?;
-    let mut batches = vec![FilterOption {
+    let batches: Vec<Batch> =
+        sqlx::query_as("SELECT * FROM batches WHERE created_by = $1 ORDER BY name")
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
+    let mut batches_out = vec![FilterOption {
         value: "all".to_string(),
         label: "All Batches".to_string(),
     }];
-    while batches_cursor.advance().await? {
-        let batch = batches_cursor.deserialize_current()?;
-        if let Some(id) = batch.id {
-            batches.push(FilterOption {
-                value: id.to_hex(),
-                label: batch.name,
-            });
-        }
+    for batch in batches {
+        batches_out.push(FilterOption {
+            value: batch.id.to_string(),
+            label: batch.name,
+        });
     }
 
-    let mut locations_cursor = locations_collection
-        .find(doc! { "createdBy": auth.id })
-        .sort(doc! { "name": 1 })
-        .await?;
+    let locations: Vec<Location> =
+        sqlx::query_as("SELECT * FROM locations WHERE created_by = $1 ORDER BY name")
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
     let mut centers = vec![FilterOption {
         value: "all".to_string(),
         label: "All Centers".to_string(),
     }];
-    while locations_cursor.advance().await? {
-        let location = locations_cursor.deserialize_current()?;
-        if let Some(id) = location.id {
-            centers.push(FilterOption {
-                value: id.to_hex(),
-                label: location.name,
-            });
-        }
+    for location in locations {
+        centers.push(FilterOption {
+            value: location.id.to_string(),
+            label: location.name,
+        });
     }
 
     let today = Utc::now();
@@ -968,7 +936,7 @@ pub async fn get_dashboard_filters(
     ];
 
     Ok(Json(DashboardFilters {
-        batches,
+        batches: batches_out,
         centers,
         timeframes,
         risk_levels,
@@ -989,66 +957,48 @@ pub async fn get_recent_activity(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default"),
-    );
-
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let locations_collection: Collection<Location> = db.collection(Location::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
     // Get session IDs for this admin
-    let mut sessions_cursor = sessions_collection
-        .find(doc! { "createdBy": auth.id })
-        .projection(doc! { "_id": 1, "locationId": 1 })
+    let sessions: Vec<Session> = sqlx::query_as("SELECT * FROM sessions WHERE created_by = $1")
+        .bind(auth.id)
+        .fetch_all(&state.db)
         .await?;
-    let mut session_map = std::collections::HashMap::new();
-    while sessions_cursor.advance().await? {
-        let session = sessions_cursor.deserialize_current()?;
-        if let Some(id) = session.id {
-            session_map.insert(id, session.location_id);
-        }
+    let mut session_map: std::collections::HashMap<Uuid, Uuid> = std::collections::HashMap::new();
+    for session in &sessions {
+        session_map.insert(session.id, session.location_id);
     }
 
     if session_map.is_empty() {
         return Ok(Json::<Vec<RecentActivity>>(vec![]));
     }
 
-    let session_ids: Vec<_> = session_map.keys().cloned().collect();
+    let session_ids: Vec<Uuid> = session_map.keys().cloned().collect();
 
     // Pre-fetch all unique location IDs to avoid N+1 queries
-    let location_ids: std::collections::HashSet<_> = session_map.values().copied().collect();
-    let location_ids_vec: Vec<_> = location_ids.into_iter().collect();
+    let location_ids: std::collections::HashSet<Uuid> = session_map.values().copied().collect();
+    let location_ids_vec: Vec<Uuid> = location_ids.into_iter().collect();
 
-    let mut locations_cursor = locations_collection
-        .find(doc! { "_id": { "$in": location_ids_vec } })
+    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = ANY($1)")
+        .bind(&location_ids_vec)
+        .fetch_all(&state.db)
         .await?;
 
-    let mut location_names = std::collections::HashMap::new();
-    while locations_cursor.advance().await? {
-        let loc = locations_cursor.deserialize_current()?;
-        if let Some(id) = loc.id {
-            location_names.insert(id, loc.name);
-        }
+    let mut location_names: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
+    for loc in locations {
+        location_names.insert(loc.id, loc.name);
     }
 
     // Get recent attendance for these sessions
-    let mut attendance_cursor = attendances_collection
-        .find(doc! { "sessionId": { "$in": session_ids } })
-        .sort(doc! { "capturedAt": -1 })
-        .limit(DASHBOARD_QUARANTINE_LIST_LIMIT)
-        .await?;
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = ANY($1) ORDER BY captured_at DESC LIMIT $2",
+    )
+    .bind(&session_ids)
+    .bind(DASHBOARD_QUARANTINE_LIST_LIMIT)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut activities = Vec::new();
-    while attendance_cursor.advance().await? {
-        let attendance = attendance_cursor.deserialize_current()?;
-
+    for attendance in attendances {
         // Get location name from pre-fetched HashMap
         let location_name = session_map
             .get(&attendance.session_id)
@@ -1087,36 +1037,20 @@ pub async fn get_attendance_series(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<AttendanceSeriesQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default"),
-    );
-
     let days = query.days.unwrap_or(180).min(730);
     let from = Utc::now() - chrono::Duration::days(days);
 
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let locations_collection: Collection<Location> = db.collection(Location::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
     // Get admin's locations
-    let mut locations_cursor = locations_collection
-        .find(doc! { "createdBy": auth.id })
-        .projection(doc! { "_id": 1, "name": 1 })
+    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE created_by = $1")
+        .bind(auth.id)
+        .fetch_all(&state.db)
         .await?;
-    let mut location_ids = Vec::new();
-    let mut location_names = std::collections::HashMap::new();
-    while locations_cursor.advance().await? {
-        let loc = locations_cursor.deserialize_current()?;
-        if let Some(id) = loc.id {
-            location_ids.push(id);
-            location_names.insert(id, loc.name);
-        }
+    let mut location_ids: Vec<Uuid> = Vec::new();
+    let mut location_names: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
+    for loc in locations {
+        location_ids.push(loc.id);
+        location_names.insert(loc.id, loc.name);
     }
 
     if location_ids.is_empty() {
@@ -1124,23 +1058,23 @@ pub async fn get_attendance_series(
     }
 
     // Get sessions for these locations
-    let mut sessions_cursor = sessions_collection
-        .find(doc! { "locationId": { "$in": &location_ids } })
-        .await?;
-    let mut session_map = std::collections::HashMap::new();
-    let mut session_ids = Vec::new();
-    while sessions_cursor.advance().await? {
-        let session = sessions_cursor.deserialize_current()?;
-        if let Some(id) = session.id {
-            session_ids.push(id);
-            session_map.insert(
-                id,
-                (
-                    session.location_id,
-                    session.description.unwrap_or_else(|| "Session".to_string()),
-                ),
-            );
-        }
+    let sessions: Vec<Session> =
+        sqlx::query_as("SELECT * FROM sessions WHERE location_id = ANY($1)")
+            .bind(&location_ids)
+            .fetch_all(&state.db)
+            .await?;
+    let mut session_map: std::collections::HashMap<Uuid, (Uuid, String)> =
+        std::collections::HashMap::new();
+    let mut session_ids: Vec<Uuid> = Vec::new();
+    for session in sessions {
+        session_ids.push(session.id);
+        session_map.insert(
+            session.id,
+            (
+                session.location_id,
+                session.description.unwrap_or_else(|| "Session".to_string()),
+            ),
+        );
     }
 
     if session_ids.is_empty() {
@@ -1148,17 +1082,16 @@ pub async fn get_attendance_series(
     }
 
     // Get attendance
-    let mut attendance_cursor = attendances_collection
-        .find(doc! {
-            "sessionId": { "$in": session_ids },
-            "capturedAt": { "$gte": BsonDateTime::from_millis(from.timestamp_millis()) }
-        })
-        .sort(doc! { "capturedAt": 1 })
-        .await?;
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 ORDER BY captured_at ASC",
+    )
+    .bind(&session_ids)
+    .bind(from)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut result = Vec::new();
-    while attendance_cursor.advance().await? {
-        let attendance = attendance_cursor.deserialize_current()?;
+    for attendance in attendances {
         if let Some((location_id, description)) = session_map.get(&attendance.session_id) {
             let location = location_names
                 .get(location_id)
@@ -1199,33 +1132,17 @@ pub async fn get_sessions_by_date(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<SessionsByDateQuery>,
 ) -> Result<impl IntoResponse> {
-    let db = state.db.database(
-        state
-            .config
-            .mongodb_uri
-            .split('/')
-            .next_back()
-            .unwrap_or("default"),
-    );
-
-    let locations_collection: Collection<Location> = db.collection(Location::collection_name());
-    let sessions_collection: Collection<Session> = db.collection(Session::collection_name());
-    let attendances_collection: Collection<Attendance> =
-        db.collection(Attendance::collection_name());
-
     // Get admin's locations
-    let mut locations_cursor = locations_collection
-        .find(doc! { "createdBy": auth.id })
-        .projection(doc! { "_id": 1, "name": 1 })
+    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE created_by = $1")
+        .bind(auth.id)
+        .fetch_all(&state.db)
         .await?;
-    let mut location_ids = Vec::new();
-    let mut location_names = std::collections::HashMap::new();
-    while locations_cursor.advance().await? {
-        let loc = locations_cursor.deserialize_current()?;
-        if let Some(id) = loc.id {
-            location_ids.push(id);
-            location_names.insert(id, loc.name);
-        }
+    let mut location_ids: Vec<Uuid> = Vec::new();
+    let mut location_names: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
+    for loc in locations {
+        location_ids.push(loc.id);
+        location_names.insert(loc.id, loc.name);
     }
 
     if location_ids.is_empty() {
@@ -1233,20 +1150,20 @@ pub async fn get_sessions_by_date(
     }
 
     // Get sessions for these locations
-    let mut sessions_cursor = sessions_collection
-        .find(doc! { "locationId": { "$in": &location_ids } })
-        .await?;
-    let mut session_map = std::collections::HashMap::new();
-    let mut session_ids = Vec::new();
-    while sessions_cursor.advance().await? {
-        let session = sessions_cursor.deserialize_current()?;
-        if let Some(id) = session.id {
-            session_ids.push(id);
-            session_map.insert(
-                id,
-                (session.location_id, session.description, session.created_at),
-            );
-        }
+    let sessions: Vec<Session> =
+        sqlx::query_as("SELECT * FROM sessions WHERE location_id = ANY($1)")
+            .bind(&location_ids)
+            .fetch_all(&state.db)
+            .await?;
+    let mut session_map: std::collections::HashMap<Uuid, (Uuid, Option<String>, DateTime<Utc>)> =
+        std::collections::HashMap::new();
+    let mut session_ids: Vec<Uuid> = Vec::new();
+    for session in sessions {
+        session_ids.push(session.id);
+        session_map.insert(
+            session.id,
+            (session.location_id, session.description, session.created_at),
+        );
     }
 
     if session_ids.is_empty() {
@@ -1254,19 +1171,26 @@ pub async fn get_sessions_by_date(
     }
 
     // Get attendance for the date
-    let date_start = format!("{}T00:00:00.000Z", query.date);
-    let date_end = format!("{}T23:59:59.999Z", query.date);
+    let date_start_str = format!("{}T00:00:00.000Z", query.date);
+    let date_end_str = format!("{}T23:59:59.999Z", query.date);
+    let date_start = DateTime::parse_from_rfc3339(&date_start_str)
+        .map(|d| d.with_timezone(&Utc))
+        .map_err(|_| crate::error::AppError::BadRequest("Invalid date".to_string()))?;
+    let date_end = DateTime::parse_from_rfc3339(&date_end_str)
+        .map(|d| d.with_timezone(&Utc))
+        .map_err(|_| crate::error::AppError::BadRequest("Invalid date".to_string()))?;
 
-    let mut attendance_cursor = attendances_collection
-        .find(doc! {
-            "sessionId": { "$in": session_ids.clone() },
-            "capturedAt": { "$gte": date_start, "$lt": date_end }
-        })
-        .await?;
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 AND captured_at < $3",
+    )
+    .bind(&session_ids)
+    .bind(date_start)
+    .bind(date_end)
+    .fetch_all(&state.db)
+    .await?;
 
-    let mut count_map = std::collections::HashMap::new();
-    while attendance_cursor.advance().await? {
-        let attendance = attendance_cursor.deserialize_current()?;
+    let mut count_map: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    for attendance in &attendances {
         let count = count_map.entry(attendance.session_id).or_insert(0i64);
         *count += 1;
     }
@@ -1281,7 +1205,7 @@ pub async fn get_sessions_by_date(
                     .cloned()
                     .unwrap_or_else(|| "Unknown".to_string());
                 result.push(SessionByDateItem {
-                    session_id: session_id.to_hex(),
+                    session_id: session_id.to_string(),
                     session: description.clone().unwrap_or_else(|| "Session".to_string()),
                     description: description.clone().unwrap_or_else(|| "Session".to_string()),
                     location,
