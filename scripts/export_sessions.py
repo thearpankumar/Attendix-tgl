@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-MongoDB Attendance Exporter to Excel (.xlsx) & CSV
+PostgreSQL Attendance Exporter to Excel (.xlsx) & CSV
 
-This script connects to a MongoDB database, extracts all attendance records,
-and organizes them by session.
+This script connects to the PostgreSQL database, extracts all attendance
+records, and organizes them by session.
 
 Dependencies:
-    pip install pymongo pandas openpyxl python-dotenv
+    pip install psycopg2-binary pandas openpyxl python-dotenv
 
 Usage:
     python3 export_sessions.py [options]
@@ -32,13 +32,14 @@ except ImportError:
     print("[!] 'python-dotenv' is missing. Cannot load .env file automatically.")
     pass
 
-# MongoDB driver
+# PostgreSQL driver
 try:
-    import pymongo
+    import psycopg2
+    import psycopg2.extras
 except ImportError:
-    print("Error: 'pymongo' library is missing.")
+    print("Error: 'psycopg2-binary' library is missing.")
     print("Please install dependencies by running:")
-    print("    pip install pymongo pandas openpyxl python-dotenv")
+    print("    pip install psycopg2-binary pandas openpyxl python-dotenv")
     sys.exit(1)
 
 # Optional Pandas & OpenPyXL for styled Excel exports
@@ -58,62 +59,67 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
-def construct_mongo_uri():
+def construct_database_url():
     """
-    Constructs the MongoDB URI from individual environment variables 
-    if MONGODB_URI is not explicitly defined.
+    Constructs the Postgres connection string from individual environment
+    variables if DATABASE_URL is not explicitly defined.
     """
-    # 1. If full URI is provided, use it directly
-    uri = os.getenv("MONGODB_URI")
-    if uri:
-        return uri
+    # 1. If full URL is provided, use it directly
+    url = os.getenv("DATABASE_URL")
+    if url:
+        return url
 
-    # 2. Otherwise build from components (useful for separate user/pass in .env)
-    user = os.getenv("MONGO_USER") or os.getenv("MONGO_USERNAME")
-    password = os.getenv("MONGO_PASSWORD") or os.getenv("MONGO_PASS")
-    host = os.getenv("MONGO_HOST", "localhost")
-    port = os.getenv("MONGO_PORT", "27017")
+    # 2. Otherwise build from components
+    user = os.getenv("PG_USER", "postgres")
+    password = os.getenv("PG_PASSWORD", "postgres")
+    host = os.getenv("PG_HOST", "localhost")
+    port = os.getenv("PG_PORT", "5432")
+    db = os.getenv("PG_DATABASE", "attendance_geotag")
 
-    if user and password:
-        return f"mongodb://{user}:{password}@{host}:{port}/"
-    else:
-        return f"mongodb://{host}:{port}/"
+    return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def fetch_data(db):
+def fetch_data(conn):
     """
-    Fetch sessions, attendances, locations, and batches from MongoDB.
+    Fetch sessions, attendances, locations, and batches from Postgres.
     """
     print("[*] Fetching sessions and attendance records...")
-    
-    sessions_raw = list(db["sessions"].find({}))
-    attendances_raw = list(db["attendances"].find({}))
-    
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("SELECT id, location_id, batch_id, created_at FROM sessions")
+    sessions_raw = cur.fetchall()
+
+    cur.execute(
+        """
+        SELECT session_id, student_name, roll_number, captured_at, verified,
+               flagged, flag_reason, face_detected, webauthn_verified,
+               distance_from_location, ip_address
+        FROM attendances
+        """
+    )
+    attendances_raw = cur.fetchall()
+
     print(f"[*] Retrieved {len(sessions_raw)} sessions and {len(attendances_raw)} attendance records.")
 
     # Fetch lookup data for enrichment
-    locations_map = {}
-    batches_map = {}
+    cur.execute("SELECT id, name FROM locations")
+    locations_map = {str(row["id"]): row["name"] for row in cur.fetchall()}
 
-    if "locations" in db.list_collection_names():
-        for loc in db["locations"].find({}):
-            loc_id = str(loc["_id"])
-            locations_map[loc_id] = loc.get("name") or loc.get("locationName") or loc.get("title") or loc_id
+    cur.execute("SELECT id, name FROM batches")
+    batches_map = {str(row["id"]): row["name"] for row in cur.fetchall()}
 
-    if "batches" in db.list_collection_names():
-        for b in db["batches"].find({}):
-            b_id = str(b["_id"])
-            batches_map[b_id] = b.get("name") or b.get("batchName") or b.get("code") or b_id
+    cur.close()
 
     # Organize sessions
     sessions = {}
     for s in sessions_raw:
-        s_id = str(s.get("_id"))
-        loc_id = str(s.get("locationId") or s.get("location_id") or "")
-        batch_id = str(s.get("batchId") or s.get("batch_id") or "")
-        
-        created_at = s.get("createdAt") or s.get("created_at")
-        
+        s_id = str(s["id"])
+        loc_id = str(s["location_id"]) if s["location_id"] else ""
+        batch_id = str(s["batch_id"]) if s["batch_id"] else ""
+
+        created_at = s["created_at"]
+
         sessions[s_id] = {
             "session_id": s_id,
             "location_name": locations_map.get(loc_id, loc_id),
@@ -126,9 +132,9 @@ def fetch_data(db):
     all_attendance_rows = []
 
     for a in attendances_raw:
-        sess_id = str(a.get("sessionId") or a.get("session_id") or "")
-        
-        captured_at = a.get("capturedAt") or a.get("captured_at")
+        sess_id = str(a["session_id"])
+
+        captured_at = a["captured_at"]
         captured_at_str = captured_at.strftime("%Y-%m-%d %H:%M:%S") if isinstance(captured_at, datetime) else str(captured_at)
 
         row = {
@@ -136,20 +142,20 @@ def fetch_data(db):
             "Batch": sessions.get(sess_id, {}).get("batch_name", "Unknown"),
             "Location": sessions.get(sess_id, {}).get("location_name", "Unknown"),
             "Session Date": sessions.get(sess_id, {}).get("date", "Unknown"),
-            "Student Name": a.get("studentName") or a.get("student_name") or "N/A",
-            "Roll Number": a.get("rollNumber") or a.get("roll_number") or "N/A",
+            "Student Name": a["student_name"] or "N/A",
+            "Roll Number": a["roll_number"] or "N/A",
             "Time": captured_at_str,
-            "Verified": a.get("verified", False),
-            "Flagged": a.get("flagged", False),
-            "Flag Reason": a.get("flagReason") or a.get("flag_reason") or "",
-            "Face Detected": a.get("faceDetected") if "faceDetected" in a else a.get("face_detected", False),
-            "WebAuthn Verified": a.get("webauthnVerified") if "webauthnVerified" in a else a.get("webauthn_verified", False),
-            "Distance (m)": round(a.get("distanceFromLocation") or a.get("distance_from_location") or 0.0, 2),
-            "IP Address": a.get("ipAddress") or a.get("ip_address") or ""
+            "Verified": a["verified"] or False,
+            "Flagged": a["flagged"] or False,
+            "Flag Reason": a["flag_reason"] or "",
+            "Face Detected": a["face_detected"] if a["face_detected"] is not None else False,
+            "WebAuthn Verified": a["webauthn_verified"] if a["webauthn_verified"] is not None else False,
+            "Distance (m)": round(a["distance_from_location"] or 0.0, 2),
+            "IP Address": a["ip_address"] or ""
         }
 
         all_attendance_rows.append(row)
-        
+
         if sess_id not in attendances_by_session:
             attendances_by_session[sess_id] = []
         attendances_by_session[sess_id].append(row)
@@ -208,7 +214,7 @@ def export_to_excel(sessions, attendances_by_session, output_path):
 
         # Get attendances for this session
         sess_attendances = attendances_by_session.get(sess_id, [])
-        
+
         # We drop the redundant Session columns for the individual sheets
         display_rows = []
         for a in sess_attendances:
@@ -249,7 +255,7 @@ def export_to_excel(sessions, attendances_by_session, output_path):
                 cell.border = thin_border
                 if use_alt:
                     cell.fill = alt_fill
-                
+
                 # Alignment
                 if isinstance(value, bool) or col_idx > 3:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -283,55 +289,36 @@ def export_to_csv(rows, output_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract MongoDB Detailed Attendance data to Excel (.xlsx) / CSV")
-    parser.add_argument("--uri", "-u", help="MongoDB URI string")
-    parser.add_argument("--db", "-d", default=os.getenv("MONGO_DB", "attendance-geotag"), help="Database name")
+    parser = argparse.ArgumentParser(description="Extract PostgreSQL Detailed Attendance data to Excel (.xlsx) / CSV")
+    parser.add_argument("--url", "-u", help="PostgreSQL connection URL")
     parser.add_argument("--output", "-o", default=os.getenv("OUTPUT_FILE", "detailed_attendance.xlsx"), help="Output file path")
     parser.add_argument("--format", choices=["excel", "csv"], default="excel", help="Output file format")
 
     args = parser.parse_args()
 
-    # Determine URI: Argument > Environment Construct > Default Fallback
-    final_uri = args.uri if args.uri else construct_mongo_uri()
-    final_db = args.db
+    # Determine URL: Argument > Environment Construct > Default Fallback
+    final_url = args.url if args.url else construct_database_url()
 
     print("==================================================")
     print("   Detailed Attendance Exporter (By Session)      ")
     print("==================================================")
-    
+
     # Hide password in logs if present
-    display_uri = final_uri
-    if "@" in display_uri:
-        auth_part, host_part = display_uri.split("@", 1)
+    display_url = final_url
+    if "@" in display_url:
+        auth_part, host_part = display_url.split("@", 1)
         scheme_part = auth_part.split("://")[0]
-        display_uri = f"{scheme_part}://<HIDDEN_CREDENTIALS>@{host_part}"
-    print(f"[*] MongoDB URI   : {display_uri}")
-    print(f"[*] Database      : {final_db}")
-
-    client_kwargs = {"serverSelectionTimeoutMS": 4000}
-
-    # Handle local Replica Set discovery issue:
-    if ("localhost" in final_uri or "127.0.0.1" in final_uri) and "directConnection" not in final_uri:
-        client_kwargs["directConnection"] = True
+        display_url = f"{scheme_part}://<HIDDEN_CREDENTIALS>@{host_part}"
+    print(f"[*] Database URL  : {display_url}")
 
     try:
-        client = pymongo.MongoClient(final_uri, **client_kwargs)
-        client.admin.command("ping")
+        conn = psycopg2.connect(final_url, connect_timeout=4)
     except Exception as e:
-        if "directConnection" not in client_kwargs:
-            try:
-                client = pymongo.MongoClient(final_uri, serverSelectionTimeoutMS=4000, directConnection=True)
-                client.admin.command("ping")
-            except Exception as retry_err:
-                e = retry_err
+        print(f"\n[!] Connection failed: {e}")
+        sys.exit(1)
 
-        if not hasattr(client, 'admin') or not client:
-            print(f"\n[!] Connection failed: {e}")
-            sys.exit(1)
-
-    db = client[final_db]
-    
-    sessions, attendances_by_session, all_attendance_rows = fetch_data(db)
+    sessions, attendances_by_session, all_attendance_rows = fetch_data(conn)
+    conn.close()
 
     if not all_attendance_rows:
         print("[!] No attendance records found.")
