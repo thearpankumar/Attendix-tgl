@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::{
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Session, ShortLink},
+    models::{Location, Session, ShortLink},
 };
 
 #[derive(Debug, Deserialize)]
@@ -505,7 +505,7 @@ pub async fn resolve_short_link(
         )
         .await?;
 
-    let redirect_url = format!("{}/s/{}/session", state.config.webauthn.origin, short_code);
+    let redirect_url = format!("{}/attend/{}", state.config.webauthn.origin, short_code);
 
     Ok(([("Location", redirect_url)], StatusCode::FOUND))
 }
@@ -557,12 +557,41 @@ pub async fn get_short_link_session(
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
+    let locations: Collection<Location> = state
+        .db
+        .database(
+            state
+                .config
+                .mongodb_uri
+                .split('/')
+                .next_back()
+                .unwrap_or("default")
+                .split('?')
+                .next()
+                .unwrap_or("default"),
+        )
+        .collection(Location::collection_name());
+
+    let location = locations
+        .find_one(doc! { "_id": session.location_id })
+        .await?
+        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+
+    let sys_config = state.get_system_config().await;
+    let dev_bypass_enabled = sys_config.dev_bypass_enabled
+        || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true";
+
     Ok(Json(serde_json::json!({
-        "sessionId": session.id.unwrap().to_hex(),
-        "locationId": session.location_id.to_hex(),
-        "description": session.description,
-        "expiresAt": session.expires_at,
-        "isActive": session.is_active,
+        "valid": true,
+        "session": {
+            "sessionId": session.id.unwrap().to_hex(),
+            "locationId": session.location_id.to_hex(),
+            "locationName": location.name,
+            "description": session.description,
+            "expiresAt": session.expires_at,
+            "isActive": session.is_active,
+        },
+        "devBypassEnabled": dev_bypass_enabled,
     })))
 }
 

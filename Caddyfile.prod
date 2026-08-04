@@ -48,7 +48,7 @@ attendix.talenciaglobal.com {
 
 	# API routes - proxied to backend
 	handle /api/* {
-		reverse_proxy backend:5000 {
+		reverse_proxy backend:3000 {
 			lb_policy round_robin
 			lb_try_duration 5s
 			health_uri /health
@@ -59,15 +59,15 @@ attendix.talenciaglobal.com {
 
 	# Health check endpoints
 	handle /health {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	handle /health/ready {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	handle /health/live {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	# Admin panel (React app with client-side routing)
@@ -110,7 +110,7 @@ attendix.talenciaglobal.com {
 	# this /s/* block, no separate /webauthn/* needed).
 	handle /s/* {
 		rewrite * /api{path}
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	# 32-char hex token redirect to /attend/:token
@@ -143,7 +143,7 @@ attendix.talenciaglobal.com {
 
 	# API routes - DO NOT strip /api prefix
 	handle /api/* {
-		reverse_proxy backend:5000 {
+		reverse_proxy backend:3000 {
 			lb_policy round_robin
 			lb_try_duration 5s
 			health_uri /health
@@ -154,15 +154,15 @@ attendix.talenciaglobal.com {
 
 	# Health check endpoints
 	handle /health {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	handle /health/ready {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	handle /health/live {
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	# Admin panel (React app)
@@ -205,7 +205,7 @@ attendix.talenciaglobal.com {
 	# this /s/* block, no separate /webauthn/* needed).
 	handle /s/* {
 		rewrite * /api{path}
-		reverse_proxy backend:5000
+		reverse_proxy backend:3000
 	}
 
 	# 32-char hex token redirect to /attend/:token

@@ -113,6 +113,9 @@ services:
       - MONGODB_POOL_MAX=${MONGODB_POOL_MAX:-300}
       - MONGODB_POOL_MIN=${MONGODB_POOL_MIN:-20}
       - DEV_BYPASS_ALL=${DEV_BYPASS_ALL:-false}
+      - WEBAUTHN_RP_NAME=${WEBAUTHN_RP_NAME:-Attendix Attendance System}
+      - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-localhost}
+      - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-http://localhost}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
