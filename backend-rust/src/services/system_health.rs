@@ -24,11 +24,11 @@ pub struct HealthStatus {
 }
 
 pub async fn get_system_health(
-    db_client: &mongodb::Client,
+    db_pool: &sqlx::PgPool,
     redis_client: Option<&redis::Client>,
     storage: &crate::storage::Storage,
 ) -> crate::error::Result<SystemHealth> {
-    let db_health = check_database(db_client).await?;
+    let db_health = check_database(db_pool).await?;
     let redis_health = check_redis(redis_client).await?;
     let storage_health = check_storage(storage).await?;
 
@@ -47,11 +47,10 @@ pub async fn get_system_health(
     })
 }
 
-pub async fn check_database(db_client: &mongodb::Client) -> crate::error::Result<HealthStatus> {
+pub async fn check_database(db_pool: &sqlx::PgPool) -> crate::error::Result<HealthStatus> {
     let start = std::time::Instant::now();
 
-    let db = db_client.database("admin");
-    let result = db.run_command(mongodb::bson::doc! { "ping": 1 }).await;
+    let result = sqlx::query("SELECT 1").execute(db_pool).await;
 
     let latency = start.elapsed().as_millis() as f64;
 

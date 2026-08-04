@@ -23,8 +23,7 @@ use tokio::sync::RwLock;
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
-    pub db: mongodb::Client,
-    pub db_name: String,
+    pub db: sqlx::PgPool,
     pub redis: Option<redis::Client>,
     pub rate_limiter: Arc<RateLimiter>,
     pub session_cache: Arc<SessionCache>,
@@ -37,10 +36,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn database(&self) -> mongodb::Database {
-        self.db.database(&self.db_name)
-    }
-
     pub fn is_redis_enabled(&self) -> bool {
         self.redis.is_some() && self.rate_limiter.is_redis_enabled()
     }

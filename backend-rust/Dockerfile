@@ -9,6 +9,10 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential &
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# sqlx::migrate! embeds these files into the binary at compile time, so they
+# must be present in the builder stage even though the final image never
+# reads this directory at runtime.
+COPY migrations ./migrations
 
 # Compile application binary inside Docker environment (guarantees GLIBC compatibility)
 RUN RUSTFLAGS="-C link-arg=-lstdc++" cargo build --release

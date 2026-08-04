@@ -4,9 +4,9 @@ use std::env;
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub port: u16,
-    pub mongodb_uri: String,
-    pub mongodb_max_pool_size: u32,
-    pub mongodb_min_pool_size: u32,
+    pub database_url: String,
+    pub pg_max_pool_size: u32,
+    pub pg_min_pool_size: u32,
     pub jwt_secret: String,
     pub jwt_expire: String,
     pub admin_secret: String,
@@ -69,12 +69,13 @@ impl AppConfig {
             port: env::var("PORT")
                 .unwrap_or_else(|_| "5000".to_string())
                 .parse()?,
-            mongodb_uri: env::var("MONGODB_URI")
-                .unwrap_or_else(|_| "mongodb://localhost:27017/attendance-geotag".to_string()),
-            mongodb_max_pool_size: env::var("MONGODB_MAX_POOL_SIZE")
+            database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://postgres:postgres@localhost:5432/attendance_geotag".to_string()
+            }),
+            pg_max_pool_size: env::var("PG_MAX_POOL_SIZE")
                 .unwrap_or_else(|_| "50".to_string())
                 .parse()?,
-            mongodb_min_pool_size: env::var("MONGODB_MIN_POOL_SIZE")
+            pg_min_pool_size: env::var("PG_MIN_POOL_SIZE")
                 .unwrap_or_else(|_| "5".to_string())
                 .parse()?,
             jwt_secret,
@@ -139,13 +140,14 @@ impl Default for AppConfig {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(5000),
-            mongodb_uri: env::var("MONGODB_URI")
-                .unwrap_or_else(|_| "mongodb://localhost:27017/attendance-geotag-test".to_string()),
-            mongodb_max_pool_size: env::var("MONGODB_MAX_POOL_SIZE")
+            database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://postgres:postgres@localhost:5432/attendance_geotag_test".to_string()
+            }),
+            pg_max_pool_size: env::var("PG_MAX_POOL_SIZE")
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(50),
-            mongodb_min_pool_size: env::var("MONGODB_MIN_POOL_SIZE")
+            pg_min_pool_size: env::var("PG_MIN_POOL_SIZE")
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(5),

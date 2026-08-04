@@ -11,7 +11,7 @@ use crate::middleware::validators::ValidationError;
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Database error: {0}")]
-    Database(#[from] mongodb::error::Error),
+    Database(#[from] sqlx::Error),
 
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),

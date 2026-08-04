@@ -15,7 +15,6 @@ use attendance_geotag_backend::{
     storage::Storage,
     AppState,
 };
-use mongodb::{bson::doc, Collection};
 use tokio::sync::RwLock;
 
 fn init_tracing() {
@@ -57,14 +56,16 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::from_env()?;
 
-    tracing::info!("Connecting to MongoDB...");
+    tracing::info!("Connecting to PostgreSQL...");
 
-    let mut client_options = mongodb::options::ClientOptions::parse(&config.mongodb_uri).await?;
-    client_options.max_pool_size = Some(config.mongodb_max_pool_size);
-    client_options.min_pool_size = Some(config.mongodb_min_pool_size);
-    client_options.connect_timeout = Some(Duration::from_secs(10));
-    client_options.server_selection_timeout = Some(Duration::from_secs(5));
-    let db = mongodb::Client::with_options(client_options)?;
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(config.pg_max_pool_size)
+        .min_connections(config.pg_min_pool_size)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&config.database_url)
+        .await?;
+
+    sqlx::migrate!("./migrations").run(&db).await?;
 
     let redis_client = if !config.redis.url.is_empty() {
         match redis::Client::open(config.redis.url.as_str()) {
@@ -89,17 +90,6 @@ async fn main() -> anyhow::Result<()> {
     let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
     let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
 
-    // Extract database name once at startup
-    let db_name = config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default")
-        .to_string();
-
     // Initialize AWS SDK config with HTTP timeouts for S3 operations
     // The AWS SDK uses its own HTTP client with built-in timeouts:
     // - v2026_01_12 enables retries by default and sets 3.1s connect timeout
@@ -121,27 +111,21 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     // Load system config from DB on startup for hot-reload cache
-    let system_config_startup = {
-        let db_name_str = db_name.as_str();
-        let col: Collection<SystemConfig> = db
-            .database(db_name_str)
-            .collection(SystemConfig::collection_name());
-        match col.find_one(doc! {}).await {
-            Ok(Some(cfg)) => {
-                tracing::info!("System config loaded from DB");
-                cfg
-            }
-            Ok(None) => {
-                tracing::info!("No system config in DB, using defaults");
-                SystemConfig::default()
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to load system config from DB: {}. Using defaults.",
-                    e
-                );
-                SystemConfig::default()
-            }
+    let system_config_startup = match SystemConfig::load(&db).await {
+        Ok(Some(cfg)) => {
+            tracing::info!("System config loaded from DB");
+            cfg
+        }
+        Ok(None) => {
+            tracing::info!("No system config in DB, using defaults");
+            SystemConfig::default()
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to load system config from DB: {}. Using defaults.",
+                e
+            );
+            SystemConfig::default()
         }
     };
 
@@ -155,7 +139,6 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
-        db_name,
         redis: redis_client.map(|rc| (*rc).clone()),
         rate_limiter,
         session_cache,
@@ -166,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
         system_config: Arc::new(RwLock::new(system_config_startup)),
     });
 
-    create_indexes(&state).await?;
+    spawn_webauthn_challenge_cleanup(state.db.clone());
 
     let cors_origins: Vec<axum::http::HeaderValue> = config
         .cors_origin
@@ -260,193 +243,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ensure_index<T>(
-    coll: &mongodb::Collection<T>,
-    index: mongodb::IndexModel,
-) -> anyhow::Result<()>
-where
-    T: Send + Sync,
-{
-    if let Err(e) = coll.create_index(index.clone()).await {
-        if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind {
-            if cmd_err.code == 85 {
-                let name = if let Some(ref name) = index.options.as_ref().and_then(|o| o.name.clone()) {
-                    name.clone()
-                } else {
-                    index
-                        .keys
-                        .iter()
-                        .map(|(k, v)| {
-                            let dir = match v {
-                                mongodb::bson::Bson::Int32(n) => n.to_string(),
-                                mongodb::bson::Bson::Int64(n) => n.to_string(),
-                                _ => "1".to_string(),
-                            };
-                            format!("{}_{}", k, dir)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("_")
-                };
-
-                if !name.is_empty() {
-                    tracing::warn!("Dropping conflicting index '{}' to update index options", name);
-                    let _ = coll.drop_index(&name).await;
-                    coll.create_index(index).await?;
-                    return Ok(());
+/// Mongo's TTL index used to auto-expire `webauthnchallenges` rows 300s after
+/// `expiresAt`. Postgres has no native TTL index, so a periodic sweep replaces it.
+fn spawn_webauthn_challenge_cleanup(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            match sqlx::query(
+                "DELETE FROM webauthn_challenges WHERE expires_at < now() - INTERVAL '300 seconds'",
+            )
+            .execute(&pool)
+            .await
+            {
+                Ok(result) => {
+                    if result.rows_affected() > 0 {
+                        tracing::debug!(
+                            "Cleaned up {} expired webauthn challenges",
+                            result.rows_affected()
+                        );
+                    }
                 }
+                Err(e) => tracing::warn!("Failed to clean up expired webauthn challenges: {}", e),
             }
         }
-        return Err(e.into());
-    }
-    Ok(())
-}
-
-async fn create_indexes(
-    state: &Arc<AppState>,
-) -> anyhow::Result<()> {
-    use mongodb::bson::doc;
-    use mongodb::IndexModel;
-
-    let db = state.database();
-
-    let admins: mongodb::Collection<attendance_geotag_backend::models::Admin> =
-        db.collection("admins");
-
-    ensure_index(
-        &admins,
-        IndexModel::builder()
-            .keys(doc! { "username": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .unique(true)
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    ensure_index(
-        &admins,
-        IndexModel::builder()
-            .keys(doc! { "email": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .unique(true)
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    let sessions: mongodb::Collection<attendance_geotag_backend::models::Session> =
-        db.collection("sessions");
-
-    ensure_index(
-        &sessions,
-        IndexModel::builder()
-            .keys(doc! { "createdBy": 1, "createdAt": -1 })
-            .build(),
-    )
-    .await?;
-
-    let attendances: mongodb::Collection<attendance_geotag_backend::models::Attendance> =
-        db.collection("attendances");
-
-    ensure_index(
-        &attendances,
-        IndexModel::builder()
-            .keys(doc! { "sessionId": 1, "rollNumber": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .unique(true)
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    ensure_index(
-        &attendances,
-        IndexModel::builder()
-            .keys(doc! { "sessionId": 1, "capturedAt": -1 })
-            .build(),
-    )
-    .await?;
-
-    ensure_index(
-        &attendances,
-        IndexModel::builder()
-            .keys(doc! { "flagged": 1, "sessionId": 1 })
-            .build(),
-    )
-    .await?;
-
-    let webauthn_challenges: mongodb::Collection<
-        attendance_geotag_backend::models::WebAuthnChallenge,
-    > = db.collection("webauthnchallenges");
-
-    ensure_index(
-        &webauthn_challenges,
-        IndexModel::builder()
-            .keys(doc! { "expiresAt": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .expire_after(std::time::Duration::from_secs(300))
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    let credentials: mongodb::Collection<attendance_geotag_backend::models::WebAuthnCredential> =
-        db.collection("webauthncredentials");
-
-    ensure_index(
-        &credentials,
-        IndexModel::builder()
-            .keys(doc! { "studentId": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .unique(true)
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    ensure_index(
-        &credentials,
-        IndexModel::builder()
-            .keys(doc! { "credentialId": 1 })
-            .options(
-                mongodb::options::IndexOptions::builder()
-                    .unique(true)
-                    .build(),
-            )
-            .build(),
-    )
-    .await?;
-
-    let devices: mongodb::Collection<attendance_geotag_backend::models::Device> =
-        db.collection("devices");
-
-    ensure_index(
-        &devices,
-        IndexModel::builder()
-            .keys(doc! { "fingerprintHash": 1, "sessionId": 1 })
-            .build(),
-    )
-    .await?;
-
-    ensure_index(
-        &devices,
-        IndexModel::builder()
-            .keys(doc! { "boundToStudent": 1, "sessionId": 1 })
-            .build(),
-    )
-    .await?;
-
-    tracing::info!("Database indexes created successfully");
-
-    Ok(())
+    });
 }
