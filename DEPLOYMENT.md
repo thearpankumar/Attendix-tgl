@@ -2,8 +2,6 @@
 
 ## Architecture Overview
 
-This system is designed to handle **1000+ concurrent users** with the following architecture:
-
 ```
 ┌─────────────────┐
 │   Caddy (SSL)   │
@@ -15,17 +13,24 @@ This system is designed to handle **1000+ concurrent users** with the following 
     ▼    ▼    ▼    ▼
 ┌──────┐ ┌──────┐ ┌──────┐
 │ API1 │ │ API2 │ │ API3 │
-│ PM2  │ │ PM2  │ │ PM2  │
+│ Rust │ │ Rust │ │ Rust │
 └──┬───┘ └──┬───┘ └──┬───┘
    │        │        │
    └────────┴────────┘
         │        │
   ┌─────┴────┐ ┌─┴────┐
-  │ MongoDB  │ │Redis │
-  │ Replica  │ │Cache │
-  │ Set (3)  │ │      │
-  └──────────┘ └──────┘
+  │ Postgres │ │Redis │
+  │          │ │Cache │
+  └────┬─────┘ └──────┘
+       │
+  ┌────┴─────┐
+  │ pg-backup│  nightly pg_dump → S3
+  └──────────┘
 ```
+
+The backend is a single Rust/axum service (`backend-rust/`), run as multiple
+container replicas behind Caddy — there is no PM2/process-manager layer, each
+container is one process.
 
 ---
 
@@ -52,20 +57,6 @@ chmod +x setup.sh
 ./setup.sh reset     # Reset and remove all volumes
 ./setup.sh help      # Show all options
 ```
-
-### Setup Script Capabilities
-
-| Feature | Description |
-|---------|-------------|
-| **Cross-platform** | Works on Linux (Ubuntu/Debian) and macOS (Intel & Apple Silicon) |
-| **Docker Installation** | Installs Docker Engine (Linux) or Docker Desktop (macOS) |
-| **Node.js Installation** | Installs Node.js 22 LTS via NVM |
-| **Version Detection** | Detects existing installations and warns without overwriting |
-| **Dependency Installation** | Installs npm packages for backend and frontend |
-| **Environment Setup** | Copies .env.example to .env |
-| **Docker Management** | Start, stop, logs, status, reset operations |
-| **Development Servers** | Run backend (nodemon) and frontend (Vite) dev servers |
-| **Testing** | Run backend tests and linter |
 
 ### Command Line Options
 
@@ -124,7 +115,7 @@ cd Attendence-GEOTAG-System
 The `.env` file is already configured with:
 - ✅ AWS S3 credentials
 - ✅ Redis connection
-- ✅ MongoDB settings
+- ✅ Postgres settings
 - ✅ Development mode (localhost)
 
 ### 2. Start the System
@@ -153,20 +144,23 @@ docker-compose ps
 
 ## 📊 Services Breakdown
 
-### Backend (3 replicas with PM2)
-- **Image**: Node.js 18 Alpine
-- **Process Manager**: PM2 (2 workers per container)
-- **Total Workers**: 6 Node.js processes
-- **Port**: 5000 (internal)
+### Backend (multiple replicas)
+- **Image**: Rust (axum), built from `backend-rust/Dockerfile`
+- **Port**: 5000 (internal, 3000 in dev compose)
 - **Health Check**: `/health` endpoint
+- Runs `sqlx` migrations (`backend-rust/migrations/`) automatically on startup
 
-### MongoDB Replica Set
-- **3 Nodes**:
-  - `mongo1`: Primary candidate (port 27017)
-  - `mongo2`: Secondary (port 27018)
-  - `mongo3`: Arbiter (port 27019)
-- **Automatic failover**: ✅
-- **Data redundancy**: 2 copies
+### Postgres
+- **Single instance**, `postgres:16-alpine`, data on the `postgres_data` volume
+- Backed up nightly to S3 by the `pg-backup` sidecar (see **Backups** below)
+
+### pg-backup
+- Built from `scripts/backup/` (`postgres:16-alpine` + `aws-cli` + busybox `crond`)
+- Runs `pg_dump` on `BACKUP_CRON_SCHEDULE` (default `0 2 * * *`, i.e. nightly at 02:00 UTC)
+  and uploads the compressed dump to `s3://$AWS_S3_BUCKET/postgres-backups/`
+- Local dumps older than `BACKUP_RETENTION_DAYS` (default 30) are pruned from
+  the container's own scratch volume; long-term retention is controlled by an
+  S3 lifecycle rule (one-time setup, see **Backups** below)
 
 ### Redis Cache
 - **Image**: Redis 7 Alpine
@@ -204,6 +198,61 @@ docker-compose ps
 
 ---
 
+## 💾 Backups
+
+### How it works
+
+The `pg-backup` service (`scripts/backup/`) runs alongside `postgres` in
+production (`docker-compose.postgres.yml`). On its cron schedule it:
+
+1. Runs `pg_dump -Fc` (compressed, custom format) against the `postgres` service
+2. Uploads the dump to `s3://$AWS_S3_BUCKET/postgres-backups/attendance_<timestamp>.dump`
+   — the same bucket already used for attendance photos, under its own prefix
+3. Deletes local dumps in its scratch volume older than `BACKUP_RETENTION_DAYS`
+
+Trigger a backup manually (e.g. before a risky migration):
+
+```bash
+docker exec attendance-pg-backup /usr/local/bin/backup.sh
+```
+
+### One-time setup: S3 lifecycle rule
+
+Nothing in this repo automates bucket lifecycle policy (there's no
+Terraform/IaC here) — set it once per environment so old backups actually
+expire instead of accumulating forever:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "$AWS_S3_BUCKET" \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "expire-postgres-backups",
+      "Filter": { "Prefix": "postgres-backups/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 90 }
+    }]
+  }'
+```
+
+### Restoring from a backup
+
+Restore is a manual, deliberate operation — not automated by this repo.
+
+```bash
+# 1. Pull the dump down from S3
+aws s3 cp s3://$AWS_S3_BUCKET/postgres-backups/attendance_<timestamp>.dump ./restore.dump
+
+# 2a. Restore into a fresh/empty database (recommended — verify before swapping over)
+docker exec -i attendance-postgres createdb -U "$POSTGRES_USER" attendance_geotag_restore
+docker exec -i attendance-postgres pg_restore -U "$POSTGRES_USER" -d attendance_geotag_restore < ./restore.dump
+
+# 2b. Or restore in place, replacing existing data (destructive — stop the backend first)
+docker exec -i attendance-postgres pg_restore -U "$POSTGRES_USER" -d attendance_geotag --clean --if-exists < ./restore.dump
+```
+
+---
+
 ## 🔧 Configuration
 
 ### Development vs Production
@@ -212,7 +261,7 @@ docker-compose ps
 - `NODE_ENV=development`
 - Single backend replica (override)
 - Localhost HTTP (no SSL)
-- Direct MongoDB connection
+- Direct Postgres connection (`postgres` service in `docker-compose.yml`)
 
 #### Production Mode
 1. Update `.env`:
@@ -229,14 +278,15 @@ docker-compose ps
    docker-compose up -d --build
    ```
 
-> **Note:** `docker-compose.prod.yml` (the fuller prod stack with a MongoDB
-> replica set, resource limits, and per-service replicas) is a separate,
-> currently-unused config. Its MongoDB and Caddy/fail2ban services live in
-> their own files on purpose — `docker-compose.mongo.yml` and
+> **Note:** `docker-compose.prod.yml` (the fuller prod stack with resource
+> limits and per-service replicas) is a separate config from the dev compose
+> above. Its Postgres/backup and Caddy/fail2ban services live in their own
+> files on purpose — `docker-compose.postgres.yml` and
 > `docker-compose.caddy.yml` — so routine app changes never have the DB or
 > reverse-proxy config in view. Run all three together:
 > ```bash
-> docker compose -f docker-compose.prod.yml -f docker-compose.mongo.yml -f docker-compose.caddy.yml up -d --build
+> aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+> docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d --build
 > ```
 
 ---
@@ -249,8 +299,8 @@ docker-compose ps
 # Backend health
 curl http://localhost/health
 
-# MongoDB replica set status
-docker exec attendance-mongo1 mongosh --eval "rs.status().members.forEach((m,i) => print(i+1, m.name, m.stateStr))"
+# Postgres readiness
+docker exec attendance-postgres pg_isready -U postgres
 
 # Redis connection
 docker exec attendance-redis redis-cli ping
@@ -284,8 +334,11 @@ docker-compose logs -f backend
 docker-compose logs -f redis
 docker-compose logs -f caddy
 
-# MongoDB logs
-docker logs attendance-mongo1
+# Postgres logs
+docker logs attendance-postgres
+
+# Backup job logs
+docker logs attendance-pg-backup
 ```
 
 ### Check Resource Usage
@@ -293,26 +346,23 @@ docker logs attendance-mongo1
 ```bash
 # Container stats
 docker stats
-
-# Backend logs (PM2)
-docker exec attendance-backend-1 pm2 logs
 ```
 
 ---
 
 ## 🔍 Troubleshooting
 
-### MongoDB Replica Set Not Initializing
+### Postgres Not Starting / Migrations Failing
 
 ```bash
-# Check if init script ran
-docker-compose logs mongodb-init
+# Check Postgres logs
+docker-compose logs postgres
 
-# Manually initialize
-docker exec attendance-mongo1 mongosh --file /init-mongo.js
+# Check backend logs (sqlx migrations run at backend startup)
+docker-compose logs backend
 
-# Check status
-docker exec attendance-mongo1 mongosh --eval "rs.status()"
+# Connect directly to inspect state
+docker exec -it attendance-postgres psql -U postgres -d attendance_geotag
 ```
 
 ### Redis Connection Issues
@@ -331,11 +381,21 @@ docker-compose logs redis
 # Check backend logs
 docker-compose logs backend
 
-# Check MongoDB connection
-docker exec attendance-backend-1 curl mongodb://mongo1:27017
+# Check Postgres connection
+docker exec attendance-backend-1 pg_isready -h postgres -U postgres
 
 # Check Redis connection
 docker exec attendance-backend-1 curl redis://redis:6379
+```
+
+### Backup Job Not Running
+
+```bash
+# Confirm the container is up and the crontab rendered correctly
+docker exec attendance-pg-backup cat /etc/crontabs/root
+
+# Trigger a manual run to see the actual error
+docker exec attendance-pg-backup /usr/local/bin/backup.sh
 ```
 
 ---
@@ -376,22 +436,27 @@ docker-compose up -d --scale backend=5
 | `NODE_ENV` | development | Environment mode |
 | `DOMAIN` | localhost | Domain for SSL |
 | `STORAGE_PROVIDER` | s3 | Storage backend |
-| `AWS_S3_BUCKET` | - | S3 bucket name |
+| `AWS_S3_BUCKET` | - | S3 bucket name (photos + Postgres backups) |
 | `AWS_ACCESS_KEY_ID` | - | AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | - | AWS secret key |
-| `MONGODB_POOL_MAX` | 300 | Connection pool max |
-| `MONGODB_POOL_MIN` | 20 | Connection pool min |
+| `POSTGRES_DB` | attendance_geotag | Postgres database name |
+| `POSTGRES_USER` | postgres | Postgres user |
+| `POSTGRES_PASSWORD` | - | Postgres password |
+| `PG_MAX_POOL_SIZE` | 300 | Connection pool max |
+| `PG_MIN_POOL_SIZE` | 20 | Connection pool min |
+| `BACKUP_CRON_SCHEDULE` | `0 2 * * *` | pg-backup cron schedule |
+| `BACKUP_RETENTION_DAYS` | 30 | Local dump retention inside the pg-backup container |
 | `REDIS_URL` | redis://redis:6379 | Redis connection |
 
 ---
 
 ## 🎯 Performance Tuning
 
-### MongoDB
+### Postgres
 
 - Connection pool: 300 (already optimized)
-- Indexed queries on `sessionId` + `rollNumber`
-- Replica set read preferences configurable
+- Indexed queries on `session_id` + `roll_number`, plus the other indexes in
+  `backend-rust/migrations/0001_initial_schema.sql`
 
 ### Redis
 
@@ -401,8 +466,8 @@ docker-compose up -d --scale backend=5
 
 ### Backend
 
-- PM2 cluster: 2 workers per container
-- Max memory: 1.5GB per container
+- Multiple container replicas behind Caddy
+- Max memory: 2GB per container (see `docker-compose.prod.yml`)
 - Auto-restart on crash
 
 ---
