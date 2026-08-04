@@ -1,13 +1,12 @@
 use crate::constants::ROLE_ADMIN;
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Admin {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub username: String,
     pub email: String,
     pub password: String,
@@ -15,9 +14,7 @@ pub struct Admin {
     pub role: String,
     #[serde(default)]
     pub failed_login_attempts: i32,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub lock_until: Option<DateTime<Utc>>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -33,7 +30,7 @@ pub enum PasswordHashType {
 }
 
 impl Admin {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "admins"
     }
 

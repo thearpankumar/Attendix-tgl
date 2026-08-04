@@ -1,8 +1,8 @@
 use crate::constants::{WEBAUTHN_AUTHENTICATOR_TYPE_MULTI, WEBAUTHN_DEVICE_UNKNOWN};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 fn serialize_bytes<S>(bytes: &[u8], serializer: S) -> std::result::Result<S::Ok, S::Error>
 where
@@ -19,11 +19,10 @@ where
     BASE64.decode(s).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct WebAuthnCredential {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub student_id: String,
     pub credential_id: String,
     #[serde(
@@ -31,34 +30,32 @@ pub struct WebAuthnCredential {
         deserialize_with = "deserialize_bytes"
     )]
     pub public_key: Vec<u8>,
+    /// WebAuthn signature counters are u32 on the wire; stored as i64 since
+    /// Postgres has no unsigned integer type.
     #[serde(default)]
-    pub counter: u32,
+    pub counter: i64,
     #[serde(default = "default_device_label")]
     pub device_label: String,
     #[serde(default = "default_device_type")]
     pub device_type: String,
     #[serde(default)]
     pub transports: Vec<String>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub enrolled_at: DateTime<Utc>,
     pub enrolled_ip_address: Option<String>,
     pub enrolled_user_agent: Option<String>,
-    pub created_by_admin_id: Option<ObjectId>,
+    pub created_by_admin_id: Option<Uuid>,
     #[serde(default)]
-    pub sign_count: u32,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
+    pub sign_count: i64,
     pub last_used_at: Option<DateTime<Utc>>,
-    pub last_session_id: Option<ObjectId>,
+    pub last_session_id: Option<Uuid>,
     #[serde(default)]
     pub is_suspended: bool,
     pub suspended_reason: Option<String>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub suspended_at: Option<DateTime<Utc>>,
-    pub suspended_by: Option<ObjectId>,
+    pub suspended_by: Option<Uuid>,
     pub aaguid: Option<String>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub reset_at: Option<DateTime<Utc>>,
-    pub reset_by: Option<ObjectId>,
+    pub reset_by: Option<Uuid>,
 }
 
 fn default_device_label() -> String {
@@ -70,8 +67,8 @@ fn default_device_type() -> String {
 }
 
 impl WebAuthnCredential {
-    pub fn collection_name() -> &'static str {
-        "webauthncredentials"
+    pub fn table_name() -> &'static str {
+        "webauthn_credentials"
     }
 }
 

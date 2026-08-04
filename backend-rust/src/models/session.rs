@@ -1,27 +1,24 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-    pub location_id: ObjectId,
-    pub batch_id: Option<ObjectId>,
+    pub id: Uuid,
+    pub location_id: Uuid,
+    pub batch_id: Option<Uuid>,
     pub token_hash: String,
     pub token_prefix: String,
     pub description: Option<String>,
-    pub created_by: ObjectId,
+    pub created_by: Uuid,
     #[serde(default = "default_true")]
     pub is_active: bool,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub expires_at: DateTime<Utc>,
     #[serde(default)]
     pub rotation_count: i32,
     pub totp_secret: Option<String>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -30,7 +27,7 @@ fn default_true() -> bool {
 }
 
 impl Session {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "sessions"
     }
 
@@ -68,11 +65,11 @@ impl Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCreate {
-    pub location_id: ObjectId,
-    pub batch_id: Option<ObjectId>,
+    pub location_id: Uuid,
+    pub batch_id: Option<Uuid>,
     pub description: Option<String>,
     pub expires_at: DateTime<Utc>,
-    pub created_by: ObjectId,
+    pub created_by: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

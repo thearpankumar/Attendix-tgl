@@ -1,26 +1,23 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Flag {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub flag_type: String,
-    pub admin_id: Option<ObjectId>,
-    pub student_id: Option<ObjectId>,
+    pub admin_id: Option<Uuid>,
+    pub student_id: Option<Uuid>,
     pub details: Option<String>,
-    pub session_id: Option<ObjectId>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
+    pub session_id: Option<Uuid>,
     pub timestamp: DateTime<Utc>,
     pub resolved: bool,
-    pub resolved_by: Option<ObjectId>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
+    pub resolved_by: Option<Uuid>,
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
 impl Flag {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "flags"
     }
 }

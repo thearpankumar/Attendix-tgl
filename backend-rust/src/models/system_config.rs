@@ -1,14 +1,16 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json;
+use sqlx::Row;
+use uuid::Uuid;
 
 use crate::constants::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemConfig {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    #[serde(default)]
+    pub id: Uuid,
     #[serde(default)]
     pub dev_bypass_enabled: bool,
     #[serde(default)]
@@ -29,12 +31,72 @@ pub struct SystemConfig {
     pub lockout_config: LockoutConfig,
     #[serde(default)]
     pub attendance_config: AttendanceConfig,
-    pub updated_by: Option<ObjectId>,
-    #[serde(
-        with = "bson::serde_helpers::datetime::FromChrono04DateTime",
-        default = "chrono::Utc::now"
-    )]
+    pub updated_by: Option<Uuid>,
+    #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
+}
+
+/// Shape of the JSONB `config` column — everything except the columns that are
+/// broken out for direct querying (`id`, `dev_bypass_enabled`, `updated_by`,
+/// `updated_at`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SystemConfigJson {
+    #[serde(default)]
+    gps_validation: GpsValidationConfig,
+    #[serde(default)]
+    emulator_detection: EmulatorDetectionConfig,
+    #[serde(default)]
+    trust_score: TrustScoreConfig,
+    #[serde(default)]
+    rate_limits: RateLimitsConfig,
+    #[serde(default)]
+    webauthn_config: WebAuthnSystemConfig,
+    #[serde(default)]
+    photo_verification: PhotoVerificationConfig,
+    #[serde(default)]
+    session_config: SessionConfig,
+    #[serde(default)]
+    lockout_config: LockoutConfig,
+    #[serde(default)]
+    attendance_config: AttendanceConfig,
+}
+
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for SystemConfig {
+    fn from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<Self> {
+        let id: Uuid = row.try_get("id")?;
+        let dev_bypass_enabled: bool = row.try_get("dev_bypass_enabled")?;
+        let config: Json<SystemConfigJson> = row.try_get("config")?;
+        let updated_by: Option<Uuid> = row.try_get("updated_by")?;
+        let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+        let SystemConfigJson {
+            gps_validation,
+            emulator_detection,
+            trust_score,
+            rate_limits,
+            webauthn_config,
+            photo_verification,
+            session_config,
+            lockout_config,
+            attendance_config,
+        } = config.0;
+
+        Ok(SystemConfig {
+            id,
+            dev_bypass_enabled,
+            gps_validation,
+            emulator_detection,
+            trust_score,
+            rate_limits,
+            webauthn_config,
+            photo_verification,
+            session_config,
+            lockout_config,
+            attendance_config,
+            updated_by,
+            updated_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,29 +201,71 @@ impl Default for TrustScoreConfig {
     }
 }
 
-impl Default for SystemConfig {
-    fn default() -> Self {
-        Self {
-            id: None,
-            dev_bypass_enabled: false,
-            gps_validation: GpsValidationConfig::default(),
-            emulator_detection: EmulatorDetectionConfig::default(),
-            trust_score: TrustScoreConfig::default(),
-            rate_limits: RateLimitsConfig::default(),
-            webauthn_config: WebAuthnSystemConfig::default(),
-            photo_verification: PhotoVerificationConfig::default(),
-            session_config: SessionConfig::default(),
-            lockout_config: LockoutConfig::default(),
-            attendance_config: AttendanceConfig::default(),
-            updated_by: None,
-            updated_at: Utc::now(),
-        }
-    }
-}
-
 impl SystemConfig {
-    pub fn collection_name() -> &'static str {
-        "systemconfigs"
+    pub fn table_name() -> &'static str {
+        "system_configs"
+    }
+
+    /// The JSONB payload to persist in the `config` column.
+    fn as_json_blob(&self) -> Json<SystemConfigJson> {
+        Json(SystemConfigJson {
+            gps_validation: self.gps_validation.clone(),
+            emulator_detection: self.emulator_detection.clone(),
+            trust_score: self.trust_score.clone(),
+            rate_limits: self.rate_limits.clone(),
+            webauthn_config: self.webauthn_config.clone(),
+            photo_verification: self.photo_verification.clone(),
+            session_config: self.session_config.clone(),
+            lockout_config: self.lockout_config.clone(),
+            attendance_config: self.attendance_config.clone(),
+        })
+    }
+
+    /// Loads the singleton config row, if one exists.
+    pub async fn load(pool: &sqlx::PgPool) -> sqlx::Result<Option<SystemConfig>> {
+        sqlx::query_as::<_, SystemConfig>(
+            "SELECT id, dev_bypass_enabled, config, updated_by, updated_at FROM system_configs LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Upserts the singleton config row (updating the existing row if present,
+    /// inserting one otherwise) and returns the persisted row.
+    pub async fn save(&self, pool: &sqlx::PgPool) -> sqlx::Result<SystemConfig> {
+        let existing_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM system_configs LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+
+        let blob = self.as_json_blob();
+
+        match existing_id {
+            Some(id) => {
+                sqlx::query_as::<_, SystemConfig>(
+                    "UPDATE system_configs SET dev_bypass_enabled = $1, config = $2, updated_by = $3, updated_at = now() \
+                     WHERE id = $4 \
+                     RETURNING id, dev_bypass_enabled, config, updated_by, updated_at",
+                )
+                .bind(self.dev_bypass_enabled)
+                .bind(blob)
+                .bind(self.updated_by)
+                .bind(id)
+                .fetch_one(pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, SystemConfig>(
+                    "INSERT INTO system_configs (dev_bypass_enabled, config, updated_by, updated_at) \
+                     VALUES ($1, $2, $3, now()) \
+                     RETURNING id, dev_bypass_enabled, config, updated_by, updated_at",
+                )
+                .bind(self.dev_bypass_enabled)
+                .bind(blob)
+                .bind(self.updated_by)
+                .fetch_one(pool)
+                .await
+            }
+        }
     }
 }
 
@@ -339,6 +443,26 @@ impl Default for AttendanceConfig {
     fn default() -> Self {
         Self {
             max_attendance_attempts: 3,
+        }
+    }
+}
+
+impl Default for SystemConfig {
+    fn default() -> Self {
+        Self {
+            id: Uuid::nil(),
+            dev_bypass_enabled: false,
+            gps_validation: GpsValidationConfig::default(),
+            emulator_detection: EmulatorDetectionConfig::default(),
+            trust_score: TrustScoreConfig::default(),
+            rate_limits: RateLimitsConfig::default(),
+            webauthn_config: WebAuthnSystemConfig::default(),
+            photo_verification: PhotoVerificationConfig::default(),
+            session_config: SessionConfig::default(),
+            lockout_config: LockoutConfig::default(),
+            attendance_config: AttendanceConfig::default(),
+            updated_by: None,
+            updated_at: Utc::now(),
         }
     }
 }

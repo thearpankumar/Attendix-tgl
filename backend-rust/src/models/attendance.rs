@@ -1,14 +1,15 @@
 use crate::constants::Severity;
+use crate::models::text_enum_sqlx;
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Attendance {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-    pub session_id: ObjectId,
+    pub id: Uuid,
+    pub session_id: Uuid,
     pub student_name: String,
     pub roll_number: String,
     pub photo_url: String,
@@ -44,14 +45,12 @@ pub struct Attendance {
     pub webauthn_replay_attack: bool,
     #[serde(default)]
     pub flag_reviewed: bool,
-    pub flag_reviewed_by: Option<ObjectId>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
+    pub flag_reviewed_by: Option<Uuid>,
     pub flag_reviewed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub flagged: bool,
     pub flag_reason: Option<String>,
     pub flag_details: Option<String>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub captured_at: DateTime<Utc>,
     pub gps_accuracy: Option<f64>,
     pub gps_altitude: Option<f64>,
@@ -63,14 +62,14 @@ pub struct Attendance {
     pub gps_mock_location: bool,
     pub gps_provider: Option<String>,
     #[serde(default)]
-    pub gps_anomalies: Vec<GpsAnomaly>,
+    pub gps_anomalies: Json<Vec<GpsAnomaly>>,
     pub gps_confidence: Option<GpsConfidence>,
     #[serde(default)]
     pub emulator_detected: bool,
     #[serde(default)]
-    pub emulator_flags: Vec<EmulatorFlag>,
+    pub emulator_flags: Json<Vec<EmulatorFlag>>,
     #[serde(default)]
-    pub integrity_checks: Vec<IntegrityCheck>,
+    pub integrity_checks: Json<Vec<IntegrityCheck>>,
 }
 
 fn default_true() -> bool {
@@ -102,6 +101,7 @@ pub enum AttendanceDeviceFlag {
     #[serde(rename = "REUSED_PHOTO")]
     ReusedPhoto,
 }
+text_enum_sqlx!(AttendanceDeviceFlag);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WebAuthnDeviceType {
@@ -116,6 +116,7 @@ pub enum WebAuthnDeviceType {
     #[serde(rename = "unknown")]
     Unknown,
 }
+text_enum_sqlx!(WebAuthnDeviceType);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WebAuthnAttachment {
@@ -124,6 +125,7 @@ pub enum WebAuthnAttachment {
     #[serde(rename = "cross-platform")]
     CrossPlatform,
 }
+text_enum_sqlx!(WebAuthnAttachment);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GpsConfidence {
@@ -136,6 +138,7 @@ pub enum GpsConfidence {
     #[serde(rename = "suspicious")]
     Suspicious,
 }
+text_enum_sqlx!(GpsConfidence);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,7 +148,6 @@ pub struct GpsAnomaly {
     #[serde(default)]
     pub severity: Severity,
     pub details: Option<String>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub detected_at: DateTime<Utc>,
 }
 
@@ -220,7 +222,7 @@ pub enum IntegrityCheckType {
 }
 
 impl Attendance {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "attendances"
     }
 }
@@ -228,7 +230,7 @@ impl Attendance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttendanceSubmit {
-    pub session_id: ObjectId,
+    pub session_id: Uuid,
     pub student_name: String,
     pub roll_number: String,
     pub photo_url: String,

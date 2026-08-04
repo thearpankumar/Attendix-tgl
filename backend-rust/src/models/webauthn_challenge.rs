@@ -1,24 +1,22 @@
+use crate::models::text_enum_sqlx;
 use chrono::{DateTime, Duration, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct WebAuthnChallenge {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub student_id: String,
     pub challenge: String,
     #[serde(rename = "type")]
     pub challenge_type: WebAuthnChallengeType,
-    pub session_id: ObjectId,
+    pub session_id: Uuid,
     pub short_code: Option<String>,
     pub student_name: Option<String>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub expires_at: DateTime<Utc>,
     #[serde(default)]
     pub used: bool,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -29,19 +27,20 @@ pub enum WebAuthnChallengeType {
     #[serde(rename = "authentication")]
     Authentication,
 }
+text_enum_sqlx!(WebAuthnChallengeType);
 
 impl WebAuthnChallenge {
-    pub fn collection_name() -> &'static str {
-        "webauthnchallenges"
+    pub fn table_name() -> &'static str {
+        "webauthn_challenges"
     }
 
     pub fn new(
         student_id: String,
         challenge_type: WebAuthnChallengeType,
-        session_id: ObjectId,
+        session_id: Uuid,
     ) -> Self {
         Self {
-            id: None,
+            id: Uuid::new_v4(),
             student_id,
             challenge: Self::generate_challenge(),
             challenge_type,

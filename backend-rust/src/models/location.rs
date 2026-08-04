@@ -1,22 +1,20 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Location {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub name: String,
     pub latitude: f64,
     pub longitude: f64,
     #[serde(default = "default_radius")]
     pub radius_meters: f64,
     pub description: Option<String>,
-    pub created_by: ObjectId,
+    pub created_by: Uuid,
     #[serde(default = "default_true")]
     pub is_active: bool,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -28,7 +26,7 @@ fn default_true() -> bool {
 }
 
 impl Location {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "locations"
     }
 

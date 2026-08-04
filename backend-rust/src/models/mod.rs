@@ -31,32 +31,41 @@ pub use webauthn_reenrollment_log::*;
 // Re-export Severity from constants for convenience
 pub use crate::constants::Severity;
 
-pub mod optional_chrono_bson {
-    use chrono::{DateTime, Utc};
-    use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
+/// Bridges a serde-tagged unit enum (`#[serde(rename = "...")]` per variant) to a
+/// Postgres TEXT column, by round-tripping through the enum's own serde impl. This
+/// keeps the on-disk string representation identical to the JSON API representation
+/// without duplicating the rename table in a second place.
+macro_rules! text_enum_sqlx {
+    ($ty:ty) => {
+        impl sqlx::Type<sqlx::Postgres> for $ty {
+            fn type_info() -> sqlx::postgres::PgTypeInfo {
+                <String as sqlx::Type<sqlx::Postgres>>::type_info()
+            }
+        }
 
-    pub fn serialize<S>(date: &Option<DateTime<Utc>>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        #[derive(Serialize)]
-        struct Helper<'a>(
-            #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
-            &'a DateTime<Utc>,
-        );
+        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $ty {
+            fn decode(
+                value: sqlx::postgres::PgValueRef<'r>,
+            ) -> Result<Self, sqlx::error::BoxDynError> {
+                let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+                Ok(serde_json::from_value(serde_json::Value::String(s))?)
+            }
+        }
 
-        date.as_ref().map(Helper).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper(
-            #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")] DateTime<Utc>,
-        );
-
-        Ok(Option::<Helper>::deserialize(deserializer)?.map(|h| h.0))
-    }
+        impl<'q> sqlx::Encode<'q, sqlx::Postgres> for $ty {
+            fn encode_by_ref(
+                &self,
+                buf: &mut sqlx::postgres::PgArgumentBuffer,
+            ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+                let value = serde_json::to_value(self)?;
+                let s = value
+                    .as_str()
+                    .ok_or("enum did not serialize to a string")?
+                    .to_string();
+                <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&s, buf)
+            }
+        }
+    };
 }
+
+pub(crate) use text_enum_sqlx;

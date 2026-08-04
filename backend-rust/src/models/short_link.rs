@@ -1,25 +1,21 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortLink {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub short_code: String,
-    pub session_id: Option<ObjectId>,
-    pub created_by: ObjectId,
+    pub session_id: Option<Uuid>,
+    pub created_by: Uuid,
     #[serde(default = "default_true")]
     pub is_active: bool,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub click_count: i32,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub last_clicked_at: Option<DateTime<Utc>>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -28,8 +24,8 @@ fn default_true() -> bool {
 }
 
 impl ShortLink {
-    pub fn collection_name() -> &'static str {
-        "shortlinks"
+    pub fn table_name() -> &'static str {
+        "short_links"
     }
 
     pub fn generate_short_code(length: usize) -> String {
@@ -51,6 +47,6 @@ impl ShortLink {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortLinkCreate {
-    pub session_id: Option<ObjectId>,
+    pub session_id: Option<Uuid>,
     pub expires_at: Option<DateTime<Utc>>,
 }

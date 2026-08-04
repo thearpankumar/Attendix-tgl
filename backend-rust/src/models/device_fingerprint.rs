@@ -1,16 +1,14 @@
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFingerprint {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub fingerprint_id: String,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub first_seen: DateTime<Utc>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub last_seen: DateTime<Utc>,
     #[serde(default)]
     pub verification_failures: i32,
@@ -22,33 +20,30 @@ pub struct DeviceFingerprint {
     #[serde(default)]
     pub claimed_device_types: Vec<String>,
     #[serde(default)]
-    pub user_agents_seen: Vec<UserAgentEntry>,
+    pub user_agents_seen: Json<Vec<UserAgentEntry>>,
     #[serde(default)]
-    pub sessions: Vec<DeviceSession>,
+    pub sessions: Json<Vec<DeviceSession>>,
     #[serde(default)]
     pub is_trusted: bool,
     #[serde(default)]
     pub is_blocked: bool,
     pub block_reason: Option<String>,
-    pub last_metrics: Option<DeviceMetrics>,
+    pub last_metrics: Option<Json<DeviceMetrics>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAgentEntry {
     pub ua: String,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub first_seen: DateTime<Utc>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub last_seen: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSession {
-    pub session_id: ObjectId,
+    pub session_id: Uuid,
     pub roll_number: String,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub timestamp: DateTime<Utc>,
     pub was_successful: bool,
 }
@@ -66,14 +61,14 @@ pub struct DeviceMetrics {
 }
 
 impl DeviceFingerprint {
-    pub fn collection_name() -> &'static str {
-        "devicefingerprints"
+    pub fn table_name() -> &'static str {
+        "device_fingerprints"
     }
 
     pub fn new(fingerprint_id: String) -> Self {
         let now = Utc::now();
         Self {
-            id: None,
+            id: Uuid::new_v4(),
             fingerprint_id,
             first_seen: now,
             last_seen: now,
@@ -82,8 +77,8 @@ impl DeviceFingerprint {
             last_spoofing_reason: None,
             inconsistencies: vec![],
             claimed_device_types: vec![],
-            user_agents_seen: vec![],
-            sessions: vec![],
+            user_agents_seen: Json(vec![]),
+            sessions: Json(vec![]),
             is_trusted: false,
             is_blocked: false,
             block_reason: None,
@@ -109,25 +104,25 @@ impl DeviceFingerprint {
         }
     }
 
-    pub fn record_successful_verification(&mut self, session_id: ObjectId, roll_number: String) {
+    pub fn record_successful_verification(&mut self, session_id: Uuid, roll_number: String) {
         self.last_seen = Utc::now();
 
         if self.verification_failures > 0 {
             self.verification_failures = (self.verification_failures - 1).max(0);
         }
 
-        if self.sessions.len() >= 50 {
-            self.sessions.remove(0);
+        if self.sessions.0.len() >= 50 {
+            self.sessions.0.remove(0);
         }
 
-        self.sessions.push(DeviceSession {
+        self.sessions.0.push(DeviceSession {
             session_id,
             roll_number,
             timestamp: Utc::now(),
             was_successful: true,
         });
 
-        let successful_count = self.sessions.iter().filter(|s| s.was_successful).count();
+        let successful_count = self.sessions.0.iter().filter(|s| s.was_successful).count();
         if successful_count >= 3 && self.spoofing_attempts == 0 {
             self.is_trusted = true;
         }
@@ -137,7 +132,7 @@ impl DeviceFingerprint {
         self.spoofing_attempts = (self.spoofing_attempts - 1).max(0);
         self.verification_failures = (self.verification_failures - 1).max(0);
 
-        if self.sessions.len() >= 3 && self.spoofing_attempts == 0 {
+        if self.sessions.0.len() >= 3 && self.spoofing_attempts == 0 {
             self.is_trusted = true;
         }
 

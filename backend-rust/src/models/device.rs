@@ -3,27 +3,25 @@ use crate::constants::{
     FLAG_STUDENT_DEVICE_SWITCHED,
 };
 use chrono::{DateTime, Utc};
-use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::types::Json;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Uuid,
     pub fingerprint_hash: String,
     pub bound_to_student: Option<String>,
-    pub session_id: Option<ObjectId>,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
+    pub session_id: Option<Uuid>,
     pub first_seen_at: DateTime<Utc>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub last_seen_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub attendance_count: i32,
     #[serde(default)]
-    pub flags: Vec<DeviceFlagEntry>,
-    pub metadata: Option<DeviceMetadata>,
+    pub flags: Json<Vec<DeviceFlagEntry>>,
+    pub metadata: Option<Json<DeviceMetadata>>,
     // Trust scoring fields
     #[serde(default)]
     pub successful_submissions: i32,
@@ -34,7 +32,6 @@ pub struct Device {
     #[serde(default)]
     pub is_blocked: bool,
     pub block_reason: Option<String>,
-    #[serde(default, with = "crate::models::optional_chrono_bson")]
     pub blocked_at: Option<DateTime<Utc>>,
 }
 
@@ -43,10 +40,9 @@ pub struct Device {
 pub struct DeviceFlagEntry {
     #[serde(rename = "type")]
     pub flag_type: String,
-    #[serde(with = "bson::serde_helpers::datetime::FromChrono04DateTime")]
     pub timestamp: DateTime<Utc>,
     pub details: Option<String>,
-    pub session_id: Option<ObjectId>,
+    pub session_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +62,7 @@ pub enum DeviceFlagType {
 }
 
 impl Device {
-    pub fn collection_name() -> &'static str {
+    pub fn table_name() -> &'static str {
         "devices"
     }
 
@@ -79,23 +75,23 @@ impl Device {
     pub fn new(
         fingerprint_hash: String,
         bound_to_student: String,
-        session_id: ObjectId,
+        session_id: Uuid,
         user_agent: Option<String>,
     ) -> Self {
         Self {
-            id: None,
+            id: Uuid::new_v4(),
             fingerprint_hash,
             bound_to_student: Some(bound_to_student),
             session_id: Some(session_id),
             first_seen_at: Utc::now(),
             last_seen_at: Some(Utc::now()),
             attendance_count: 1,
-            flags: vec![],
-            metadata: Some(DeviceMetadata {
+            flags: Json(vec![]),
+            metadata: Some(Json(DeviceMetadata {
                 user_agent,
                 platform: None,
                 browser: None,
-            }),
+            })),
             successful_submissions: 0,
             failed_submissions: 0,
             spoofing_attempts: 0,
@@ -109,9 +105,9 @@ impl Device {
         &mut self,
         flag_type: DeviceFlagType,
         details: Option<String>,
-        session_id: Option<ObjectId>,
+        session_id: Option<Uuid>,
     ) {
-        self.flags.push(DeviceFlagEntry {
+        self.flags.0.push(DeviceFlagEntry {
             flag_type: match flag_type {
                 DeviceFlagType::MultiStudentDevice => FLAG_MULTI_STUDENT_DEVICE.to_string(),
                 DeviceFlagType::StudentDeviceSwitched => FLAG_STUDENT_DEVICE_SWITCHED.to_string(),
@@ -128,6 +124,7 @@ impl Device {
 
     pub fn has_multi_student_flag(&self) -> bool {
         self.flags
+            .0
             .iter()
             .any(|f| f.flag_type == FLAG_MULTI_STUDENT_DEVICE)
     }
