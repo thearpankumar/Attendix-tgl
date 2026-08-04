@@ -3,7 +3,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use mongodb::{bson::doc, Collection};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -38,41 +37,17 @@ async fn update_config(
 ) -> Result<impl axum::response::IntoResponse> {
     use chrono::Utc;
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let configs: Collection<SystemConfig> = state
-        .db
-        .database(db_name)
-        .collection(SystemConfig::collection_name());
-
     payload.updated_by = Some(auth.id);
     payload.updated_at = Utc::now();
-    // Preserve the existing DB _id
-    let existing = configs.find_one(doc! {}).await?.unwrap_or_default();
-    payload.id = existing.id;
 
-    configs
-        .update_one(
-            doc! {},
-            doc! { "$set": mongodb::bson::to_document(&payload).map_err(|e| AppError::Internal(e.to_string()))? },
-        )
-        .upsert(true)
-        .await?;
+    let saved = payload.save(&state.db).await?;
 
     // Flush in-memory hot-reload cache
-    state.set_system_config(payload.clone()).await;
+    state.set_system_config(saved.clone()).await;
 
     Ok(Json(serde_json::json!({
         "message": "System configuration saved successfully",
-        "config": payload
+        "config": saved
     })))
 }
 
@@ -102,23 +77,9 @@ async fn toggle_dev_bypass(
 ) -> Result<impl axum::response::IntoResponse> {
     use chrono::Utc;
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let admins: Collection<crate::models::Admin> = state
-        .db
-        .database(db_name)
-        .collection(crate::models::Admin::collection_name());
-
-    let admin = admins
-        .find_one(doc! { "_id": auth_admin.id })
+    let admin = sqlx::query_as::<_, crate::models::Admin>("SELECT * FROM admins WHERE id = $1")
+        .bind(auth_admin.id)
+        .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::Unauthorized("Admin not found".to_string()))?;
 
@@ -126,13 +87,7 @@ async fn toggle_dev_bypass(
         return Err(AppError::Unauthorized("Invalid password".to_string()));
     }
 
-    let configs: Collection<SystemConfig> = state
-        .db
-        .database(db_name)
-        .collection(SystemConfig::collection_name());
-
-    let mut config = configs
-        .find_one(doc! {})
+    let mut config = SystemConfig::load(&state.db)
         .await?
         .unwrap_or_else(SystemConfig::default);
 
@@ -140,19 +95,13 @@ async fn toggle_dev_bypass(
     config.updated_by = Some(auth_admin.id);
     config.updated_at = Utc::now();
 
-    configs
-        .update_one(
-            doc! {},
-            doc! { "$set": mongodb::bson::to_document(&config).map_err(|e| AppError::Internal(e.to_string()))? },
-        )
-        .upsert(true)
-        .await?;
+    let saved = config.save(&state.db).await?;
 
     // Flush hot-reload cache
-    state.set_system_config(config.clone()).await;
+    state.set_system_config(saved.clone()).await;
 
     Ok(Json(DevBypassResponse {
         message: "Developer Bypass Mode updated successfully".to_string(),
-        config,
+        config: saved,
     }))
 }

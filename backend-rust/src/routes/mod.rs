@@ -93,13 +93,7 @@ async fn health_check() -> Json<HealthResponse> {
 }
 
 async fn health_ready(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
-    let db_status = if state
-        .db
-        .database("admin")
-        .run_command(mongodb::bson::doc! { "ping": 1 })
-        .await
-        .is_ok()
-    {
+    let db_status = if sqlx::query("SELECT 1").execute(&state.db).await.is_ok() {
         "connected"
     } else {
         "disconnected"
