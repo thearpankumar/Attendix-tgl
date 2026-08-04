@@ -1,25 +1,25 @@
 use chrono::{DateTime, Duration, Utc};
-use mongodb::bson::oid::ObjectId;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 const SESSION_CACHE_PREFIX: &str = "session:";
 const SESSION_CACHE_TTL: i64 = 300;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CachedSession {
-    pub id: ObjectId,
+    pub id: Uuid,
     pub token_hash: String,
-    pub location_id: ObjectId,
+    pub location_id: Uuid,
     pub location_name: Option<String>,
     pub location_latitude: Option<f64>,
     pub location_longitude: Option<f64>,
     pub location_radius: Option<f64>,
-    pub batch_id: Option<ObjectId>,
-    pub created_by: ObjectId,
+    pub batch_id: Option<Uuid>,
+    pub created_by: Uuid,
     pub is_active: bool,
     pub expires_at: DateTime<Utc>,
     pub totp_secret: Option<String>,
@@ -181,7 +181,7 @@ impl Default for SessionCache {
 pub async fn get_or_fetch_session(
     cache: &SessionCache,
     token_hash: &str,
-    db: &mongodb::Database,
+    db: &sqlx::PgPool,
 ) -> crate::error::Result<Option<CachedSession>> {
     if let Some(cached) = cache.get(token_hash).await {
         tracing::debug!("Session cache hit for token_hash");
@@ -190,27 +190,22 @@ pub async fn get_or_fetch_session(
 
     tracing::debug!("Session cache miss, fetching from database");
 
-    use mongodb::bson::doc;
-
-    let collection = db.collection::<crate::models::Session>("sessions");
-    let filter = doc! {
-        "tokenHash": token_hash,
-        "isActive": true,
-        "expiresAt": { "$gt": mongodb::bson::DateTime::now() }
-    };
-
-    let session = collection.find_one(filter).await?;
+    let session = sqlx::query_as::<_, crate::models::Session>(
+        "SELECT * FROM sessions WHERE token_hash = $1 AND is_active = true AND expires_at > now()",
+    )
+    .bind(token_hash)
+    .fetch_optional(db)
+    .await?;
 
     if let Some(session) = session {
-        let location_collection = db.collection::<crate::models::Location>("locations");
-        let location = location_collection
-            .find_one(doc! { "_id": session.location_id })
-            .await?;
+        let location =
+            sqlx::query_as::<_, crate::models::Location>("SELECT * FROM locations WHERE id = $1")
+                .bind(session.location_id)
+                .fetch_optional(db)
+                .await?;
 
         let cached = CachedSession {
-            id: session
-                .id
-                .ok_or_else(|| crate::error::AppError::Internal("Session missing ID".into()))?,
+            id: session.id,
             token_hash: session.token_hash.clone(),
             location_id: session.location_id,
             location_name: location.as_ref().map(|l| l.name.clone()),

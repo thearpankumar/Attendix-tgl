@@ -1,20 +1,15 @@
 use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
-use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime as BsonDateTime};
-use mongodb::Collection;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::error::Result;
-use crate::models::{Attendance, Device, DeviceFlagEntry, DeviceMetadata};
+use crate::models::{Device, DeviceFlagEntry};
 
 #[derive(Debug, Clone)]
 pub struct DeviceCheckResult {
     pub first_seen: bool,
     pub flags: Vec<String>,
     pub device_flag: Option<String>,
-}
-
-fn to_bson_datetime(dt: chrono::DateTime<chrono::Utc>) -> BsonDateTime {
-    BsonDateTime::from_millis(dt.timestamp_millis())
 }
 
 pub async fn device_check_middleware(
@@ -50,7 +45,7 @@ pub async fn device_check_middleware(
     let session_id = parsed
         .as_ref()
         .and_then(|v| v.get("sessionId")?.as_str())
-        .and_then(|s| ObjectId::parse_str(s).ok());
+        .and_then(|s| Uuid::parse_str(s).ok());
 
     let Some(device_fingerprint) = device_fingerprint else {
         let mut req = Request::from_parts(parts, Body::from(bytes));
@@ -63,20 +58,6 @@ pub async fn device_check_middleware(
     };
 
     let fingerprint_hash = Device::hash_fingerprint(&device_fingerprint);
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let collection: Collection<Device> = state
-        .db
-        .database(db_name)
-        .collection(Device::collection_name());
 
     let mut result = DeviceCheckResult {
         first_seen: false,
@@ -90,14 +71,15 @@ pub async fn device_check_middleware(
         .unwrap_or_default();
 
     if let (Some(session_id), Some(_roll_number)) = (session_id, roll_number.as_ref()) {
-        let existing_device = collection
-            .find_one(doc! {
-                "fingerprintHash": &fingerprint_hash,
-                "sessionId": session_id,
-            })
-            .await
-            .ok()
-            .flatten();
+        let existing_device = sqlx::query_as::<_, Device>(
+            "SELECT * FROM devices WHERE fingerprint_hash = $1 AND session_id = $2",
+        )
+        .bind(&fingerprint_hash)
+        .bind(session_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
 
         if let Some(mut device) = existing_device {
             device.last_seen_at = Some(chrono::Utc::now());
@@ -108,7 +90,7 @@ pub async fn device_check_middleware(
                     result.flags.push("MULTI_STUDENT_DEVICE".to_string());
                     result.device_flag = Some("MULTI_STUDENT_DEVICE".to_string());
 
-                    device.flags.push(DeviceFlagEntry {
+                    device.flags.0.push(DeviceFlagEntry {
                         flag_type: "MULTI_STUDENT_DEVICE".to_string(),
                         details: Some(format!(
                             "Device previously used by {}, now {}",
@@ -120,45 +102,28 @@ pub async fn device_check_middleware(
                 }
             }
 
-            let flags_bson = Bson::Array(
-                device
-                    .flags
-                    .iter()
-                    .map(|f| {
-                        Bson::Document(doc! {
-                            "type": &f.flag_type,
-                            "timestamp": to_bson_datetime(f.timestamp),
-                            "details": &f.details,
-                            "sessionId": f.session_id,
-                        })
-                    })
-                    .collect(),
-            );
-
-            if let Err(e) = collection
-                .update_one(
-                    doc! { "_id": device.id },
-                    doc! {
-                        "$set": {
-                            "lastSeenAt": to_bson_datetime(device.last_seen_at.unwrap_or_else(chrono::Utc::now)),
-                            "attendanceCount": device.attendance_count,
-                            "flags": flags_bson,
-                        }
-                    },
-                )
-                .await
+            if let Err(e) = sqlx::query(
+                "UPDATE devices SET last_seen_at = $1, attendance_count = $2, flags = $3 WHERE id = $4",
+            )
+            .bind(device.last_seen_at)
+            .bind(device.attendance_count)
+            .bind(&device.flags)
+            .bind(device.id)
+            .execute(&state.db)
+            .await
             {
                 tracing::warn!("Failed to update device: {}", e);
             }
         } else {
-            let student_existing_device = collection
-                .find_one(doc! {
-                    "boundToStudent": &roll_upper,
-                    "sessionId": session_id,
-                })
-                .await
-                .ok()
-                .flatten();
+            let student_existing_device = sqlx::query_as::<_, Device>(
+                "SELECT * FROM devices WHERE bound_to_student = $1 AND session_id = $2",
+            )
+            .bind(&roll_upper)
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
             if let Some(prev_device) = student_existing_device {
                 if prev_device.fingerprint_hash != fingerprint_hash {
@@ -173,50 +138,55 @@ pub async fn device_check_middleware(
                 .and_then(|h| h.to_str().ok())
                 .map(|s| s.to_string());
 
-            let new_device = Device {
-                id: None,
-                fingerprint_hash: fingerprint_hash.clone(),
-                bound_to_student: Some(roll_upper.clone()),
-                session_id: Some(session_id),
-                first_seen_at: chrono::Utc::now(),
-                last_seen_at: Some(chrono::Utc::now()),
-                attendance_count: 1,
-                flags: vec![],
-                metadata: Some(DeviceMetadata {
-                    user_agent,
-                    platform: None,
-                    browser: None,
-                }),
-                successful_submissions: 0,
-                failed_submissions: 0,
-                spoofing_attempts: 0,
-                is_blocked: false,
-                block_reason: None,
-                blocked_at: None,
-            };
+            let new_device = Device::new(
+                fingerprint_hash.clone(),
+                roll_upper.clone(),
+                session_id,
+                user_agent,
+            );
 
-            if let Err(e) = collection.insert_one(&new_device).await {
+            if let Err(e) = sqlx::query(
+                "INSERT INTO devices \
+                    (id, fingerprint_hash, bound_to_student, session_id, first_seen_at, last_seen_at, \
+                     attendance_count, flags, metadata, successful_submissions, failed_submissions, \
+                     spoofing_attempts, is_blocked, block_reason, blocked_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+            )
+            .bind(new_device.id)
+            .bind(&new_device.fingerprint_hash)
+            .bind(&new_device.bound_to_student)
+            .bind(new_device.session_id)
+            .bind(new_device.first_seen_at)
+            .bind(new_device.last_seen_at)
+            .bind(new_device.attendance_count)
+            .bind(&new_device.flags)
+            .bind(&new_device.metadata)
+            .bind(new_device.successful_submissions)
+            .bind(new_device.failed_submissions)
+            .bind(new_device.spoofing_attempts)
+            .bind(new_device.is_blocked)
+            .bind(&new_device.block_reason)
+            .bind(new_device.blocked_at)
+            .execute(&state.db)
+            .await
+            {
                 tracing::warn!("Failed to insert device: {}", e);
             }
             result.first_seen = true;
         }
 
-        let attendances: Collection<Attendance> = state
-            .db
-            .database(db_name)
-            .collection(Attendance::collection_name());
-
         let ten_seconds_ago = chrono::Utc::now() - chrono::Duration::seconds(10);
 
-        let recent_attendance = attendances
-            .find_one(doc! {
-                "sessionId": session_id,
-                "rollNumber": &roll_upper,
-                "capturedAt": { "$gte": to_bson_datetime(ten_seconds_ago) },
-            })
-            .await
-            .ok()
-            .flatten();
+        let recent_attendance: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM attendances WHERE session_id = $1 AND roll_number = $2 AND captured_at >= $3 LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(&roll_upper)
+        .bind(ten_seconds_ago)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
 
         if recent_attendance.is_some() {
             result.flags.push("RAPID_SUBMISSION".to_string());

@@ -29,9 +29,10 @@ pub fn is_valid_email(s: &str) -> bool {
     EMAIL_REGEX.is_match(s)
 }
 
-/// Validates that a value is a valid MongoDB ObjectId (24 hex characters)
+/// Validates that a value is a valid UUID (entity IDs were migrated from
+/// MongoDB ObjectIds to Postgres UUIDs; name kept to avoid churn at call sites).
 pub fn is_valid_objectid(s: &str) -> bool {
-    s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit())
+    uuid::Uuid::parse_str(s).is_ok()
 }
 
 /// Validates that a string is a valid base64 image data URI
@@ -244,9 +245,9 @@ impl LocationCreateRequest {
 /// Session Create Request Validator
 ///
 /// # Validations:
-/// - location_id: valid ObjectId (24 hex characters)
+/// - location_id: valid UUID
 /// - duration_minutes: range 5-480
-/// - batch_id: valid ObjectId if provided
+/// - batch_id: valid UUID if provided
 #[derive(Debug, Deserialize, Validate)]
 pub struct SessionCreateRequest {
     #[validate(length(min = 1, message = "Location ID required"))]
@@ -572,16 +573,16 @@ mod tests {
 
     #[test]
     fn test_validate_session_create() {
-        // Valid ObjectId
+        // Valid UUID
         let valid = SessionCreateRequest {
-            location_id: "507f1f77bcf86cd799439011".to_string(),
+            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             duration_minutes: Some(30),
-            batch_id: Some("507f1f77bcf86cd799439012".to_string()),
+            batch_id: Some("550e8400-e29b-41d4-a716-446655440001".to_string()),
             description: None,
         };
         assert!(valid.validate_with_objectids().is_ok());
 
-        // Invalid ObjectId
+        // Invalid UUID
         let invalid = SessionCreateRequest {
             location_id: "invalid-id".to_string(),
             duration_minutes: Some(30),
@@ -592,7 +593,7 @@ mod tests {
 
         // Invalid duration (out of range)
         let invalid_duration = SessionCreateRequest {
-            location_id: "507f1f77bcf86cd799439011".to_string(),
+            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             duration_minutes: Some(500), // Max is 480
             batch_id: None,
             description: None,
@@ -601,7 +602,7 @@ mod tests {
 
         // Invalid batch_id
         let invalid_batch = SessionCreateRequest {
-            location_id: "507f1f77bcf86cd799439011".to_string(),
+            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             duration_minutes: Some(30),
             batch_id: Some("invalid".to_string()),
             description: None,
@@ -610,7 +611,7 @@ mod tests {
 
         // Valid: empty batch_id allowed
         let valid_empty_batch = SessionCreateRequest {
-            location_id: "507f1f77bcf86cd799439011".to_string(),
+            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             duration_minutes: Some(30),
             batch_id: Some("".to_string()),
             description: None,
@@ -680,10 +681,10 @@ mod tests {
 
     #[test]
     fn test_is_valid_objectid() {
-        assert!(is_valid_objectid("507f1f77bcf86cd799439011"));
+        assert!(is_valid_objectid("550e8400-e29b-41d4-a716-446655440000"));
         assert!(!is_valid_objectid("invalid"));
-        assert!(!is_valid_objectid("507f1f77bcf86cd79943901")); // 23 chars
-        assert!(!is_valid_objectid("507f1f77bcf86cd799439011z")); // Contains non-hex
+        assert!(!is_valid_objectid("507f1f77bcf86cd799439011")); // old Mongo ObjectId format
+        assert!(!is_valid_objectid("550e8400-e29b-41d4-a716-44665544000")); // truncated UUID
     }
 
     #[test]

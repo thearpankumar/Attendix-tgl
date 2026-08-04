@@ -1,7 +1,6 @@
-use mongodb::{bson::doc, Collection};
 use std::sync::Arc;
 
-use crate::{error::Result, models::Device, AppState};
+use crate::{error::Result, AppState};
 
 const BASE_SCORE: i32 = 50;
 const SUCCESS_BONUS: i32 = 5;
@@ -32,35 +31,23 @@ pub async fn get_device_trust_score(
     state: &Arc<AppState>,
     fingerprint_hash: &str,
 ) -> Result<Option<DeviceTrustScore>> {
-    let devices: Collection<Device> = state.database().collection(Device::collection_name());
+    // GROUP BY (rather than a plain aggregate) so zero matching rows yields zero
+    // result rows, matching the original Mongo `$match` + `$group` pipeline's
+    // "no groups produced" behavior instead of SQL's usual "one row of NULLs".
+    let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT SUM(successful_submissions), SUM(failed_submissions), SUM(spoofing_attempts) \
+         FROM devices WHERE fingerprint_hash = $1 GROUP BY fingerprint_hash",
+    )
+    .bind(fingerprint_hash)
+    .fetch_optional(&state.db)
+    .await?;
 
-    let filter = doc! { "fingerprintHash": fingerprint_hash };
-
-    let pipeline = vec![
-        doc! { "$match": filter },
-        doc! {
-            "$group": {
-                "_id": "$fingerprintHash",
-                "successfulSubmissions": { "$sum": "$successfulSubmissions" },
-                "failedSubmissions": { "$sum": "$failedSubmissions" },
-                "spoofingAttempts": { "$sum": "$spoofingAttempts" },
-            }
-        },
-    ];
-
-    let mut cursor = devices.aggregate(pipeline).await?;
-
-    if cursor.advance().await? {
-        let doc = cursor.deserialize_current()?;
-        Ok(Some(DeviceTrustScore {
-            score: BASE_SCORE,
-            successful_submissions: doc.get_i32("successfulSubmissions").unwrap_or(0),
-            failed_submissions: doc.get_i32("failedSubmissions").unwrap_or(0),
-            spoofing_attempts: doc.get_i32("spoofingAttempts").unwrap_or(0),
-        }))
-    } else {
-        Ok(None)
-    }
+    Ok(row.map(|(successful, failed, spoofing)| DeviceTrustScore {
+        score: BASE_SCORE,
+        successful_submissions: successful as i32,
+        failed_submissions: failed as i32,
+        spoofing_attempts: spoofing as i32,
+    }))
 }
 
 pub async fn update_device_trust(
@@ -69,19 +56,33 @@ pub async fn update_device_trust(
     success: bool,
     spoofing_detected: bool,
 ) -> Result<()> {
-    let devices: Collection<Device> = state.database().collection(Device::collection_name());
-
-    let update = if success {
-        doc! { "$inc": { "successfulSubmissions": 1 } }
-    } else if spoofing_detected {
-        doc! { "$inc": { "spoofingAttempts": 1, "failedSubmissions": 1 } }
-    } else {
-        doc! { "$inc": { "failedSubmissions": 1 } }
-    };
-
-    devices
-        .update_one(doc! { "fingerprintHash": fingerprint_hash }, update)
+    // Note: the original Mongo `update_one` touched a single, arbitrarily-chosen
+    // matching document. Postgres has no equivalent "touch just one" semantics for
+    // a non-unique WHERE clause without an explicit row lock/limit, so this updates
+    // every `devices` row sharing this fingerprint_hash — a deliberate, more
+    // predictable behavior for a device-wide trust counter.
+    if success {
+        sqlx::query(
+            "UPDATE devices SET successful_submissions = successful_submissions + 1 WHERE fingerprint_hash = $1",
+        )
+        .bind(fingerprint_hash)
+        .execute(&state.db)
         .await?;
+    } else if spoofing_detected {
+        sqlx::query(
+            "UPDATE devices SET spoofing_attempts = spoofing_attempts + 1, failed_submissions = failed_submissions + 1 WHERE fingerprint_hash = $1",
+        )
+        .bind(fingerprint_hash)
+        .execute(&state.db)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE devices SET failed_submissions = failed_submissions + 1 WHERE fingerprint_hash = $1",
+        )
+        .bind(fingerprint_hash)
+        .execute(&state.db)
+        .await?;
+    }
 
     Ok(())
 }
@@ -91,20 +92,13 @@ pub async fn flag_suspicious_device(
     fingerprint_hash: &str,
     reason: &str,
 ) -> Result<()> {
-    let devices: Collection<Device> = state.database().collection(Device::collection_name());
-
-    devices
-        .update_one(
-            doc! { "fingerprintHash": fingerprint_hash },
-            doc! {
-                "$set": {
-                    "isBlocked": true,
-                    "blockReason": reason,
-                    "blockedAt": mongodb::bson::DateTime::now(),
-                }
-            },
-        )
-        .await?;
+    sqlx::query(
+        "UPDATE devices SET is_blocked = true, block_reason = $1, blocked_at = now() WHERE fingerprint_hash = $2",
+    )
+    .bind(reason)
+    .bind(fingerprint_hash)
+    .execute(&state.db)
+    .await?;
 
     Ok(())
 }

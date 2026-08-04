@@ -1,7 +1,7 @@
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use mongodb::{bson::doc, bson::oid::ObjectId, Collection};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 use crate::models::Admin;
@@ -15,16 +15,16 @@ pub struct Claims {
 
 #[derive(Debug, Clone)]
 pub struct AuthenticatedAdmin {
-    pub id: ObjectId,
+    pub id: Uuid,
     pub role: String,
 }
 
-pub fn generate_token(admin_id: &ObjectId, jwt_secret: &str, expires_in: &str) -> Result<String> {
+pub fn generate_token(admin_id: &Uuid, jwt_secret: &str, expires_in: &str) -> Result<String> {
     let expiration = parse_expiry(expires_in)?;
     let now = chrono::Utc::now().timestamp() as usize;
 
     let claims = Claims {
-        id: admin_id.to_hex(),
+        id: admin_id.to_string(),
         exp: now + expiration,
         iat: now,
     };
@@ -80,26 +80,12 @@ pub async fn auth_middleware(
 
     let claims = verify_token(token, &state.config.jwt_secret)?;
 
-    let admin_id = ObjectId::parse_str(&claims.id)
+    let admin_id = Uuid::parse_str(&claims.id)
         .map_err(|e| AppError::Unauthorized(format!("Invalid admin ID: {}", e)))?;
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
-
-    let collection: Collection<Admin> = state
-        .db
-        .database(db_name)
-        .collection(Admin::collection_name());
-
-    let admin = collection
-        .find_one(doc! { "_id": admin_id })
+    let admin = sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
+        .bind(admin_id)
+        .fetch_optional(&state.db)
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| AppError::Unauthorized("Admin not found".to_string()))?;

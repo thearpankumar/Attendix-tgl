@@ -1,14 +1,9 @@
 use chrono::Utc;
-use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime as BsonDateTime};
-use mongodb::Collection;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::error::Result;
 use crate::models::{DeviceFingerprint, UserAgentEntry};
-
-fn to_bson_datetime(dt: chrono::DateTime<Utc>) -> BsonDateTime {
-    BsonDateTime::from_millis(dt.timestamp_millis())
-}
 
 pub async fn check_device_blocked(
     state: &Arc<crate::AppState>,
@@ -18,32 +13,20 @@ pub async fn check_device_blocked(
         return Ok(None);
     }
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
+    let row: Option<(bool, Option<String>)> = sqlx::query_as(
+        "SELECT is_blocked, block_reason FROM device_fingerprints WHERE fingerprint_id = $1",
+    )
+    .bind(fingerprint_id)
+    .fetch_optional(&state.db)
+    .await?;
 
-    let collection: Collection<DeviceFingerprint> = state
-        .db
-        .database(db_name)
-        .collection(DeviceFingerprint::collection_name());
-
-    let device = collection
-        .find_one(doc! { "fingerprintId": fingerprint_id })
-        .await?;
-
-    Ok(device.map(|d| (d.is_blocked, d.block_reason)))
+    Ok(row)
 }
 
 pub async fn record_device_success(
     state: &Arc<crate::AppState>,
     fingerprint_id: &str,
-    session_id: ObjectId,
+    session_id: Uuid,
     roll_number: &str,
     user_agent: &str,
 ) -> Result<()> {
@@ -51,79 +34,52 @@ pub async fn record_device_success(
         return Ok(());
     }
 
-    let db_name = state
-        .config
-        .mongodb_uri
-        .split('/')
-        .next_back()
-        .unwrap_or("default")
-        .split('?')
-        .next()
-        .unwrap_or("default");
+    let existing = sqlx::query_as::<_, DeviceFingerprint>(
+        "SELECT * FROM device_fingerprints WHERE fingerprint_id = $1",
+    )
+    .bind(fingerprint_id)
+    .fetch_optional(&state.db)
+    .await?;
 
-    let collection: Collection<DeviceFingerprint> = state
-        .db
-        .database(db_name)
-        .collection(DeviceFingerprint::collection_name());
-
-    let device = collection
-        .find_one(doc! { "fingerprintId": fingerprint_id })
-        .await?;
-
-    let mut device = if let Some(d) = device {
-        d
-    } else {
-        DeviceFingerprint::new(fingerprint_id.to_string())
-    };
+    let mut device = existing.unwrap_or_else(|| DeviceFingerprint::new(fingerprint_id.to_string()));
 
     device.record_successful_verification(session_id, roll_number.to_string());
 
     add_user_agent(&mut device, user_agent);
 
-    let sessions_bson = Bson::Array(
-        device
-            .sessions
-            .iter()
-            .map(|s| {
-                doc! {
-                    "sessionId": s.session_id,
-                    "rollNumber": &s.roll_number,
-                    "timestamp": to_bson_datetime(s.timestamp),
-                    "wasSuccessful": s.was_successful,
-                }
-            })
-            .map(Bson::Document)
-            .collect(),
-    );
-
-    let ua_bson = Bson::Array(
-        device
-            .user_agents_seen
-            .iter()
-            .map(|u| {
-                doc! {
-                    "ua": &u.ua,
-                    "firstSeen": to_bson_datetime(u.first_seen),
-                    "lastSeen": to_bson_datetime(u.last_seen),
-                }
-            })
-            .map(Bson::Document)
-            .collect(),
-    );
-
-    collection
-        .update_one(
-            doc! { "fingerprintId": fingerprint_id },
-            doc! { "$set": {
-                "verificationFailures": device.verification_failures,
-                "sessions": sessions_bson,
-                "isTrusted": device.is_trusted,
-                "userAgentsSeen": ua_bson,
-                "lastSeen": to_bson_datetime(device.last_seen),
-            }},
-        )
-        .upsert(true)
-        .await?;
+    // Upsert: on first sight this inserts the full row; on subsequent visits it only
+    // touches the same fields the original Mongo `$set` touched, leaving is_blocked /
+    // spoofing_attempts / block_reason / last_spoofing_reason untouched.
+    sqlx::query(
+        "INSERT INTO device_fingerprints \
+            (id, fingerprint_id, first_seen, last_seen, verification_failures, spoofing_attempts, \
+             last_spoofing_reason, inconsistencies, claimed_device_types, user_agents_seen, sessions, \
+             is_trusted, is_blocked, block_reason, last_metrics) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
+         ON CONFLICT (fingerprint_id) DO UPDATE SET \
+            verification_failures = EXCLUDED.verification_failures, \
+            sessions = EXCLUDED.sessions, \
+            is_trusted = EXCLUDED.is_trusted, \
+            user_agents_seen = EXCLUDED.user_agents_seen, \
+            last_seen = EXCLUDED.last_seen",
+    )
+    .bind(device.id)
+    .bind(&device.fingerprint_id)
+    .bind(device.first_seen)
+    .bind(device.last_seen)
+    .bind(device.verification_failures)
+    .bind(device.spoofing_attempts)
+    .bind(&device.last_spoofing_reason)
+    .bind(&device.inconsistencies)
+    .bind(&device.claimed_device_types)
+    .bind(&device.user_agents_seen)
+    .bind(&device.sessions)
+    .bind(device.is_trusted)
+    .bind(device.is_blocked)
+    .bind(&device.block_reason)
+    .bind(&device.last_metrics)
+    .execute(&state.db)
+    .await?;
 
     Ok(())
 }
@@ -133,15 +89,16 @@ fn add_user_agent(device: &mut DeviceFingerprint, user_agent: &str) {
 
     if let Some(existing) = device
         .user_agents_seen
+        .0
         .iter_mut()
         .find(|u| u.ua == user_agent)
     {
         existing.last_seen = now;
     } else {
-        if device.user_agents_seen.len() >= 20 {
-            device.user_agents_seen.remove(0);
+        if device.user_agents_seen.0.len() >= 20 {
+            device.user_agents_seen.0.remove(0);
         }
-        device.user_agents_seen.push(UserAgentEntry {
+        device.user_agents_seen.0.push(UserAgentEntry {
             ua: user_agent.to_string(),
             first_seen: now,
             last_seen: now,
