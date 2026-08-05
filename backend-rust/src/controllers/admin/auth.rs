@@ -1,6 +1,6 @@
 use axum::{
     extract::{Json, State},
-    http::StatusCode,
+    http::{header::SET_COOKIE, StatusCode},
     response::IntoResponse,
     Extension,
 };
@@ -10,9 +10,9 @@ use std::sync::Arc;
 use crate::{
     error::{AppError, Result},
     middleware::{
-        generate_token,
+        blacklist_token, clear_auth_cookie, generate_token, make_auth_cookie, parse_expiry,
         validators::{validate_request, AdminLoginRequest, AdminRegisterRequest},
-        AuthenticatedAdmin,
+        AuthenticatedAdmin, Claims,
     },
     models::{Admin, AdminLogin, AdminRegistration},
 };
@@ -28,6 +28,9 @@ pub struct AdminResponse {
 
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
+    /// The token is still included in the body for backwards compatibility
+    /// while the admin frontend is migrated off localStorage. Once the
+    /// frontend reads only the HttpOnly cookie, this field should be removed.
     pub token: String,
     pub expires_in: String,
     pub admin: AdminResponse,
@@ -88,31 +91,81 @@ pub async fn register(
     .fetch_one(&state.db)
     .await?;
 
+    // Self-registration is gated only by a shared, never-rotated
+    // ADMIN_SECRET (see the constant-time check above) — a leak of that
+    // secret is otherwise silent. Every new admin account is a
+    // security-relevant event and should be visible to whoever watches the
+    // logs/alerts, not just discoverable by querying the admins table.
+    tracing::error!(
+        target: "security",
+        event = "admin_registered",
+        admin_id = %admin.id,
+        username = %admin.username,
+        email = %admin.email,
+        "New admin account registered via /api/admin/register"
+    );
+
+    if let Err(e) = crate::models::record_audit_event(
+        &state.db,
+        Some(admin.id),
+        "admin_registered",
+        serde_json::json!({ "username": admin.username, "email": admin.email }),
+        None,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "Failed to record audit log entry for admin_registered");
+    }
+
     let token = generate_token(
         &admin.id,
         &state.config.jwt_secret,
         &state.config.jwt_expire,
     )?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(LoginResponse {
-            token,
-            expires_in: state.config.jwt_expire.clone(),
-            admin: AdminResponse {
-                id: admin.id.to_string(),
-                username: admin.username,
-                email: admin.email,
-                role: admin.role,
-            },
-        }),
-    ))
+    let max_age = parse_expiry(&state.config.jwt_expire)?;
+    let cookie = make_auth_cookie(&token, max_age, state.config.is_production());
+
+    let body = Json(LoginResponse {
+        token: token.clone(),
+        expires_in: state.config.jwt_expire.clone(),
+        admin: AdminResponse {
+            id: admin.id.to_string(),
+            username: admin.username,
+            email: admin.email,
+            role: admin.role,
+        },
+    });
+
+    let mut response = (StatusCode::CREATED, body).into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, val);
+    }
+    Ok(response)
 }
 
 pub async fn login(
     State(state): State<Arc<crate::AppState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Json(payload): Json<AdminLogin>,
 ) -> Result<impl IntoResponse> {
+    // Canary account: intercepted before ever touching the database. Anyone
+    // typing this exact username is either the operator poking at their own
+    // decoy (rare, harmless) or running credential-stuffing/recon against a
+    // guessed "superadmin" account (the overwhelmingly common case) — either
+    // way, the response looks identical to a normal wrong-password rejection
+    // to anyone watching the wire.
+    if payload
+        .username
+        .eq_ignore_ascii_case(crate::constants::CANARY_ADMIN_USERNAME)
+    {
+        state
+            .deny_list
+            .add(&addr.ip().to_string(), "canary admin account login attempt")
+            .await;
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+
     let validation_req = AdminLoginRequest {
         username: payload.username.clone(),
         password: payload.password.clone(),
@@ -169,14 +222,32 @@ pub async fn login(
             .execute(&state.db)
             .await?;
     }
+
     let token = generate_token(
         &admin_id,
         &state.config.jwt_secret,
         &state.config.jwt_expire,
     )?;
 
-    Ok(Json(LoginResponse {
-        token,
+    if let Err(e) = crate::models::record_audit_event(
+        &state.db,
+        Some(admin_id),
+        "admin_login",
+        serde_json::json!({ "username": admin.username }),
+        Some(&addr.ip().to_string()),
+    )
+    .await
+    {
+        // The audit log is a detective control, not a gate — a failure to
+        // record it must never block a legitimate login.
+        tracing::error!(error = %e, "Failed to record audit log entry for admin_login");
+    }
+
+    let max_age = parse_expiry(&state.config.jwt_expire)?;
+    let cookie = make_auth_cookie(&token, max_age, state.config.is_production());
+
+    let body = Json(LoginResponse {
+        token: token.clone(),
         expires_in: state.config.jwt_expire.clone(),
         admin: AdminResponse {
             id: admin_id.to_string(),
@@ -184,7 +255,42 @@ pub async fn login(
             email: admin.email,
             role: admin.role,
         },
-    }))
+    });
+
+    let mut response = body.into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, val);
+    }
+    Ok(response)
+}
+
+/// Logs out the current admin session.
+///
+/// 1. Blacklists the token's `jti` in Redis (TTL = remaining lifetime) so the
+///    token becomes immediately invalid even before its natural expiry.
+/// 2. Clears the HttpOnly `admin_token` cookie via `Max-Age=0`.
+pub async fn logout(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(claims): Extension<Claims>,
+) -> Result<impl IntoResponse> {
+    // Blacklist the jti so no further requests can use this token
+    if let Some(ref redis) = state.redis {
+        blacklist_token(redis, &claims.jti, claims.exp).await;
+    } else {
+        tracing::warn!(
+            jti = %claims.jti,
+            "Redis not configured — token blacklisting skipped. \
+             Token will remain valid until natural expiry."
+        );
+    }
+
+    let clear_cookie = clear_auth_cookie(state.config.is_production());
+    let body = Json(serde_json::json!({ "message": "Logged out successfully" }));
+    let mut response = body.into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&clear_cookie) {
+        response.headers_mut().insert(SET_COOKIE, val);
+    }
+    Ok(response)
 }
 
 pub async fn get_profile(

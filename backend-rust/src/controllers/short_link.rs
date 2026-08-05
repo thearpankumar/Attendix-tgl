@@ -49,7 +49,7 @@ pub struct ShortLinkResponse {
 fn resolve_short_code(provided: Option<String>) -> String {
     provided
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| ShortLink::generate_short_code(6))
+        .unwrap_or_else(|| ShortLink::generate_short_code(10))
 }
 
 pub async fn create_short_link(
@@ -496,16 +496,16 @@ mod create_short_link_tests {
     #[test]
     fn resolve_short_code_falls_back_to_generated_code_for_empty_string() {
         let resolved = resolve_short_code(Some("".to_string()));
-        assert_eq!(resolved.len(), 6);
+        assert_eq!(resolved.len(), 10);
         assert_ne!(resolved, "");
 
         let resolved_whitespace = resolve_short_code(Some("   ".to_string()));
-        assert_eq!(resolved_whitespace.len(), 6);
+        assert_eq!(resolved_whitespace.len(), 10);
     }
 
     #[test]
     fn resolve_short_code_falls_back_to_generated_code_for_none() {
         let resolved = resolve_short_code(None);
-        assert_eq!(resolved.len(), 6);
+        assert_eq!(resolved.len(), 10);
     }
 }

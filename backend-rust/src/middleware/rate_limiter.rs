@@ -159,6 +159,44 @@ impl RateLimiter {
             .await
     }
 
+    /// Per-identity submission caps, layered on top of the per-IP
+    /// `student_rate_limit`. IP-only limiting shares one bucket across an
+    /// entire NAT'd classroom (false positives) and gives an attacker
+    /// rotating through many IPs effectively no limit at all against a
+    /// single roll number or device (false negatives).
+    pub async fn roll_number_rate_limit(
+        &self,
+        roll_number: &str,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> bool {
+        let key = format!("rollnum:{}", roll_number.to_uppercase());
+        self.check_rate_limit(&key, &RateLimitConfig::new(window_secs, max_requests))
+            .await
+    }
+
+    pub async fn device_fingerprint_rate_limit(
+        &self,
+        device_fingerprint: &str,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> bool {
+        let key = format!("devicefp:{}", device_fingerprint);
+        self.check_rate_limit(&key, &RateLimitConfig::new(window_secs, max_requests))
+            .await
+    }
+
+    pub async fn short_link_guess_rate_limit(
+        &self,
+        ip: &str,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> bool {
+        let key = format!("shortlinkguess:{}", ip);
+        self.check_rate_limit(&key, &RateLimitConfig::new(window_secs, max_requests))
+            .await
+    }
+
     pub async fn client_log_rate_limit(
         &self,
         ip: &str,
@@ -192,6 +230,12 @@ fn limit_type_from_key(key: &str) -> &str {
         "registration"
     } else if key.starts_with("clientlog:") {
         "clientlog"
+    } else if key.starts_with("shortlinkguess:") {
+        "shortlinkguess"
+    } else if key.starts_with("rollnum:") {
+        "rollnum"
+    } else if key.starts_with("devicefp:") {
+        "devicefp"
     } else {
         "admin"
     }

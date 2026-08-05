@@ -11,14 +11,24 @@ use crate::middleware::AuthenticatedAdmin;
 use crate::models::SystemConfig;
 use crate::AppState;
 
-use crate::middleware::auth_middleware;
+use crate::middleware::{admin_rate_limit_middleware, auth_middleware};
 
 pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(get_config).put(update_config))
         .route("/dev-bypass", post(toggle_dev_bypass))
         .route("/defaults", get(get_config_defaults))
-        .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+        // dev-bypass re-checks the admin's password on every call (see
+        // toggle_dev_bypass below), which makes it a password-guessing
+        // surface. This router previously had no rate limiting at all.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            admin_rate_limit_middleware,
+        ))
 }
 
 async fn get_config(
@@ -137,6 +147,8 @@ async fn toggle_dev_bypass(
 ) -> Result<impl axum::response::IntoResponse> {
     use chrono::Utc;
 
+    auth_admin.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     let admin = sqlx::query_as::<_, crate::models::Admin>("SELECT * FROM admins WHERE id = $1")
         .bind(auth_admin.id)
         .fetch_optional(&state.db)
@@ -151,11 +163,31 @@ async fn toggle_dev_bypass(
         .await?
         .unwrap_or_else(SystemConfig::default);
 
+    // Hard production guard: the bypass must never be enabled when the
+    // server is running as production, regardless of who is asking.
+    if payload.enabled && state.config.is_production() {
+        return Err(AppError::Forbidden(
+            "DEV_BYPASS_ALL cannot be enabled in production mode".to_string(),
+        ));
+    }
+
     config.dev_bypass_enabled = payload.enabled;
     config.updated_by = Some(auth_admin.id);
     config.updated_at = Utc::now();
 
     let saved = config.save(&state.db).await?;
+
+    if let Err(e) = crate::models::record_audit_event(
+        &state.db,
+        Some(auth_admin.id),
+        "dev_bypass_toggled",
+        serde_json::json!({ "enabled": payload.enabled }),
+        None,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "Failed to record audit log entry for dev_bypass_toggled");
+    }
 
     // Flush hot-reload cache
     state.set_system_config(saved.clone()).await;

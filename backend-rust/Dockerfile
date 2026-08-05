@@ -37,7 +37,7 @@ RUN cargo new --bin model-downloader && \
 # ==============================================================================
 # Stage 2: Final Runtime Image
 # ==============================================================================
-FROM debian:trixie-slim
+FROM ubuntu:24.04
 
 WORKDIR /app
 

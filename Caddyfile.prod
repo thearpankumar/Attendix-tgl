@@ -100,7 +100,7 @@ attendix.talenciaglobal.com {
 
 	# Admin panel (React app with client-side routing)
 	handle_path /owner-of-attendix-xyz* {
-		reverse_proxy admin-frontend:80
+		reverse_proxy admin-frontend:8080
 	}
 
 	# Grafana (logs + metrics dashboards). NOT handle_path: with
@@ -126,17 +126,17 @@ attendix.talenciaglobal.com {
 
 	# Student attendance page
 	handle /attend/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Student assets
 	handle /attend-assets/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Student app.js and face detection models
 	handle /app.js {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# MediaPipe WASM for on-device face detection. The student bundle requests
@@ -145,11 +145,11 @@ attendix.talenciaglobal.com {
 	# fell through to the catch-all and the home page answered 404, so face
 	# detection never initialised.
 	handle /wasm/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	handle /models/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Short links and WebAuthn routes (the Rust backend nests these under

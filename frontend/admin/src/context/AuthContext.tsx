@@ -35,30 +35,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       const res = await axios.get<Admin>('/api/admin/profile');
       setAdmin(res.data);
     } catch {
-      localStorage.removeItem('token');
-      delete axios.defaults.headers.common['Authorization'];
+      // If fetching the profile fails (e.g. 401 Unauthorized), we are not logged in.
+      // The backend will have already cleared the cookie or it was expired/missing.
+      setAdmin(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      fetchProfile();
-    } else {
-      setLoading(false);
-    }
+    // With HttpOnly cookies, we always attempt to fetch the profile on load.
+    // If we have a valid cookie, it will succeed. If not, it will gracefully 401.
+    fetchProfile();
   }, [fetchProfile]);
 
   const login = useCallback(async (username: string, password: string): Promise<LoginResult> => {
     try {
-      const res = await axios.post<{ token: string; admin: Admin }>('/api/admin/login', { username, password });
-      const { token, admin: adminData } = res.data;
-      localStorage.setItem('token', token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      setAdmin(adminData);
+      const res = await axios.post<{ admin: Admin }>('/api/admin/login', { username, password });
+      setAdmin(res.data.admin);
       return { success: true };
     } catch (error) {
       const err = error as { response?: { data?: { message?: string } } };
@@ -66,10 +60,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('token');
-    delete axios.defaults.headers.common['Authorization'];
-    setAdmin(null);
+  const logout = useCallback(async () => {
+    try {
+      await axios.post('/api/admin/logout');
+    } catch (e) {
+      console.warn('Logout request failed', e);
+    } finally {
+      setAdmin(null);
+    }
   }, []);
 
   const value = React.useMemo(() => ({ admin, login, logout, loading }), [admin, login, logout, loading]);

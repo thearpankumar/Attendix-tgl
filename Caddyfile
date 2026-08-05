@@ -5,18 +5,23 @@
 
 	local_certs
 
-	# Admin API bound to all interfaces (not published to the host — only
-	# reachable by other containers on web-net, e.g. Prometheus) so
-	# /metrics can be scraped as caddy:2019/metrics.
-	# See Caddyfile.prod: the admin API can rewrite the running config and
-	# export certs, and every container on web-net could reach it here.
+	# The admin API can rewrite the running config and export certs, and
+	# every container on web-net could reach it if it were left on — see
+	# Caddyfile.prod. Metrics get their own minimal, admin-API-independent
+	# listener below instead of riding on :2019/metrics via the admin API.
 	admin off
-	metrics
 
 	log {
 		output stdout
 		format json
 	}
+}
+
+# Metrics-only listener, not published to the host (see docker-compose.yml —
+# only :80/:443 are in `ports:`); reachable by other containers on the same
+# network (e.g. Prometheus, or this compose file's own healthcheck).
+:2019 {
+	metrics /metrics
 }
 
 # ============================================
@@ -60,7 +65,7 @@
 
 	# Admin panel (React app with client-side routing)
 	handle_path /owner-of-attendix-xyz* {
-		reverse_proxy admin-frontend:80
+		reverse_proxy admin-frontend:8080
 	}
 
 	# Grafana (logs + metrics dashboards). NOT handle_path: with
@@ -75,17 +80,17 @@
 
 	# Student attendance page
 	handle /attend/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Student assets
 	handle /attend-assets/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Student app.js and face detection models
 	handle /app.js {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# MediaPipe WASM for on-device face detection. The student bundle requests
@@ -94,11 +99,11 @@
 	# fell through to the catch-all and the home page answered 404, so face
 	# detection never initialised.
 	handle /wasm/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	handle /models/* {
-		reverse_proxy student-frontend:80
+		reverse_proxy student-frontend:8080
 	}
 
 	# Short links (and WebAuthn routes which are mounted under /s)

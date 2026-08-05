@@ -35,7 +35,7 @@ services:
       - SETGID
       - SETUID
     logging: *default-logging
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     expose:
       - "6379"
     volumes:
@@ -73,11 +73,11 @@ services:
       # Bearer token Prometheus presents to scrape /metrics.
       - METRICS_TOKEN=${METRICS_TOKEN:-}
       - PORT=5000
-      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
-      - JWT_SECRET=${JWT_SECRET}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env — run scripts/generate-secrets.sh}
       - JWT_EXPIRE=7d
-      - ADMIN_SECRET=${ADMIN_SECRET}
+      - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET must be set in .env — run scripts/generate-secrets.sh}
       # Only s3 is implemented as a StorageProvider (backend-rust/src/storage) — no Cloudinary support.
       - STORAGE_PROVIDER=s3
       # AWS S3
@@ -93,6 +93,9 @@ services:
       - PG_MAX_POOL_SIZE=${PG_MAX_POOL_SIZE:-300}
       - PG_MIN_POOL_SIZE=${PG_MIN_POOL_SIZE:-20}
       - DEV_BYPASS_ALL=${DEV_BYPASS_ALL:-false}
+    read_only: true
+    tmpfs:
+      - /tmp
     deploy:
       replicas: 3
       resources:
@@ -123,14 +126,16 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    # nginx-unprivileged (see frontend/admin/Dockerfile) runs as the `nginx`
+    # user from the start and listens on 8080, not 80 — no capabilities
+    # needed at all anymore.
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - NET_BIND_SERVICE
-      - SETGID
-      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
     logging: *default-logging
     deploy:
       replicas: 3
@@ -146,7 +151,7 @@ services:
     networks:
       - web-net
 
-  
+
   student-frontend:
     image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:student-frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped
@@ -154,12 +159,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - NET_BIND_SERVICE
-      - SETGID
-      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
     logging: *default-logging
     deploy:
       replicas: 3
@@ -183,6 +187,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     logging: *default-logging
     deploy:
       replicas: 3

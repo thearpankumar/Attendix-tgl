@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import {
   Box,
   Card,
@@ -63,10 +64,9 @@ interface SecuritySummary {
 interface AdminSecurityReviewProps {
   sessionId: string;
   apiBaseUrl: string;
-  token: string;
 }
 
-export default function AdminSecurityReview({ sessionId, apiBaseUrl, token }: AdminSecurityReviewProps) {
+export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecurityReviewProps) {
   const [summary, setSummary] = useState<SecuritySummary | null>(null);
   const [flaggedSubmissions, setFlaggedSubmissions] = useState<FlaggedSubmission[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,22 +86,12 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl, token }: Ad
     setLoading(true);
     try {
       const [summaryRes, flaggedRes] = await Promise.all([
-        fetch(`${apiBaseUrl}/admin/security/sessions/${sessionId}/security-summary`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-        fetch(`${apiBaseUrl}/admin/security/sessions/${sessionId}/flagged`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
+        axios.get(`${apiBaseUrl}/admin/security/sessions/${sessionId}/security-summary`),
+        axios.get(`${apiBaseUrl}/admin/security/sessions/${sessionId}/flagged`),
       ]);
 
-      if (summaryRes.ok) {
-        const data = await summaryRes.json();
-        setSummary(data);
-      }
-      if (flaggedRes.ok) {
-        const data = await flaggedRes.json();
-        setFlaggedSubmissions(data.submissions || []);
-      }
+      setSummary(summaryRes.data);
+      setFlaggedSubmissions(flaggedRes.data.submissions || []);
     } catch {
       // Failed to load security data
     } finally {
@@ -111,14 +101,9 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl, token }: Ad
 
   const handleViewDetails = async (submission: FlaggedSubmission) => {
     try {
-      const res = await fetch(`${apiBaseUrl}/admin/security/attendance/${submission._id}/details`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedSubmission({ ...submission, ...data });
-        setDetailsOpen(true);
-      }
+      const res = await axios.get(`${apiBaseUrl}/admin/security/attendance/${submission._id}/details`);
+      setSelectedSubmission({ ...submission, ...res.data });
+      setDetailsOpen(true);
     } catch {
       // Failed to load details
     }
@@ -129,20 +114,13 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl, token }: Ad
     
     setReviewing(true);
     try {
-      const res = await fetch(`${apiBaseUrl}/admin/security/attendance/${selectedSubmission._id}/review`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ action: reviewAction }),
+      await axios.post(`${apiBaseUrl}/admin/security/attendance/${selectedSubmission._id}/review`, {
+        action: reviewAction
       });
 
-      if (res.ok) {
-        setReviewDialogOpen(false);
-        setDetailsOpen(false);
-        loadSecurityData();
-      }
+      setReviewDialogOpen(false);
+      setDetailsOpen(false);
+      loadSecurityData();
     } catch {
       // Failed to review
     } finally {

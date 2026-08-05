@@ -213,7 +213,7 @@ pub async fn create_session(
         _ => {
             let mut attempts = 0;
             let code = loop {
-                let candidate = ShortLink::generate_short_code(6);
+                let candidate = ShortLink::generate_short_code(10);
                 let existing: Option<ShortLink> =
                     sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
                         .bind(&candidate)

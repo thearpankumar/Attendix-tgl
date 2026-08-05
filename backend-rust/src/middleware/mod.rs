@@ -1,6 +1,8 @@
+pub mod csrf;
 pub mod validators;
 
 mod auth;
+mod deny_list;
 mod device_check;
 mod device_fingerprint;
 mod device_integrity;
@@ -15,6 +17,8 @@ mod security_extractors;
 mod session_cache;
 
 pub use auth::*;
+pub use csrf::csrf_middleware;
+pub use deny_list::{deny_list_middleware, DenyList};
 pub use device_check::{device_check_middleware, DeviceCheckResult};
 pub use device_fingerprint::{check_device_blocked, record_device_success};
 pub use device_trust::{
@@ -30,6 +34,7 @@ pub use metrics_auth::metrics_auth_middleware;
 pub use mobile_check::{check_mobile, detect_ua_spoofing, mobile_check_middleware, DeviceInfo};
 pub use rate_limit_middleware::{
     admin_rate_limit_middleware, client_log_rate_limit_middleware, login_rate_limit_middleware,
+    registration_rate_limit_middleware, short_link_guess_rate_limit_middleware,
     student_rate_limit_middleware,
 };
 pub use rate_limiter::RateLimiter;

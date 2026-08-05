@@ -381,6 +381,8 @@ pub async fn update_security_settings(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<UpdateSecuritySettingsRequest>,
 ) -> Result<impl IntoResponse> {
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     let mut config = SystemConfig::load(&state.db).await?.unwrap_or_default();
 
     if let Some(gps) = payload.gps_validation {
@@ -398,6 +400,18 @@ pub async fn update_security_settings(
 
     let config = config.save(&state.db).await?;
 
+    if let Err(e) = crate::models::record_audit_event(
+        &state.db,
+        Some(auth.id),
+        "security_settings_updated",
+        serde_json::json!({}),
+        None,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "Failed to record audit log entry for security_settings_updated");
+    }
+
     Ok(Json(serde_json::json!({
         "message": "Security settings updated",
         "config": {
@@ -405,6 +419,24 @@ pub async fn update_security_settings(
             "emulatorDetection": config.emulator_detection,
             "trustScore": config.trust_score,
         }
+    })))
+}
+
+/// Recomputes the admin audit log's hash chain from the first row and
+/// reports whether it's intact. A break means a row was altered or deleted
+/// directly in the database, bypassing the application entirely — see
+/// models::audit_log for how the chain itself is constructed.
+pub async fn verify_audit_log(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+) -> Result<impl IntoResponse> {
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
+    let broken_at_seq = crate::models::verify_chain(&state.db).await?;
+
+    Ok(Json(serde_json::json!({
+        "intact": broken_at_seq.is_none(),
+        "brokenAtSeq": broken_at_seq,
     })))
 }
 

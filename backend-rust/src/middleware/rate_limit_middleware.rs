@@ -68,6 +68,8 @@ fn rate_limit_exceeded_response(limit_type: &str) -> Response {
         "login" => "Too many login attempts. Please try again later.",
         "admin" => "Too many requests. Please slow down.",
         "student" => "Too many requests from this device. Please try again later.",
+        "registration" => "Too many registration attempts. Please try again later.",
+        "shortlinkguess" => "Too many attempts. Please try again later.",
         _ => "Rate limit exceeded. Please try again later.",
     };
 
@@ -101,6 +103,66 @@ pub async fn login_rate_limit_middleware(
 
     if !allowed {
         return rate_limit_exceeded_response("login");
+    }
+
+    next.run(request).await
+}
+
+/// Rate limiting middleware specifically for `/register`.
+///
+/// A leaked/guessed ADMIN_SECRET is the only gate on self-registration
+/// (see controllers/admin/auth.rs::register). It previously shared the
+/// generic `login` bucket (20 req/min by default) with `/login`, which is
+/// far too permissive for an action that should happen a handful of times
+/// ever in a normal deployment. This is layered in addition to, not instead
+/// of, `login_rate_limit_middleware`.
+pub async fn registration_rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
+
+    let config = state.get_system_config().await;
+    let allowed = state
+        .rate_limiter
+        .registration_rate_limit(
+            &ip,
+            config.rate_limits.registration_max_requests,
+            config.rate_limits.registration_window_secs,
+        )
+        .await;
+
+    if !allowed {
+        return rate_limit_exceeded_response("registration");
+    }
+
+    next.run(request).await
+}
+
+/// Dedicated, tighter cap for short-link code resolution
+/// (`GET /api/s/{shortCode}` and `.../session`), on top of the general
+/// `student_rate_limit_middleware` already layered on the whole router. A
+/// 10-char short code is much lower-entropy than the session token it
+/// stands in for; this bounds how many distinct codes one IP can try.
+pub async fn short_link_guess_rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
+
+    let allowed = state
+        .rate_limiter
+        .short_link_guess_rate_limit(
+            &ip,
+            crate::constants::SHORT_LINK_GUESS_MAX_ATTEMPTS,
+            crate::constants::SHORT_LINK_GUESS_WINDOW_SECS,
+        )
+        .await;
+
+    if !allowed {
+        return rate_limit_exceeded_response("shortlinkguess");
     }
 
     next.run(request).await

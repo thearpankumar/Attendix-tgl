@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Json, Path, State},
+    extract::{ConnectInfo, Json, Path, State},
     response::IntoResponse,
 };
 use chrono::{Duration, Utc};
@@ -11,8 +11,11 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, Result},
     models::{
-        Location, Session, ShortLink, WebAuthnChallenge, WebAuthnChallengeType, WebAuthnCredential,
+        GpsAnomaly, GpsAnomalyType, Location, Session, Severity, ShortLink, WebAuthnChallenge,
+        WebAuthnChallengeType, WebAuthnCredential,
     },
+    services::IpInfo,
+    utils::calculate_distance,
     AppState,
 };
 
@@ -555,13 +558,15 @@ pub async fn finish_authentication(
         crate::middleware::EmulatorDetectionResult,
     >,
     axum::Extension(device_integrity): axum::Extension<crate::middleware::DeviceIntegrityResult>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(payload): Json<AuthenticationFinishRequest>,
 ) -> Result<impl IntoResponse> {
     let sys_config = crate::models::SystemConfig::load(&state.db)
         .await?
         .unwrap_or_default();
-    let is_dev_bypass_all = sys_config.dev_bypass_enabled
-        || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true";
+    let is_dev_bypass_all = !state.config.is_production()
+        && (sys_config.dev_bypass_enabled
+            || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true");
 
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
     let session_id = session.id;
@@ -602,6 +607,40 @@ pub async fn finish_authentication(
         stored_challenge.student_id.clone()
     }
     .to_uppercase();
+
+    // Per-identity caps in addition to the router's per-IP student limiter —
+    // see the identical rationale in controllers/attendance.rs::submit_attendance.
+    if !state
+        .rate_limiter
+        .roll_number_rate_limit(
+            &roll_upper,
+            crate::constants::ROLL_NUMBER_SUBMIT_MAX_ATTEMPTS,
+            crate::constants::ROLL_NUMBER_SUBMIT_WINDOW_SECS,
+        )
+        .await
+    {
+        return Err(AppError::TooManyRequests(
+            "Too many attendance attempts for this roll number. Please try again later."
+                .to_string(),
+        ));
+    }
+
+    if let Some(ref fingerprint) = payload.device_fingerprint {
+        if !state
+            .rate_limiter
+            .device_fingerprint_rate_limit(
+                fingerprint,
+                crate::constants::DEVICE_FINGERPRINT_SUBMIT_MAX_ATTEMPTS,
+                crate::constants::DEVICE_FINGERPRINT_SUBMIT_WINDOW_SECS,
+            )
+            .await
+        {
+            return Err(AppError::TooManyRequests(
+                "Too many attendance attempts from this device. Please try again later."
+                    .to_string(),
+            ));
+        }
+    }
 
     // Get credential
     let stored_credential: WebAuthnCredential =
@@ -779,7 +818,45 @@ pub async fn finish_authentication(
         .as_ref()
         .map(|fp| crate::models::Device::hash_fingerprint(fp));
 
+    // IP-geo sanity cross-check — same rationale as
+    // controllers/attendance.rs::submit_attendance.
+    let ip_info: IpInfo = crate::services::lookup_ip(&state.http_client, &addr.ip().to_string())
+        .await
+        .unwrap_or_else(|_| IpInfo {
+            isp: "Unknown".to_string(),
+            org: "Unknown".to_string(),
+            country: None,
+            region: None,
+            city: None,
+            latitude: None,
+            longitude: None,
+        });
+    let ip_geo_anomaly = match (ip_info.latitude, ip_info.longitude) {
+        (Some(ip_lat), Some(ip_lon)) => {
+            let ip_distance_m =
+                calculate_distance(ip_lat, ip_lon, payload.latitude, payload.longitude);
+            if ip_distance_m > crate::constants::IP_GEO_MISMATCH_THRESHOLD_M {
+                Some(GpsAnomaly {
+                    anomaly_type: GpsAnomalyType::IpGeoMismatch,
+                    severity: Severity::Medium,
+                    details: Some(format!(
+                        "Claimed GPS position is ~{:.0}km from the request IP's approximate location ({})",
+                        ip_distance_m / 1000.0,
+                        ip_info.country.as_deref().unwrap_or("unknown region")
+                    )),
+                    detected_at: Utc::now(),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
     let mut gps_anomalies = super::attendance::build_gps_anomalies(&gps_validation);
+    if let Some(anomaly) = ip_geo_anomaly {
+        gps_anomalies.push(anomaly);
+    }
     let emulator_flags = super::attendance::build_emulator_flags(&emulator_detection);
     let integrity_checks = super::attendance::build_integrity_checks(&device_integrity);
     let gps_confidence = super::attendance::gps_confidence_from_str(&gps_validation.confidence);

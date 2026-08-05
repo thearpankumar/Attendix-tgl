@@ -14,11 +14,17 @@ ENV VITE_DEV_BYPASS_ALL=$VITE_DEV_BYPASS_ALL
 RUN npm run build
 
 # Stage 2: Runtime
-# Using alpine-slim for the absolute smallest Nginx footprint
-FROM nginx:alpine-slim
+# nginx-unprivileged runs as the `nginx` user from the start (listens on
+# 8080, not 80) instead of starting as root and relying on
+# CHOWN/DAC_OVERRIDE/SETUID/SETGID/NET_BIND_SERVICE capabilities at the
+# compose layer to drop privilege — see nginx.conf's `listen 8080;` and the
+# matching compose port/capability changes.
+FROM nginxinc/nginx-unprivileged:alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
 CMD ["nginx", "-g", "daemon off;"]

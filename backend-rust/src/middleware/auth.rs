@@ -6,17 +6,48 @@ use uuid::Uuid;
 use crate::error::{AppError, Result};
 use crate::models::Admin;
 
+/// Redis key prefix for blacklisted JWT IDs.
+const BLACKLIST_PREFIX: &str = "jwt_blacklist:";
+
+/// Cookie name used to store the admin auth token (HttpOnly).
+pub const AUTH_COOKIE_NAME: &str = "admin_token";
+
+/// Cookie path scoped to admin API routes only.
+const AUTH_COOKIE_PATH: &str = "/api";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
+    /// Admin ID (UUID string)
     pub id: String,
+    /// Expiry timestamp (Unix seconds)
     pub exp: usize,
+    /// Issued-at timestamp (Unix seconds)
     pub iat: usize,
+    /// Unique token ID used for blacklisting on logout
+    pub jti: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct AuthenticatedAdmin {
     pub id: Uuid,
     pub role: String,
+}
+
+impl AuthenticatedAdmin {
+    /// Every admin account is authenticated equally by `auth_middleware`;
+    /// `role` was stored but never checked anywhere, so any admin could hit
+    /// the highest-impact endpoints (dev-bypass toggle, security settings,
+    /// roster/session/location deletion). Handlers for those endpoints call
+    /// this to require `crate::constants::ROLE_SUPER_ADMIN` explicitly.
+    pub fn require_role(&self, role: &str) -> Result<()> {
+        if self.role != role {
+            return Err(AppError::Forbidden(format!(
+                "This action requires the '{}' role",
+                role
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub fn generate_token(admin_id: &Uuid, jwt_secret: &str, expires_in: &str) -> Result<String> {
@@ -27,6 +58,7 @@ pub fn generate_token(admin_id: &Uuid, jwt_secret: &str, expires_in: &str) -> Re
         id: admin_id.to_string(),
         exp: now + expiration,
         iat: now,
+        jti: Uuid::new_v4().to_string(),
     };
 
     encode(
@@ -37,7 +69,30 @@ pub fn generate_token(admin_id: &Uuid, jwt_secret: &str, expires_in: &str) -> Re
     .map_err(AppError::Jwt)
 }
 
-fn parse_expiry(expires_in: &str) -> Result<usize> {
+/// Builds the `Set-Cookie` header value for the admin auth token.
+///
+/// - `HttpOnly`: JS cannot read it, mitigating XSS token theft.
+/// - `SameSite=Strict`: Browser won't send it cross-site, mitigating CSRF.
+/// - `Secure`: Only sent over HTTPS (applied in production).
+/// - `Path=/api/admin`: Scoped to admin routes only, not student routes.
+pub fn make_auth_cookie(token: &str, max_age_secs: usize, is_production: bool) -> String {
+    let secure = if is_production { "; Secure" } else { "" };
+    format!(
+        "{}={}; HttpOnly; SameSite=Strict; Path={}; Max-Age={}{}",
+        AUTH_COOKIE_NAME, token, AUTH_COOKIE_PATH, max_age_secs, secure
+    )
+}
+
+/// Builds a `Set-Cookie` header that immediately clears the auth cookie.
+pub fn clear_auth_cookie(is_production: bool) -> String {
+    let secure = if is_production { "; Secure" } else { "" };
+    format!(
+        "{}=; HttpOnly; SameSite=Strict; Path={}; Max-Age=0{}",
+        AUTH_COOKIE_NAME, AUTH_COOKIE_PATH, secure
+    )
+}
+
+pub fn parse_expiry(expires_in: &str) -> Result<usize> {
     let num: usize = expires_in
         .trim_end_matches(|c: char| !c.is_numeric())
         .parse()
@@ -61,7 +116,61 @@ pub fn verify_token(token: &str, jwt_secret: &str) -> Result<Claims> {
         &Validation::default(),
     )
     .map(|data| data.claims)
-    .map_err(|e| AppError::Unauthorized(format!("Invalid token: {}", e)))
+    .map_err(|_| AppError::Unauthorized("Invalid or expired token".to_string()))
+}
+
+/// Checks whether a token's `jti` has been blacklisted (i.e. logged out).
+///
+/// Returns `false` (allow) when Redis is unavailable, so a Redis outage does
+/// not lock every admin out. The trade-off is that a logged-out token remains
+/// valid until it naturally expires if Redis is down — acceptable given the
+/// short window and the `SameSite=Strict` cookie providing additional protection.
+pub async fn is_token_blacklisted(redis: &redis::Client, jti: &str) -> bool {
+    use redis::AsyncCommands;
+    let Ok(mut conn) = redis.get_multiplexed_async_connection().await else {
+        tracing::warn!(
+            jti = %jti,
+            "Redis unavailable for blacklist check; allowing token (fail-open)"
+        );
+        return false;
+    };
+    let key = format!("{}{}", BLACKLIST_PREFIX, jti);
+    conn.exists::<_, bool>(key).await.unwrap_or(false)
+}
+
+/// Adds a token's `jti` to the Redis blacklist with TTL = remaining lifetime.
+///
+/// The TTL ensures the blacklist never grows unboundedly — entries expire the
+/// moment the token would have expired naturally anyway.
+pub async fn blacklist_token(redis: &redis::Client, jti: &str, exp: usize) {
+    use redis::AsyncCommands;
+    let Ok(mut conn) = redis.get_multiplexed_async_connection().await else {
+        tracing::error!(
+            jti = %jti,
+            "Redis unavailable — token could NOT be blacklisted. \
+             It will remain valid until natural expiry."
+        );
+        return;
+    };
+    let now = chrono::Utc::now().timestamp() as usize;
+    let ttl = exp.saturating_sub(now);
+    if ttl == 0 {
+        return; // Already expired — nothing to blacklist
+    }
+    let key = format!("{}{}", BLACKLIST_PREFIX, jti);
+    if let Err(e) = conn.set_ex::<_, _, ()>(key, "revoked", ttl as u64).await {
+        tracing::error!(jti = %jti, error = %e, "Failed to write token to blacklist");
+    } else {
+        tracing::info!(jti = %jti, ttl_secs = ttl, "Token blacklisted successfully");
+    }
+}
+
+/// Extracts a named cookie value from a raw `Cookie` header string.
+fn extract_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    let prefix = format!("{}=", name);
+    cookie_header
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(prefix.as_str()))
 }
 
 pub async fn auth_middleware(
@@ -69,19 +178,44 @@ pub async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response> {
-    let auth_header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
+    // Token resolution order:
+    //   1. HttpOnly `admin_token` cookie  (new, preferred path)
+    //   2. `Authorization: Bearer <token>` header  (backwards-compat for existing
+    //      clients / API callers while the frontend migration is in progress)
+    let token = {
+        let cookie_token = request
+            .headers()
+            .get(axum::http::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|header| extract_cookie(header, AUTH_COOKIE_NAME))
+            .map(str::to_owned);
 
-    let token = auth_header
-        .ok_or_else(|| AppError::Unauthorized("Missing authorization header".to_string()))?;
+        let bearer_token = request
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(str::to_owned);
 
-    let claims = verify_token(token, &state.config.jwt_secret)?;
+        cookie_token
+            .or(bearer_token)
+            .ok_or_else(|| AppError::Unauthorized("Missing authentication".to_string()))?
+    };
+
+    let claims = verify_token(&token, &state.config.jwt_secret)?;
+
+    // Blacklist check — only possible when Redis is configured.
+    // Tokens are blacklisted on logout so revocation takes effect immediately.
+    if let Some(ref redis) = state.redis {
+        if is_token_blacklisted(redis, &claims.jti).await {
+            return Err(AppError::Unauthorized(
+                "Token has been revoked. Please log in again.".to_string(),
+            ));
+        }
+    }
 
     let admin_id = Uuid::parse_str(&claims.id)
-        .map_err(|e| AppError::Unauthorized(format!("Invalid admin ID: {}", e)))?;
+        .map_err(|_| AppError::Unauthorized("Invalid admin ID in token".to_string()))?;
 
     let admin = sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
         .bind(admin_id)
@@ -101,6 +235,8 @@ pub async fn auth_middleware(
         )));
     }
 
+    // Stash the full claims so logout can extract jti + exp without re-parsing
+    request.extensions_mut().insert(claims);
     request.extensions_mut().insert(AuthenticatedAdmin {
         id: admin_id,
         role: admin.role.clone(),

@@ -13,7 +13,12 @@ services:
       # Secrets no longer depend on NODE_ENV, so this is now a logging/verbosity
       # switch rather than a security one.
       - NODE_ENV=development
-      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      # Matches docker-compose.yml's own fallback-free interpolation — this
+      # file previously re-added the `:-postgres` / `:-redis_secure_password`
+      # defaults for these two keys, silently reintroducing the weak-default
+      # gap on any bare `docker compose up` even after it was closed in the
+      # base file.
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379
     volumes:
       - ./backend-rust/src:/app/src:ro

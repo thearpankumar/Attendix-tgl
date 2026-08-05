@@ -35,6 +35,15 @@ services:
     image: prom/prometheus:v3.12.0
     container_name: attendance-prometheus
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -67,6 +76,11 @@ services:
       - DAC_READ_SEARCH
     devices:
       - /dev/kmsg
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
@@ -83,6 +97,18 @@ services:
     container_name: attendance-node-exporter
     restart: unless-stopped
     pid: host
+    # Every mount below is read-only and node-exporter needs no special
+    # capability to read them — matches the cap_drop/security_opt pattern
+    # applied to every other service in this stack.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -101,6 +127,15 @@ services:
     image: grafana/loki:3.7.0
     container_name: attendance-loki
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
     command:
       - -config.file=/etc/loki/loki-config.yml
       - -config.expand-env=true
@@ -123,6 +158,20 @@ services:
     image: grafana/alloy:v1.17.0
     container_name: attendance-alloy
     restart: unless-stopped
+    # Docker socket access (even read-only) lets this container enumerate
+    # every container/image on the host — a meaningful privilege even
+    # without write access, so it gets the same cap_drop/no-new-privileges
+    # treatment as everything else rather than being left unhardened because
+    # the mount itself is already read-only.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -145,9 +194,20 @@ services:
     # published. serve_from_sub_path=true + a matching root_url is required
     # (Grafana's own router expects the full prefixed path — Caddy passes
     # it through unstripped) or Grafana's emitted links/assets break.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-this-grafana-password}
+      # No weak fallback: this is reachable on the public internet in prod
+      # (see Caddyfile.prod), protected only by this login.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env — run scripts/generate-secrets.sh}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost/logging-grafana-main/}
       - GF_SERVER_SERVE_FROM_SUB_PATH=true

@@ -10,6 +10,12 @@ pub struct IpInfo {
     pub country: Option<String>,
     pub region: Option<String>,
     pub city: Option<String>,
+    /// Coarse (city/ISP-level) coordinates for the request IP, used as a
+    /// sanity cross-check against the client's claimed GPS coordinates —
+    /// spoofing GPS is trivial from a browser, but spoofing the IP's actual
+    /// network-level geography too is much harder.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 /// Look up IP information from an external API service.
@@ -26,13 +32,15 @@ pub async fn lookup_ip(client: &reqwest::Client, ip: &str) -> Result<IpInfo> {
             country: None,
             region: None,
             city: None,
+            latitude: None,
+            longitude: None,
         });
     }
 
     let api_url =
         std::env::var("IP_API_URL").unwrap_or_else(|_| "http://ip-api.com/json/".to_string());
     let url = format!(
-        "{}{}?fields=status,message,isp,org,country,regionName,city",
+        "{}{}?fields=status,message,isp,org,country,regionName,city,lat,lon",
         api_url, ip
     );
 
@@ -53,6 +61,8 @@ pub async fn lookup_ip(client: &reqwest::Client, ip: &str) -> Result<IpInfo> {
                                 country: data.country,
                                 region: data.region,
                                 city: data.city,
+                                latitude: data.lat,
+                                longitude: data.lon,
                             })
                         } else {
                             Ok(unknown())
@@ -75,6 +85,8 @@ fn unknown() -> IpInfo {
         country: None,
         region: None,
         city: None,
+        latitude: None,
+        longitude: None,
     }
 }
 
@@ -112,6 +124,10 @@ struct IpApiResponse {
     region: Option<String>,
     #[serde(default)]
     city: Option<String>,
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
 }
 
 pub struct IpLookupService;

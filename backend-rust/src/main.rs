@@ -9,7 +9,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use attendance_geotag_backend::{
     config::AppConfig,
-    middleware::{RateLimiter, SessionCache},
+    middleware::{DenyList, RateLimiter, SessionCache},
     models::SystemConfig,
     services::GpsHistoryService,
     storage::Storage,
@@ -62,6 +62,12 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(config.pg_max_pool_size)
         .min_connections(config.pg_min_pool_size)
         .acquire_timeout(Duration::from_secs(10))
+        // Recycle idle connections after 10 minutes so Postgres backend
+        // processes are freed during quiet periods.
+        .idle_timeout(Duration::from_secs(600))
+        // Retire and replace connections every 30 minutes to prevent stale
+        // connections caused by NAT timeouts or Postgres restarts.
+        .max_lifetime(Duration::from_secs(1800))
         .connect(&config.database_url)
         .await?;
 
@@ -87,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let rate_limiter = Arc::new(RateLimiter::with_redis(redis_client.clone()));
+    let deny_list = Arc::new(DenyList::with_redis(redis_client.clone()));
     let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
     let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
 
@@ -141,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         redis: redis_client.map(|rc| (*rc).clone()),
         rate_limiter,
+        deny_list,
         session_cache,
         gps_history,
         start_time: std::time::Instant::now(),

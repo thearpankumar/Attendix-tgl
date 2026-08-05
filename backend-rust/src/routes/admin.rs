@@ -6,20 +6,36 @@ use axum::{
 use std::sync::Arc;
 
 use crate::middleware::{
-    admin_rate_limit_middleware, auth_middleware, login_rate_limit_middleware,
+    admin_rate_limit_middleware, auth_middleware, csrf_middleware, login_rate_limit_middleware,
+    registration_rate_limit_middleware,
 };
 use crate::AppState;
 
 pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    let public_routes = Router::new()
+    // /register additionally gets its own tight, dedicated bucket — it's a
+    // rarer action than login and the only thing standing between a leaked
+    // ADMIN_SECRET and a new admin account.
+    let register_route = Router::new()
         .route("/register", post(crate::controllers::register))
-        .route("/login", post(crate::controllers::login))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            registration_rate_limit_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             login_rate_limit_middleware,
         ));
 
+    let public_routes = Router::new()
+        .route("/login", post(crate::controllers::login))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            login_rate_limit_middleware,
+        ))
+        .merge(register_route);
+
     let protected_routes = Router::new()
+        .route("/logout", post(crate::controllers::logout))
         .route("/profile", get(crate::controllers::get_profile))
         .route("/dashboard", get(crate::controllers::get_dashboard_stats))
         .route(
@@ -153,7 +169,15 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/batches/{id}",
             get(crate::controllers::get_batch).delete(crate::controllers::delete_batch),
         )
-        // Rate limit middleware runs BEFORE auth middleware
+        // Middleware execution order (innermost applied last, runs first):
+        // 1. admin_rate_limit  — outermost, applied first, limits traffic
+        // 2. auth              — validates the HttpOnly cookie / Bearer token
+        // 3. csrf              — validates the x-csrf-token header against the cookie
+        //                        (only for mutating methods; GETs receive a fresh cookie)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            csrf_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

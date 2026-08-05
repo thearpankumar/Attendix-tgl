@@ -169,6 +169,8 @@ pub enum GpsAnomalyType {
     AccuracyPattern,
     #[serde(rename = "PROVIDER_MISMATCH")]
     ProviderMismatch,
+    #[serde(rename = "IP_GEO_MISMATCH")]
+    IpGeoMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { QrCode, CheckCircle, XCircle, X, MapPin, Clock, Calendar, RefreshCw, Users, ShieldCheck, User, AlertCircle } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle, Clock, MapPin, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import Badge from '../components/ui/Badge';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -42,7 +42,18 @@ interface AttendanceRecord {
   faceDetected?: boolean;
 }
 
-interface Stats { totalAttendance: number; verifiedAttendance: number; }
+interface Stats {
+  totalAttendance: number;
+  verifiedAttendance: number;
+  unverifiedAttendance: number;
+  /// Students on the batch roster; 0 when no batch is attached.
+  rosterSize: number;
+  /// Roster students with no attendance row for this session.
+  absentCount: number;
+  /// A batch is optional. When false, absence is not tracked for this session
+  /// and the ABSENT card is hidden rather than showing a misleading 0.
+  hasRoster: boolean;
+}
 
 type ActiveTab = 'all' | 'verified' | 'unverified' | 'absent';
 
@@ -469,6 +480,19 @@ const SessionDetail = () => {
             <span className="stat-card-label">UNVERIFIED</span>
             <span className="stat-card-value">{unverifiedCount}</span>
             <div className="stat-card-accent-line"></div>
+
+          {/* Absence only means something against a roster, so this card is
+              omitted entirely for sessions with no batch attached. */}
+          {stats?.hasRoster && (
+            <div className="stat-card-new stat-card-absent">
+              <div className="stat-card-icon-wrapper">
+                <UserX size={28} />
+              </div>
+              <span className="stat-card-label">ABSENT</span>
+              <span className="stat-card-value">{stats?.absentCount ?? absentStudents.length}</span>
+              <div className="stat-card-accent-line"></div>
+            </div>
+          )}
           </div>
         </div>
       </div>
@@ -477,7 +501,6 @@ const SessionDetail = () => {
       <AdminSecurityReview 
         sessionId={id || ''} 
         apiBaseUrl={import.meta.env.VITE_API_URL || '/api'}
-        token={localStorage.getItem('token') || ''}
       />
 
       {/* ── Attendance table card ──────────────────────── */}

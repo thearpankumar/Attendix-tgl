@@ -7,17 +7,27 @@ use tower::ServiceBuilder;
 
 use crate::middleware::{
     device_check_middleware, mobile_check_middleware, security_analysis_middleware,
-    student_rate_limit_middleware,
+    short_link_guess_rate_limit_middleware, student_rate_limit_middleware,
 };
 use crate::AppState;
 
 pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    Router::new()
+    // The two routes that resolve a bare short code get an extra, tighter
+    // guess-limiter layered on top of the shared stack below — see
+    // short_link_guess_rate_limit_middleware.
+    let code_resolution_routes = Router::new()
         .route("/{shortCode}", get(crate::controllers::resolve_short_link))
         .route(
             "/{shortCode}/session",
             get(crate::controllers::get_short_link_session),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            short_link_guess_rate_limit_middleware,
+        ));
+
+    Router::new()
+        .merge(code_resolution_routes)
         .route(
             "/{shortCode}/upload-url",
             get(crate::controllers::get_shortlink_upload_url),

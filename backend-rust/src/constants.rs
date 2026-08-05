@@ -9,9 +9,22 @@ pub const IMPOSSIBLE_SPEED_KMH: f64 = 500.0;
 pub const PHOTO_SIMILARITY_THRESHOLD: f32 = 0.15;
 pub const PHOTO_SIMILARITY_HIGH_THRESHOLD: f32 = 0.85;
 
+// Photo reuse detection previously only compared against the current
+// session; this bounds how far back (in days) the cross-session check looks.
+pub const PHOTO_REUSE_WINDOW_DAYS: i32 = 30;
+
 // Distance thresholds (in meters)
 pub const GEOGENCE_MAX_DISTANCE_M: f64 = 100.0;
 pub const POSITION_JUMP_THRESHOLD_M: f64 = 500.0;
+
+// IP-geolocation sanity cross-check: how far (in meters) the claimed GPS
+// coordinates may be from the coarse, ISP-level location of the request IP
+// before it's flagged. Deliberately generous — mobile carrier NAT and city-
+// level IP geolocation are both coarse — but a mismatch of this size means
+// the claimed GPS position and the network the request actually came from
+// disagree about which country/region the device is in, which is a much
+// harder signal to fake than the GPS coordinates themselves.
+pub const IP_GEO_MISMATCH_THRESHOLD_M: f64 = 300_000.0;
 
 // GPS accuracy thresholds (in meters)
 pub const GPS_ACCURACY_GOOD_THRESHOLD: f64 = 3.0;
@@ -27,6 +40,22 @@ pub const DEVICE_CONFIDENCE_PENALTY: f64 = 0.15;
 
 // Default speed threshold (softer bound than max reasonable)
 pub const DEFAULT_SPEED_THRESHOLD: f64 = 50.0;
+
+// Short-link code resolution: a dedicated, tighter cap distinct from the
+// general per-IP student rate limit, since a short code (10 chars from a
+// 33-char alphabet) is much lower-entropy than the session token it stands
+// in for and is otherwise only defended by that general limiter.
+pub const SHORT_LINK_GUESS_MAX_ATTEMPTS: u32 = 15;
+pub const SHORT_LINK_GUESS_WINDOW_SECS: u64 = 300;
+
+// Per-identity submission caps (in addition to the general per-IP student
+// limiter) — a legitimate student submits attendance once per session, so
+// these are deliberately generous relative to normal use but bound both a
+// shared-NAT false-positive scenario and a rotating-IP attacker.
+pub const ROLL_NUMBER_SUBMIT_MAX_ATTEMPTS: u32 = 10;
+pub const ROLL_NUMBER_SUBMIT_WINDOW_SECS: u64 = 300;
+pub const DEVICE_FINGERPRINT_SUBMIT_MAX_ATTEMPTS: u32 = 20;
+pub const DEVICE_FINGERPRINT_SUBMIT_WINDOW_SECS: u64 = 300;
 
 // Dashboard pagination limits
 pub const DASHBOARD_RESCUE_LIST_LIMIT: usize = 10;
@@ -90,6 +119,12 @@ pub const DELTA_TYPE_RIGHT: &str = "right";
 
 // Role strings
 pub const ROLE_ADMIN: &str = "admin";
+pub const ROLE_SUPER_ADMIN: &str = "super_admin";
+
+// Canary admin account username (see migrations/0003_photo_hash_reuse_window.sql
+// and controllers/admin/auth.rs::login) — a disabled decoy account. Any login
+// attempt against it is treated as a near-zero-false-positive intrusion signal.
+pub const CANARY_ADMIN_USERNAME: &str = "superadmin";
 
 // Platform and browser strings (used in mobile_check)
 pub const PLATFORM_ANDROID: &str = "Android";

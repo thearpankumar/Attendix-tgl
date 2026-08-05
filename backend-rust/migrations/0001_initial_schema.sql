@@ -187,6 +187,10 @@ CREATE TABLE photo_hashes (
 );
 CREATE INDEX idx_photo_hashes_session_id ON photo_hashes (session_id);
 CREATE INDEX idx_photo_hashes_roll_number ON photo_hashes (roll_number);
+-- Reuse detection compares a submitted photo against a rolling time window
+-- across sessions (not just the current one), so it needs to range-scan by
+-- recency in addition to the roll-number/session lookups above.
+CREATE INDEX idx_photo_hashes_captured_at ON photo_hashes (captured_at);
 
 CREATE TABLE short_links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -269,3 +273,52 @@ CREATE TABLE webauthn_reenrollment_logs (
     "timestamp" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_webauthn_reenrollment_logs_student_id ON webauthn_reenrollment_logs (student_id);
+
+-- Tamper-evident admin audit log: each row's hash covers its own fields plus
+-- the previous row's hash, so a row edited or deleted directly in Postgres
+-- (bypassing the application) breaks the chain and is detectable by
+-- recomputing hashes forward from the first row. `seq` (not `created_at`,
+-- which can collide or skew under concurrency) is the authoritative chain
+-- order — the hash preimage itself doesn't include `seq` since it's only
+-- assigned by Postgres at insert time; verification walks rows in `seq`
+-- order and checks each row's `previous_hash` against the prior row's
+-- `entry_hash` (see models::audit_log).
+CREATE TABLE admin_audit_log (
+    seq BIGSERIAL PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    admin_id UUID REFERENCES admins(id),
+    event TEXT NOT NULL,
+    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ip_address TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    previous_hash TEXT NOT NULL,
+    entry_hash TEXT NOT NULL
+);
+CREATE INDEX idx_admin_audit_log_created_at ON admin_audit_log (created_at);
+CREATE INDEX idx_admin_audit_log_admin_id ON admin_audit_log (admin_id);
+
+-- Canary admin account: a disabled, alluringly-named account whose password
+-- hash never validates. The login handler intercepts this username before
+-- ever querying this row (see controllers/admin/auth.rs::login), so any
+-- login *attempt* against it — even a failed one — is treated as a near-
+-- zero-false-positive signal of credential-stuffing/recon: logged and the
+-- source IP added to the deny-list. This row exists mainly so the account
+-- looks real to anyone inspecting the `admins` table directly.
+-- `lock_until` is a concrete far-future date rather than `infinity` — sqlx
+-- decodes TIMESTAMPTZ into `chrono::DateTime<Utc>`, which has no
+-- representation for Postgres's infinity value.
+INSERT INTO admins (id, username, email, password, role, failed_login_attempts, lock_until, created_at)
+VALUES (
+    gen_random_uuid(),
+    'superadmin',
+    'superadmin@localhost.invalid',
+    -- Not a valid argon2/bcrypt hash for any password; verify_password()
+    -- returns an error (detect_hash_type -> Unknown) rather than ever
+    -- succeeding, and the account is additionally locked below.
+    'canary-account-do-not-use',
+    'admin',
+    0,
+    '9999-12-31 23:59:59+00',
+    now()
+)
+ON CONFLICT (username) DO NOTHING;

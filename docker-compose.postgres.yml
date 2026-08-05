@@ -24,7 +24,7 @@ services:
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — run scripts/generate-secrets.sh}
     volumes:
       # postgres 18+ stores data in a major-version subdirectory, so the
       # mount must be the parent, not .../data (which is the <=17 layout).
@@ -37,6 +37,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
     networks:
       - db-net
 
@@ -45,27 +50,36 @@ services:
       context: ./scripts/backup
     container_name: attendance-pg-backup
     restart: unless-stopped
+    # The image now runs as a non-root `backupuser` baked in at build time
+    # (see scripts/backup/Dockerfile) instead of starting as root and
+    # chowning/setuid-ing at runtime, so none of CHOWN/DAC_OVERRIDE/SETGID/
+    # SETUID are needed anymore.
+    #
+    # NOTE: if pg_backup_tmp already exists from a deployment built before
+    # this change, it may still contain root-owned files from the old
+    # root-entrypoint image; `docker volume rm pg_backup_tmp` (or fix
+    # ownership manually) before redeploying with the new image.
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - SETGID
-      - SETUID
     environment:
       - PGHOST=postgres
       - PGPORT=5432
       - PGDATABASE=${POSTGRES_DB:-attendance_geotag}
       - PGUSER=${POSTGRES_USER:-postgres}
-      - PGPASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PGPASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - BACKUP_CRON_SCHEDULE=${BACKUP_CRON_SCHEDULE:-0 2 * * *}
       - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       - pg_backup_tmp:/backups
     depends_on:

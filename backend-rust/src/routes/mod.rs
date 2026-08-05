@@ -3,6 +3,7 @@ mod admin_security;
 mod client_log;
 mod config;
 mod device;
+mod honeypot;
 mod short_link;
 mod student;
 
@@ -97,12 +98,20 @@ pub fn create_routes(state: Arc<AppState>) -> Router {
         .route("/health/live", get(health_live))
         .merge(metrics_routes)
         .nest("/api", api_routes)
+        .merge(honeypot::create_routes())
         .layer(metric_layer)
         // Attendance bodies are small JSON documents; photos go to S3
         // out-of-band. The Excel roster upload raises this locally. Without a
         // limit anywhere, an unauthenticated caller could stream arbitrarily
         // large bodies into the multipart and JSON parsers.
         .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        // Outermost: any IP already on the deny-list (touched a honeypot path
+        // or the canary admin account) is tarpitted then blocked before any
+        // other middleware or handler runs.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::deny_list_middleware,
+        ))
         .with_state(state);
 
     apply_security_headers(router)

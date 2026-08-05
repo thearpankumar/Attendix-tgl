@@ -21,6 +21,20 @@ services:
       - NET_BIND_SERVICE
       - SETGID
       - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:2019/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
     ports:
       - "80:80"
       - "443:443"
@@ -43,11 +57,16 @@ services:
 
   # ponytail: only bans anything on a real Linux Docker host (needs the host
   # firewall via DOCKER-USER) — inert but harmless on Docker Desktop dev.
+  # NET_ADMIN/NET_RAW + host networking are inherent to what fail2ban does
+  # (manipulating the host's iptables DOCKER-USER chain), so cap_drop: ALL
+  # isn't an option here — no-new-privileges still applies as defense in depth.
   fail2ban:
     image: crazymax/fail2ban:latest
     container_name: attendance-fail2ban
     restart: unless-stopped
     network_mode: host
+    security_opt:
+      - no-new-privileges:true
     cap_add:
       - NET_ADMIN
       - NET_RAW

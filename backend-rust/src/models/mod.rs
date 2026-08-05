@@ -1,5 +1,6 @@
 mod admin;
 mod attendance;
+mod audit_log;
 mod batch;
 mod device;
 mod device_fingerprint;
@@ -15,6 +16,7 @@ mod webauthn_reenrollment_log;
 
 pub use admin::*;
 pub use attendance::*;
+pub use audit_log::*;
 pub use batch::*;
 pub use device::*;
 pub use device_fingerprint::*;

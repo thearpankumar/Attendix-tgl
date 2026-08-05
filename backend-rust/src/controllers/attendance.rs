@@ -460,9 +460,13 @@ pub async fn submit_attendance(
     headers: axum::http::HeaderMap,
     Json(payload): Json<SubmitAttendanceRequest>,
 ) -> Result<impl IntoResponse> {
-    let bypass_captcha = std::env::var("DEV_BYPASS_ALL")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    // Mirrors the hard production guard in routes/config.rs::toggle_dev_bypass:
+    // a stray DEV_BYPASS_ALL=true in a prod .env must never be able to skip
+    // captcha, regardless of what the env var says.
+    let bypass_captcha = !state.config.is_production()
+        && std::env::var("DEV_BYPASS_ALL")
+            .map(|v| v == "true")
+            .unwrap_or(false);
 
     if !bypass_captcha {
         if let (Some(captcha_answer), Some(captcha_id)) =
@@ -490,9 +494,46 @@ pub async fn submit_attendance(
         }
     }
 
+    // Per-identity caps in addition to the router's per-IP student limiter:
+    // a NAT'd classroom otherwise shares one IP bucket, and a rotating-IP
+    // attacker otherwise faces no limit at all against a single roll number
+    // or device.
+    if !state
+        .rate_limiter
+        .roll_number_rate_limit(
+            &payload.roll_number,
+            crate::constants::ROLL_NUMBER_SUBMIT_MAX_ATTEMPTS,
+            crate::constants::ROLL_NUMBER_SUBMIT_WINDOW_SECS,
+        )
+        .await
+    {
+        return Err(AppError::TooManyRequests(
+            "Too many attendance attempts for this roll number. Please try again later."
+                .to_string(),
+        ));
+    }
+
+    if let Some(ref fingerprint) = payload.device_fingerprint {
+        if !state
+            .rate_limiter
+            .device_fingerprint_rate_limit(
+                fingerprint,
+                crate::constants::DEVICE_FINGERPRINT_SUBMIT_MAX_ATTEMPTS,
+                crate::constants::DEVICE_FINGERPRINT_SUBMIT_WINDOW_SECS,
+            )
+            .await
+        {
+            return Err(AppError::TooManyRequests(
+                "Too many attendance attempts from this device. Please try again later."
+                    .to_string(),
+            ));
+        }
+    }
+
     let sys_config = state.get_system_config().await;
-    let is_dev_bypass_all = sys_config.dev_bypass_enabled
-        || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true";
+    let is_dev_bypass_all = !state.config.is_production()
+        && (sys_config.dev_bypass_enabled
+            || std::env::var("DEV_BYPASS_ALL").unwrap_or_default() == "true");
 
     let token_hash = Session::hash_token(&token);
 
@@ -609,7 +650,35 @@ pub async fn submit_attendance(
             country: None,
             region: None,
             city: None,
+            latitude: None,
+            longitude: None,
         });
+
+    // IP-geo sanity cross-check: spoofing GPS from a browser is trivial, but
+    // spoofing the network the request actually egresses from is much
+    // harder. Only runs when the external lookup returned coordinates; a
+    // failed/unavailable lookup does not itself count as an anomaly.
+    let ip_geo_anomaly = match (ip_info.latitude, ip_info.longitude) {
+        (Some(ip_lat), Some(ip_lon)) => {
+            let ip_distance_m =
+                calculate_distance(ip_lat, ip_lon, payload.latitude, payload.longitude);
+            if ip_distance_m > IP_GEO_MISMATCH_THRESHOLD_M {
+                Some(GpsAnomaly {
+                    anomaly_type: GpsAnomalyType::IpGeoMismatch,
+                    severity: Severity::Medium,
+                    details: Some(format!(
+                        "Claimed GPS position is ~{:.0}km from the request IP's approximate location ({})",
+                        ip_distance_m / 1000.0,
+                        ip_info.country.as_deref().unwrap_or("unknown region")
+                    )),
+                    detected_at: Utc::now(),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
 
     let has_high_severity_gps = gps_validation
         .anomalies
@@ -664,6 +733,9 @@ pub async fn submit_attendance(
         .map(|fp| Device::hash_fingerprint(fp));
 
     let mut gps_anomalies: Vec<GpsAnomaly> = build_gps_anomalies(&gps_validation);
+    if let Some(anomaly) = ip_geo_anomaly {
+        gps_anomalies.push(anomaly);
+    }
 
     // GPS History Analysis - track position and detect anomalies
     // Use device fingerprint as device identifier, fall back to roll number
@@ -749,23 +821,31 @@ pub async fn submit_attendance(
                     }
                 };
 
-                // Check for reuse in same session
+                // Check for reuse across a rolling time window, not just the
+                // current session — the same selfie submitted for a
+                // different roll number in a *later* session on a *different*
+                // day previously went undetected because the query was
+                // scoped to session_id. Checks every candidate hash in the
+                // window (bounded by LIMIT), not just the first row found.
                 let reuse_detected = if let Some(ref hash) = hash_str {
                     match sqlx::query_as::<_, PhotoHash>(
-                        "SELECT * FROM photo_hashes WHERE session_id = $1 AND roll_number <> $2 LIMIT 1",
+                        "SELECT * FROM photo_hashes \
+                         WHERE roll_number <> $1 \
+                           AND captured_at >= now() - make_interval(days => $2) \
+                         ORDER BY captured_at DESC \
+                         LIMIT 200",
                     )
-                    .bind(session.id)
                     .bind(&roll_upper)
-                    .fetch_optional(&state.db)
+                    .bind(crate::constants::PHOTO_REUSE_WINDOW_DAYS)
+                    .fetch_all(&state.db)
                     .await
                     {
-                        Ok(Some(existing)) => {
-                            // Compare with existing hash using similarity threshold from system_config
-                            let existing_hash = existing.photo_hash;
+                        Ok(candidates) => {
                             let threshold = sys_config.photo_verification.similarity_threshold;
-                            is_same_photo(hash, &existing_hash, threshold)
+                            candidates.iter().any(|existing| {
+                                is_same_photo(hash, &existing.photo_hash, threshold)
+                            })
                         }
-                        Ok(None) => false,
                         Err(e) => {
                             tracing::warn!("Failed to check photo reuse: {}", e);
                             false

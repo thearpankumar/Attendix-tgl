@@ -13,7 +13,7 @@ pub use config::AppConfig;
 pub use constants::*;
 pub use error::AppError;
 
-use middleware::{RateLimiter, SessionCache};
+use middleware::{DenyList, RateLimiter, SessionCache};
 use models::SystemConfig;
 use services::GpsHistoryService;
 use std::sync::Arc;
@@ -26,6 +26,12 @@ pub struct AppState {
     pub db: sqlx::PgPool,
     pub redis: Option<redis::Client>,
     pub rate_limiter: Arc<RateLimiter>,
+    /// Tripwire deny-list: IPs that touched a honeypot path or the canary
+    /// admin account get tarpitted-then-blocked on every subsequent request
+    /// (see middleware::deny_list_middleware) — a near-zero-false-positive
+    /// signal, unlike the general rate limiters which bound legitimate
+    /// traffic too.
+    pub deny_list: Arc<DenyList>,
     pub session_cache: Arc<SessionCache>,
     pub gps_history: Arc<GpsHistoryService>,
     pub start_time: std::time::Instant,

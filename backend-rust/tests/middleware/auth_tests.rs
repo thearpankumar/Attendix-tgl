@@ -708,6 +708,7 @@ mod tests {
                 id: admin_id.to_string(),
                 exp: now - 3600, // Expired 1 hour ago
                 iat: now - 7200, // Issued 2 hours ago
+                jti: Uuid::new_v4().to_string(),
             };
 
             let expired_token = encode(

@@ -290,6 +290,13 @@ pub struct RateLimitsConfig {
     pub client_log_window_secs: u64,
     #[serde(default = "default_rl_clientlog_max")]
     pub client_log_max_requests: u32,
+    /// New admin self-registration is gated only by the shared ADMIN_SECRET
+    /// with no dedicated throttle beyond the generic login bucket — tighter
+    /// on purpose, since a legitimate deployment registers new admins rarely.
+    #[serde(default = "default_rl_registration_window")]
+    pub registration_window_secs: u64,
+    #[serde(default = "default_rl_registration_max")]
+    pub registration_max_requests: u32,
 }
 
 fn default_rl_admin_window() -> u64 {
@@ -316,6 +323,12 @@ fn default_rl_clientlog_window() -> u64 {
 fn default_rl_clientlog_max() -> u32 {
     100
 }
+fn default_rl_registration_window() -> u64 {
+    3600
+}
+fn default_rl_registration_max() -> u32 {
+    3
+}
 
 impl Default for RateLimitsConfig {
     fn default() -> Self {
@@ -328,6 +341,8 @@ impl Default for RateLimitsConfig {
             login_max_requests: 20,
             client_log_window_secs: 60,
             client_log_max_requests: 100,
+            registration_window_secs: 3600,
+            registration_max_requests: 3,
         }
     }
 }

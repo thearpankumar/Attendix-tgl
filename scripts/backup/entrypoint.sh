@@ -24,8 +24,11 @@ if [ "$FIELD_COUNT" -ne 5 ]; then
     exit 1
 fi
 
-echo "$SCHEDULE /usr/local/bin/backup.sh >> /proc/1/fd/1 2>> /proc/1/fd/2" > /etc/crontabs/root
+CRONTAB_DIR="/home/backupuser/crontabs"
+echo "$SCHEDULE /usr/local/bin/backup.sh >> /proc/1/fd/1 2>> /proc/1/fd/2" > "${CRONTAB_DIR}/backupuser"
 
 echo "pg-backup starting. Schedule: $SCHEDULE"
 
-exec crond -f -l 2
+# Runs as backupuser (see Dockerfile); -c points crond at a directory that
+# user owns instead of the default root-owned /etc/crontabs.
+exec crond -f -l 2 -c "$CRONTAB_DIR"
