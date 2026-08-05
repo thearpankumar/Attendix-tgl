@@ -43,6 +43,7 @@ WORKDIR /app
 
 RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
     apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates libssl3 libstdc++6 curl && \
     rm -rf /var/lib/apt/lists/*
 

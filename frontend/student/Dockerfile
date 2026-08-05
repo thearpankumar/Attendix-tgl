@@ -21,6 +21,14 @@ RUN npm run build
 # matching compose port/capability changes.
 FROM nginxinc/nginx-unprivileged:alpine
 
+# Patch the base image's Alpine packages at build time rather than waiting
+# on an upstream image rebuild (same rationale as the other Dockerfiles'
+# apt-get upgrade step). Needs root; the base image itself already sets
+# USER nginx (uid 101) by default, restored below.
+USER root
+RUN apk update && apk upgrade --no-cache
+USER nginx
+
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
