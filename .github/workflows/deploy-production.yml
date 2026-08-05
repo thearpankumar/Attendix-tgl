@@ -51,20 +51,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # OIDC: GitHub mints a short-lived token for this job, AWS trusts it
-      # directly (via an IAM role's trust policy for
-      # token.actions.githubusercontent.com scoped to this repo/branch), and
-      # no AWS credential is ever stored in GitHub. Previously used static
-      # AKIA keys — the same pair used in .env — that never expire, so a leak
-      # from either place was a leak from both.
-      #
-      # One-time manual setup this workflow cannot do for you: create the IAM
-      # role and its OIDC trust policy in the AWS account, then set
-      # AWS_DEPLOY_ROLE_ARN as a repository/environment secret.
+      # Static keys for now — reverted from OIDC (role-to-assume) because
+      # AWS_DEPLOY_ROLE_ARN doesn't exist yet: it needs a GitHub OIDC
+      # identity provider + IAM role with a trust policy for
+      # token.actions.githubusercontent.com created in the AWS account that
+      # actually owns this ECR repo, which nobody has set up yet. These are
+      # the same AKIA keys that sit in .env, so a leak from either place is
+      # a leak from both, and they never expire — migrate to OIDC once
+      # someone with access to the right account creates that role and adds
+      # AWS_DEPLOY_ROLE_ARN as a secret, then swap this step back to
+      # `role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}`.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
