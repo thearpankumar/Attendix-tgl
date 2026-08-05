@@ -95,8 +95,17 @@ pub async fn csrf_middleware(
         let token = generate_csrf_token(&state.config.jwt_secret);
         let is_prod = state.config.is_production();
         let secure_flag = if is_prod { "; Secure" } else { "" };
+        // Path=/ (not /api): this cookie is deliberately NOT HttpOnly so the
+        // React admin SPA can read it via `document.cookie` and echo it as
+        // the x-csrf-token header. Browsers only expose a cookie through
+        // `document.cookie` on pages whose own path matches the cookie's
+        // Path — the admin SPA is served at /owner-of-attendix-xyz/, which
+        // doesn't match Path=/api, so axios could never see the cookie to
+        // echo it back, and every mutating admin request 403'd with "CSRF
+        // token missing from request headers" even though the cookie itself
+        // was being sent to the server correctly.
         let cookie = format!(
-            "{}={}; SameSite=Strict; Path=/api{}",
+            "{}={}; SameSite=Strict; Path=/{}",
             CSRF_COOKIE_NAME, token, secure_flag
         );
         if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
