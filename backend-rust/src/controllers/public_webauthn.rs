@@ -189,27 +189,45 @@ pub async fn start_registration(
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
 
     // Enrollment gate. This endpoint is unauthenticated by necessity — a
-    // student enrolling their phone has no credential yet — so the roll number
-    // must at least be on the roster for the batch this session belongs to.
-    // Without this, enrollment was first-come-first-served for any string:
-    // an attacker could claim the credential for every roll number that had
-    // not enrolled yet, permanently, since re-enrollment needs an admin.
-    let on_roster: bool = match session.batch_id {
-        Some(batch_id) => sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM students WHERE batch_id = $1 AND upper(roll_number) = $2)",
-        )
-        .bind(batch_id)
-        .bind(&roll_upper)
-        .fetch_one(&state.db)
-        .await?,
-        // A session with no batch has no roster to check against.
-        None => false,
-    };
+    // student enrolling their phone has no credential yet — so where a roster
+    // exists, the roll number must be on it. Without this, enrollment was
+    // first-come-first-served for any string: an attacker could claim the
+    // credential for every roll number that had not enrolled yet, permanently,
+    // since re-enrollment needs an admin.
+    //
+    // A session with no batch has no roster to check against. Refusing those
+    // outright would make enrollment impossible for ad-hoc sessions, so they
+    // are allowed and logged instead — attaching a batch to a session is what
+    // turns this check on.
+    match session.batch_id {
+        Some(batch_id) => {
+            let on_roster: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM students WHERE batch_id = $1 AND upper(roll_number) = $2)",
+            )
+            .bind(batch_id)
+            .bind(&roll_upper)
+            .fetch_one(&state.db)
+            .await?;
 
-    if !on_roster {
-        return Err(AppError::Forbidden(
-            "This roll number is not on the roster for this session.".to_string(),
-        ));
+            if !on_roster {
+                tracing::warn!(
+                    roll_number = %roll_upper,
+                    session_id = %session.id,
+                    "WebAuthn enrollment refused: roll number not on the session's roster"
+                );
+                return Err(AppError::Forbidden(
+                    "This roll number is not on the roster for this session.".to_string(),
+                ));
+            }
+        }
+        None => {
+            tracing::warn!(
+                roll_number = %roll_upper,
+                session_id = %session.id,
+                "WebAuthn enrollment allowed without a roster check: session has no batch. \
+                 Attach a batch to this session to restrict enrollment to its students."
+            );
+        }
     }
 
     let existing_exists: bool = sqlx::query_scalar(

@@ -34,6 +34,12 @@ pub struct AppConfig {
     pub admin_secret: String,
     pub node_env: String,
     pub cors_origin: String,
+    /// Origin the site is served from, used to build shareable links
+    /// (`{public_base_url}/s/{code}`). Distinct from `webauthn.origin`, which
+    /// is the WebAuthn relying-party origin — the short links were built from
+    /// that, so they pointed at the backend's own port (`:5000`) rather than
+    /// the address a student's browser can actually reach through the proxy.
+    pub public_base_url: String,
     /// CIDRs whose `X-Forwarded-For` header is trusted for client-IP
     /// extraction. Empty means "trust nobody" — the socket peer address is
     /// used instead. See `middleware::rate_limit_middleware::client_ip`.
@@ -145,6 +151,11 @@ impl AppConfig {
             );
         }
 
+        // Trailing slashes would produce `https://host//s/code`.
+        let public_base_url = require_env("PUBLIC_BASE_URL")?
+            .trim_end_matches('/')
+            .to_string();
+
         let provider = env::var("STORAGE_PROVIDER").unwrap_or_else(|_| "s3".to_string());
         let s3 = if provider == "s3" {
             S3Config {
@@ -192,6 +203,7 @@ impl AppConfig {
             admin_secret,
             node_env,
             cors_origin,
+            public_base_url,
             trusted_proxies: parse_trusted_proxies(
                 &env::var("TRUSTED_PROXIES").unwrap_or_default(),
             )?,
@@ -233,6 +245,7 @@ impl AppConfig {
             admin_secret: "integration-test-admin-secret-not-for-any-real-deployment".to_string(),
             node_env: "test".to_string(),
             cors_origin: "http://localhost:5173".to_string(),
+            public_base_url: "http://localhost".to_string(),
             trusted_proxies: Vec::new(),
             storage: StorageConfig {
                 provider: "s3".to_string(),

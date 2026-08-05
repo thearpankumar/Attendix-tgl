@@ -123,7 +123,7 @@ pub async fn create_short_link(
         Json(ShortLinkResponse {
             id: inserted.id.to_string(),
             short_code: inserted.short_code.clone(),
-            url: format!("{}/s/{}", state.config.webauthn.origin, inserted.short_code),
+            url: format!("{}/s/{}", state.config.public_base_url, inserted.short_code),
             session_id: inserted.session_id.map(|id| id.to_string()),
             expires_at: inserted.expires_at.map(|d| d.to_rfc3339()),
             is_active: inserted.is_active,
@@ -176,7 +176,7 @@ pub async fn get_short_links(
         .map(|link| ShortLinkResponse {
             id: link.id.to_string(),
             short_code: link.short_code.clone(),
-            url: format!("{}/s/{}", state.config.webauthn.origin, link.short_code),
+            url: format!("{}/s/{}", state.config.public_base_url, link.short_code),
             session_id: link.session_id.map(|id| id.to_string()),
             expires_at: link.expires_at.map(|d| d.to_rfc3339()),
             is_active: link.is_active,
@@ -411,7 +411,7 @@ pub async fn resolve_short_link(
         .execute(&state.db)
         .await?;
 
-    let redirect_url = format!("{}/attend/{}", state.config.webauthn.origin, short_code);
+    let redirect_url = format!("{}/attend/{}", state.config.public_base_url, short_code);
 
     Ok(([("Location", redirect_url)], StatusCode::FOUND))
 }

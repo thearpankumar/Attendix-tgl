@@ -75,6 +75,10 @@ services:
       # Exact origins only; the backend rejects `*` and refuses to start on an
       # unparseable entry rather than falling back to allow-any.
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173,http://localhost:3000,http://localhost:8080}
+      # Origin a student's browser reaches the site on, used to build
+      # shareable short links. NOT the same as WEBAUTHN_ORIGIN (the RP
+      # origin) — links used to be built from that and pointed at :5000.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost}
       # Subnet of the reverse proxy, so X-Forwarded-For can be trusted for
       # rate-limit keying. Empty means the socket peer is always used.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
