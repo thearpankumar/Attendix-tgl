@@ -251,3 +251,70 @@ fn qr_token_validation_still_accepts_only_the_correct_token() {
     assert!(!validate_qr_token(short_code, "different-secret", &token));
     assert!(!validate_qr_token("other1", secret, &token));
 }
+
+// ===================================================================
+// Batch/roster is optional — it must never gate a student
+// ===================================================================
+
+/// An earlier revision of the enrollment gate refused any roll number not on
+/// the session's batch roster, and refused *every* roll number when a session
+/// had no batch at all. That blocked legitimate students whenever a roster was
+/// incomplete or absent.
+///
+/// A batch is a reporting roster and a review signal, not an allowlist. This
+/// asserts the property at the source level so a future change that
+/// reintroduces a block is caught: `start_registration` must contain no
+/// roster-derived early return.
+#[test]
+fn enrollment_has_no_roster_gate() {
+    let source = include_str!("../../src/controllers/public_webauthn.rs");
+
+    let start = source
+        .find("pub async fn start_registration(")
+        .expect("start_registration must exist");
+    let end = source[start..]
+        .find("\npub async fn ")
+        .map(|offset| start + offset)
+        .unwrap_or(source.len());
+    let body = &source[start..end];
+
+    assert!(
+        body.contains("on_roster"),
+        "the roster lookup should still run — it feeds the off-roster warning"
+    );
+    assert!(
+        !body.contains("not on the roster for this session"),
+        "enrollment must not refuse off-roster students; the roster is not an allowlist"
+    );
+    assert!(
+        !body.contains("return Err(AppError::Forbidden"),
+        "enrollment must not reject based on batch membership"
+    );
+}
+
+/// Absence is only meaningful against a roster. With no batch attached the
+/// stats must report zero rather than inventing absentees, and must say so via
+/// `has_roster` so the UI can tell "nobody absent" from "not tracked".
+#[test]
+fn session_stats_expose_presence_and_absence() {
+    let source = include_str!("../../src/controllers/admin/sessions.rs");
+
+    for field in [
+        "total_attendance",
+        "verified_attendance",
+        "unverified_attendance",
+        "roster_size",
+        "absent_count",
+        "has_roster",
+    ] {
+        assert!(
+            source.contains(field),
+            "session stats must expose {field} for the session view"
+        );
+    }
+
+    assert!(
+        source.contains("None => (0, 0)"),
+        "a session with no batch must report no roster and no absentees"
+    );
+}

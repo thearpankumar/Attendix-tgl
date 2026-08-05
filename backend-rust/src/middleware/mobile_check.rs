@@ -2,7 +2,8 @@ use crate::constants::{
     BROWSER_CHROME, BROWSER_EDGE, BROWSER_FIREFOX, BROWSER_OPERA, BROWSER_SAFARI, PLATFORM_ANDROID,
     PLATFORM_IOS, PLATFORM_LINUX, PLATFORM_MAC, PLATFORM_UNKNOWN, PLATFORM_WINDOWS,
 };
-use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
+use crate::error::AppError;
+use axum::{extract::Request, middleware::Next, response::Response};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -128,7 +129,7 @@ fn extract_chrome_version(user_agent: &str) -> Option<u32> {
 /// 3. Mobile User-Agent patterns (android, iphone, ipad, ipod, mobile)
 /// 4. Sec-CH-UA-Mobile header for Chromium browsers
 /// 5. Platform consistency via Sec-CH-UA-Platform header
-pub async fn mobile_check_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
+pub async fn mobile_check_middleware(request: Request, next: Next) -> Result<Response, AppError> {
     // Check for dev bypass
     let bypass = std::env::var("DEV_BYPASS_MOBILE_CHECK")
         .map(|v| v == "true")
@@ -151,7 +152,11 @@ pub async fn mobile_check_middleware(request: Request, next: Next) -> Result<Res
 
     // Block known bots and automation tools
     if BOT_REGEX.is_match(user_agent) {
-        return Err(StatusCode::FORBIDDEN);
+        tracing::debug!(%user_agent, "Mobile check rejected an automated client");
+        return Err(AppError::Forbidden(
+            "Attendance must be marked from a mobile browser. Automated clients are not permitted."
+                .to_string(),
+        ));
     }
 
     let device_info = check_mobile(user_agent);
@@ -218,17 +223,22 @@ pub async fn mobile_check_middleware(request: Request, next: Next) -> Result<Res
     Ok(next.run(request).await)
 }
 
-/// Build a 403 response for spoofing detection
-fn build_spoofing_response(message: &str) -> StatusCode {
-    // In a more complex implementation, we'd return JSON
-    // For now, just return FORBIDDEN - the actual message would be in response body
+/// Build a 403 response for spoofing detection.
+///
+/// These used to return a bare `StatusCode`, so the client got a 403 with an
+/// empty body and no indication of why — a student on an unsupported device
+/// saw a blank failure, and the same silence made the check easy to
+/// misdiagnose as a fault in whatever handler sat behind it. Every other
+/// rejection in this service returns `{"message": ...}`; these now match.
+fn build_spoofing_response(message: &str) -> AppError {
     tracing::warn!("Mobile check spoofing detected: {}", message);
-    StatusCode::FORBIDDEN
+    AppError::Forbidden(message.to_string())
 }
 
-/// Build a 400 response for non-mobile devices
-fn build_mobile_required_response() -> StatusCode {
-    // Return FORBIDDEN (403) to match Node.js behavior for non-mobile devices
-    // The message "This application requires a mobile device" would be in response body
-    StatusCode::FORBIDDEN
+/// Build a 403 response for non-mobile devices.
+fn build_mobile_required_response() -> AppError {
+    AppError::Forbidden(
+        "This page must be opened on a mobile device. Please scan the QR code with your phone."
+            .to_string(),
+    )
 }

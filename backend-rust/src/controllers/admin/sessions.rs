@@ -58,11 +58,25 @@ pub async fn get_session_attendance(
     Ok(Json(result))
 }
 
+/// Serialised camelCase to match what the admin frontend reads. It was plain
+/// snake_case, so `stats.totalAttendance` was always `undefined` and the
+/// session view's TOTAL ATTENDANCE card silently rendered 0 regardless of how
+/// many students had marked attendance.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionStatsResponse {
     pub total_attendance: i64,
     pub verified_attendance: i64,
     pub unverified_attendance: i64,
+    /// Students on the session's batch roster. 0 when no batch is attached —
+    /// a batch is optional, so absence is only meaningful when there is a
+    /// roster to be absent from.
+    pub roster_size: i64,
+    /// Roster students with no attendance row for this session.
+    pub absent_count: i64,
+    /// True when a batch is attached, so the UI can distinguish "0 absent"
+    /// from "absence is not tracked for this session".
+    pub has_roster: bool,
     pub session: SessionStatus,
 }
 
@@ -101,10 +115,43 @@ pub async fn get_session_stats(
     .fetch_one(&state.db)
     .await?;
 
+    // Absence is computed against the batch roster when one is attached.
+    // Matching is on upper(roll_number) because attendance stores the roll
+    // number upper-cased while the roster keeps whatever the import supplied.
+    let (roster_size, absent_count) = match session.batch_id {
+        Some(batch_id) => {
+            let roster_size: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM students WHERE batch_id = $1")
+                    .bind(batch_id)
+                    .fetch_one(&state.db)
+                    .await?;
+
+            let absent_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM students st \
+                 WHERE st.batch_id = $1 \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM attendances a \
+                       WHERE a.session_id = $2 \
+                         AND upper(a.roll_number) = upper(st.roll_number) \
+                   )",
+            )
+            .bind(batch_id)
+            .bind(session_id)
+            .fetch_one(&state.db)
+            .await?;
+
+            (roster_size, absent_count)
+        }
+        None => (0, 0),
+    };
+
     Ok(Json(SessionStatsResponse {
         total_attendance,
         verified_attendance,
         unverified_attendance: total_attendance - verified_attendance,
+        roster_size,
+        absent_count,
+        has_roster: session.batch_id.is_some(),
         session: SessionStatus {
             is_active: session.is_active,
             expires_at: session.expires_at,
