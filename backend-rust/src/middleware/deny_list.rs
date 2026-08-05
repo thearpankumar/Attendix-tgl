@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, Request, State},
+    extract::{ConnectInfo, Extension, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -88,11 +88,24 @@ impl Default for DenyList {
 /// credential-stuffing tool running many attempts concurrently.
 pub async fn deny_list_middleware(
     State(state): State<Arc<crate::AppState>>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    // `Option<Extension<ConnectInfo<_>>>`, not a bare `ConnectInfo<SocketAddr>`:
+    // the latter 500s outright when the extension isn't present (e.g. router
+    // tests that call `.oneshot()` directly without
+    // `into_make_service_with_connect_info`), which — since this middleware
+    // wraps literally every route — took down every test in the suite, not
+    // just ones that happen to touch IP-based logic. `ConnectInfo` itself
+    // doesn't implement `OptionalFromRequestParts` in this axum version, so
+    // `Option<ConnectInfo<_>>` doesn't compile; `Extension<T>` does, and
+    // `ConnectInfo` is stored as an `Extension` internally, so this is
+    // equivalent. Missing ConnectInfo degrades to "unknown-peer" instead,
+    // the same fallback `rate_limit_middleware::get_client_ip` already uses.
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = addr.ip().to_string();
+    let ip = connect_info
+        .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown-peer".to_string());
 
     if state.deny_list.contains(&ip).await {
         let jitter_ms = rand::rng().random_range(2000..5000);

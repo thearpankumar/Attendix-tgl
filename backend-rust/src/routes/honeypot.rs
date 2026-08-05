@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Extension, State},
     http::StatusCode,
     routing::{any, get},
     Router,
@@ -32,10 +32,14 @@ pub fn create_routes() -> Router<Arc<AppState>> {
 
 async fn hit(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    // Option<Extension<ConnectInfo<_>>>, not a bare ConnectInfo — see
+    // middleware::deny_list_middleware's comment.
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
     uri: axum::http::Uri,
 ) -> StatusCode {
-    let ip = addr.ip().to_string();
+    let ip = connect_info
+        .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown-peer".to_string());
     state
         .deny_list
         .add(&ip, &format!("honeypot path: {}", uri.path()))

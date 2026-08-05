@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, Json, Path, State},
+    extract::{ConnectInfo, Extension, Json, Path, State},
     response::IntoResponse,
 };
 use chrono::{Duration, Utc};
@@ -558,9 +558,16 @@ pub async fn finish_authentication(
         crate::middleware::EmulatorDetectionResult,
     >,
     axum::Extension(device_integrity): axum::Extension<crate::middleware::DeviceIntegrityResult>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    // Option<Extension<ConnectInfo<_>>>, not a bare ConnectInfo — see
+    // middleware::deny_list_middleware's comment; a strict extractor here
+    // would 500 in any test/context that doesn't go through
+    // into_make_service_with_connect_info.
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
     Json(payload): Json<AuthenticationFinishRequest>,
 ) -> Result<impl IntoResponse> {
+    let client_ip = connect_info
+        .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown-peer".to_string());
     let sys_config = crate::models::SystemConfig::load(&state.db)
         .await?
         .unwrap_or_default();
@@ -820,7 +827,7 @@ pub async fn finish_authentication(
 
     // IP-geo sanity cross-check — same rationale as
     // controllers/attendance.rs::submit_attendance.
-    let ip_info: IpInfo = crate::services::lookup_ip(&state.http_client, &addr.ip().to_string())
+    let ip_info: IpInfo = crate::services::lookup_ip(&state.http_client, &client_ip)
         .await
         .unwrap_or_else(|_| IpInfo {
             isp: "Unknown".to_string(),

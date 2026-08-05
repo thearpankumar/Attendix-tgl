@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Json, State},
+    extract::{ConnectInfo, Json, State},
     http::{header::SET_COOKIE, StatusCode},
     response::IntoResponse,
     Extension,
@@ -174,9 +174,17 @@ pub async fn register(
 
 pub async fn login(
     State(state): State<Arc<crate::AppState>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    // Option<Extension<ConnectInfo<_>>>, not a bare ConnectInfo — see
+    // middleware::deny_list_middleware's comment; a strict extractor here
+    // would 500 in any test/context that doesn't go through
+    // into_make_service_with_connect_info.
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
     Json(payload): Json<AdminLogin>,
 ) -> Result<impl IntoResponse> {
+    let client_ip = connect_info
+        .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown-peer".to_string());
+
     // Canary account: intercepted before ever touching the database. Anyone
     // typing this exact username is either the operator poking at their own
     // decoy (rare, harmless) or running credential-stuffing/recon against a
@@ -189,7 +197,7 @@ pub async fn login(
     {
         state
             .deny_list
-            .add(&addr.ip().to_string(), "canary admin account login attempt")
+            .add(&client_ip, "canary admin account login attempt")
             .await;
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
     }
@@ -262,7 +270,7 @@ pub async fn login(
         Some(admin_id),
         "admin_login",
         serde_json::json!({ "username": admin.username }),
-        Some(&addr.ip().to_string()),
+        Some(&client_ip),
     )
     .await
     {
