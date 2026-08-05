@@ -7,7 +7,7 @@ use tower::ServiceExt;
 
 use attendance_geotag_backend::{
     config::AppConfig,
-    middleware::{RateLimiter, SessionCache},
+    middleware::{DenyList, RateLimiter, SessionCache},
     models::SystemConfig,
     routes,
     services::GpsHistoryService,
@@ -26,6 +26,7 @@ async fn create_test_app() -> axum::Router {
         .unwrap();
 
     let rate_limiter = Arc::new(RateLimiter::with_redis(None));
+    let deny_list = Arc::new(DenyList::with_redis(None));
     let session_cache = Arc::new(SessionCache::new(None, 300));
     let gps_history = Arc::new(GpsHistoryService::new(None));
     let system_config = Arc::new(RwLock::new(SystemConfig::default()));
@@ -45,6 +46,7 @@ async fn create_test_app() -> axum::Router {
         db,
         redis: None,
         rate_limiter,
+        deny_list,
         session_cache,
         gps_history,
         start_time: std::time::Instant::now(),

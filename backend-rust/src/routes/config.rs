@@ -11,13 +11,24 @@ use crate::middleware::AuthenticatedAdmin;
 use crate::models::SystemConfig;
 use crate::AppState;
 
-use crate::middleware::{admin_rate_limit_middleware, auth_middleware};
+use crate::middleware::{admin_rate_limit_middleware, auth_middleware, csrf_middleware};
 
 pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(get_config).put(update_config))
         .route("/dev-bypass", post(toggle_dev_bypass))
         .route("/defaults", get(get_config_defaults))
+        // The admin_token cookie's Path is "/api" (see
+        // middleware/auth.rs::AUTH_COOKIE_PATH), not "/api/admin" as an
+        // earlier comment here incorrectly assumed — the browser auto-
+        // attaches it to /api/config/* too, so PUT / and POST /dev-bypass
+        // (which flips the global dev-bypass flag) were a live CSRF hole for
+        // cookie-authenticated admins, same class of bug fixed on
+        // admin.rs/admin_security.rs.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            csrf_middleware,
+        ))
         // dev-bypass re-checks the admin's password on every call (see
         // toggle_dev_bypass below), which makes it a password-guessing
         // surface. This router previously had no rate limiting at all.

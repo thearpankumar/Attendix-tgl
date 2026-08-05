@@ -121,12 +121,18 @@ services:
       retries: 3
       start_period: 40s
     # A post-RCE attacker can't persist a webshell to a read-only rootfs.
-    # /tmp is the only path the app needs to write to at runtime — the HF
-    # model cache under /home/appuser/.cache is populated at build time and
-    # only read from after that.
+    # /home/appuser/.cache also needs to be writable: the ONNX face model's
+    # loader rewrites its HF-hub cache pointer file on every container start
+    # (see Dockerfile's entrypoint.sh, which seeds this tmpfs from the
+    # read-only .cache-seed baked in at build time) even though the model
+    # itself isn't re-downloaded.
     read_only: true
     tmpfs:
       - /tmp
+      # appuser is uid/gid 1001 in the image (see Dockerfile's `useradd`);
+      # without an explicit uid/gid a tmpfs mount is root-owned and appuser
+      # can't write into it.
+      - /home/appuser/.cache:uid=1001,gid=1001,mode=0755
     deploy:
       resources:
         limits:

@@ -36,9 +36,15 @@ pub struct AuthenticatedAdmin {
 impl AuthenticatedAdmin {
     /// Every admin account is authenticated equally by `auth_middleware`;
     /// `role` was stored but never checked anywhere, so any admin could hit
-    /// the highest-impact endpoints (dev-bypass toggle, security settings,
-    /// roster/session/location deletion). Handlers for those endpoints call
-    /// this to require `crate::constants::ROLE_SUPER_ADMIN` explicitly.
+    /// the highest-impact, system-wide endpoints (dev-bypass toggle,
+    /// security settings). Those handlers call this to require
+    /// `crate::constants::ROLE_SUPER_ADMIN` explicitly.
+    ///
+    /// Session/location/batch deletion are deliberately NOT gated here:
+    /// they're already scoped to `created_by = admin.id` at the query level
+    /// (an admin can only ever delete their own resources), so the
+    /// equal-privilege risk this guards against doesn't apply to them the
+    /// same way it does to global config that affects every session.
     pub fn require_role(&self, role: &str) -> Result<()> {
         if self.role != role {
             return Err(AppError::Forbidden(format!(
@@ -74,7 +80,13 @@ pub fn generate_token(admin_id: &Uuid, jwt_secret: &str, expires_in: &str) -> Re
 /// - `HttpOnly`: JS cannot read it, mitigating XSS token theft.
 /// - `SameSite=Strict`: Browser won't send it cross-site, mitigating CSRF.
 /// - `Secure`: Only sent over HTTPS (applied in production).
-/// - `Path=/api/admin`: Scoped to admin routes only, not student routes.
+/// - `Path=/api` (`AUTH_COOKIE_PATH` above): the admin routes that need it
+///   span /api/admin, /api/admin/security and /api/config, so this can't be
+///   scoped any narrower than /api without missing one of them — it also
+///   reaches public student endpoints under /api, which is harmless since
+///   they never call auth_middleware. Every router that layers
+///   auth_middleware MUST also layer csrf_middleware, since the cookie is
+///   auto-attached anywhere under /api.
 pub fn make_auth_cookie(token: &str, max_age_secs: usize, is_production: bool) -> String {
     let secure = if is_production { "; Secure" } else { "" };
     format!(

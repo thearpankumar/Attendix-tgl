@@ -78,6 +78,31 @@ pub async fn register(
 
     let hashed_password = Admin::hash_password(&payload.password)?;
 
+    // `require_role(ROLE_SUPER_ADMIN)` gates dev-bypass toggle, security
+    // settings and audit-log verification, but nothing has ever assigned
+    // that role to anyone — every self-registration was hardcoded to
+    // "admin", which would have permanently locked those endpoints behind a
+    // role no account could ever hold. The first *real* admin (the seeded
+    // canary account doesn't count) bootstraps as super_admin; every
+    // registration after that stays "admin" — so a leaked ADMIN_SECRET
+    // alone can never mint another super_admin once one exists.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('admin_bootstrap'))")
+        .execute(&mut *tx)
+        .await?;
+
+    let existing_real_admins: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM admins WHERE username <> $1")
+            .bind(crate::constants::CANARY_ADMIN_USERNAME)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    let role = if existing_real_admins == 0 {
+        crate::constants::ROLE_SUPER_ADMIN
+    } else {
+        crate::constants::ROLE_ADMIN
+    };
+
     let admin: Admin = sqlx::query_as(
         "INSERT INTO admins (id, username, email, password, role, failed_login_attempts, created_at) \
          VALUES ($1, $2, $3, $4, $5, 0, now()) \
@@ -87,9 +112,11 @@ pub async fn register(
     .bind(&payload.username)
     .bind(&payload.email)
     .bind(&hashed_password)
-    .bind("admin")
-    .fetch_one(&state.db)
+    .bind(role)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     // Self-registration is gated only by a shared, never-rotated
     // ADMIN_SECRET (see the constant-time check above) — a leak of that
@@ -102,6 +129,7 @@ pub async fn register(
         admin_id = %admin.id,
         username = %admin.username,
         email = %admin.email,
+        role = %admin.role,
         "New admin account registered via /api/admin/register"
     );
 
@@ -109,7 +137,7 @@ pub async fn register(
         &state.db,
         Some(admin.id),
         "admin_registered",
-        serde_json::json!({ "username": admin.username, "email": admin.email }),
+        serde_json::json!({ "username": admin.username, "email": admin.email, "role": admin.role }),
         None,
     )
     .await

@@ -35,11 +35,12 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/audit-log/verify",
             get(crate::controllers::verify_audit_log),
         )
-        // Same ordering/rationale as admin::create_routes: this router is
-        // nested under /api/admin/security, so the HttpOnly admin_token
-        // cookie (Path=/api/admin) is auto-attached by the browser here too.
-        // Without csrf_middleware, PUT /settings and POST .../review were a
-        // live CSRF hole for cookie-authenticated admins.
+        // Same ordering/rationale as admin::create_routes: the HttpOnly
+        // admin_token cookie's Path is "/api" (see
+        // middleware/auth.rs::AUTH_COOKIE_PATH), so it's auto-attached by
+        // the browser here too. Without csrf_middleware, PUT /settings and
+        // POST .../review were a live CSRF hole for cookie-authenticated
+        // admins.
         .layer(middleware::from_fn_with_state(
             state.clone(),
             csrf_middleware,
