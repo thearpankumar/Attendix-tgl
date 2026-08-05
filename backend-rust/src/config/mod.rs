@@ -95,14 +95,12 @@ fn require_env(key: &str) -> anyhow::Result<String> {
 fn require_secret(key: &str) -> anyhow::Result<String> {
     let value = require_env(key)?;
 
-    if value.len() < MIN_SECRET_LEN {
-        bail!(
-            "{key} is only {} characters; at least {MIN_SECRET_LEN} are required. \
-             Generate one with: openssl rand -base64 48",
-            value.len()
-        );
-    }
-
+    // Checked before the length requirement: a short placeholder (e.g. the
+    // pre-hardening literal "dev-secret-change-in-production", 31 chars) is
+    // still a placeholder first and foremost — "this looks like a
+    // placeholder" is more actionable than "this is too short", since
+    // padding a placeholder out to 32 characters would otherwise satisfy
+    // the length check while still being a known-public string.
     let lowered = value.to_ascii_lowercase();
     if let Some(marker) = PLACEHOLDER_MARKERS
         .iter()
@@ -111,6 +109,14 @@ fn require_secret(key: &str) -> anyhow::Result<String> {
         bail!(
             "{key} looks like a placeholder (contains {marker:?}). \
              Generate a real one with: openssl rand -base64 48"
+        );
+    }
+
+    if value.len() < MIN_SECRET_LEN {
+        bail!(
+            "{key} is only {} characters; at least {MIN_SECRET_LEN} are required. \
+             Generate one with: openssl rand -base64 48",
+            value.len()
         );
     }
 
@@ -317,18 +323,19 @@ mod tests {
     /// Mirrors `require_secret` without touching process-global env, so these
     /// tests stay independent of execution order.
     fn require_secret_value(key: &str, value: &str) -> anyhow::Result<String> {
-        if value.len() < MIN_SECRET_LEN {
-            bail!(
-                "{key} is only {} characters; at least {MIN_SECRET_LEN} are required",
-                value.len()
-            );
-        }
+        // Mirrors require_secret's check order above: placeholder before length.
         let lowered = value.to_ascii_lowercase();
         if let Some(marker) = PLACEHOLDER_MARKERS
             .iter()
             .find(|marker| lowered.contains(*marker))
         {
             bail!("{key} looks like a placeholder (contains {marker:?})");
+        }
+        if value.len() < MIN_SECRET_LEN {
+            bail!(
+                "{key} is only {} characters; at least {MIN_SECRET_LEN} are required",
+                value.len()
+            );
         }
         Ok(value.to_string())
     }

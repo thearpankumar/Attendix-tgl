@@ -1092,8 +1092,9 @@ mod contract_tests {
             "rollNumber": "CS101",
             "credential": {
                 "id": "cred-id",
+                "rawId": "e30=",
                 "response": {
-                    "clientDataJson": "e30=",
+                    "clientDataJSON": "e30=",
                     "authenticatorData": "e30=",
                     "signature": "e30=",
                 },
