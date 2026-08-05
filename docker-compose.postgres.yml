@@ -7,7 +7,7 @@
 services:
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: attendance-postgres
     restart: unless-stopped
     security_opt:
@@ -16,16 +16,19 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
       - SETGID
       - SETUID
-      - DAC_READ_SEARCH
-      - FOWNER
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres 18+ stores data in a major-version subdirectory, so the
+      # mount must be the parent, not .../data (which is the <=17 layout).
+      - postgres_data:/var/lib/postgresql
     expose:
       - "5432"
     healthcheck:
@@ -48,6 +51,7 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_OVERRIDE
       - SETGID
       - SETUID
     environment:

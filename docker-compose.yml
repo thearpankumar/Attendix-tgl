@@ -10,10 +10,11 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
       - SETGID
       - SETUID
-      - DAC_READ_SEARCH
-      - FOWNER
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
@@ -41,6 +42,8 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
       - SETGID
       - SETUID
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_secure_password}
@@ -122,8 +125,9 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - NET_BIND_SERVICE
       - CHOWN
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
       - SETGID
       - SETUID
     ports:
@@ -148,8 +152,9 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - NET_BIND_SERVICE
       - CHOWN
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
       - SETGID
       - SETUID
     ports:
@@ -169,8 +174,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - NET_BIND_SERVICE
     ports:
       - "127.0.0.1:3001:3000"
     networks:
@@ -186,8 +189,9 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - NET_BIND_SERVICE
       - CHOWN
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
       - SETGID
       - SETUID
     ports:
