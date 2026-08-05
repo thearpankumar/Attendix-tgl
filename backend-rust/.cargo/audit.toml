@@ -1,9 +1,14 @@
 [advisories]
 ignore = [
+    # paste: unmaintained (informational only, no vulnerability). Pulled in
+    # transitively; no action available to us.
     "RUSTSEC-2024-0436",
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
+    # RUSTSEC-2026-0098/0099/0104 (rustls-webpki 0.101.7) were suppressed here
+    # with no rationale. They were fixable: aws-sdk-s3's default `rustls`
+    # feature pulled the legacy hyper-0.14 + rustls 0.21 stack alongside the
+    # modern one already in the tree. Both AWS crates now use
+    # `default-https-client` instead, and rustls-webpki 0.103.13 is the only
+    # version in the lockfile. Suppressions removed rather than re-justified.
     # rsa: Marvin Attack timing sidechannel. Pulled in transitively via sqlx's
     # "macros" feature (needed for #[derive(sqlx::FromRow)] and sqlx::migrate!) —
     # sqlx-macros-core unconditionally depends on sqlx-mysql regardless of which

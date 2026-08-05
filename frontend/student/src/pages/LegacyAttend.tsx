@@ -50,7 +50,11 @@ export default function LegacyAttend() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const captchaRef = useRef<HTMLDivElement>(null);
   const photoDataRef = useRef('');
-  const faceDetectedRef = useRef(true);
+  // Defaults to false: this used to initialise to `true`, so the page
+  // reported "face detected" even when detection never ran. The server no
+  // longer trusts this value at all, but the local default should still not
+  // assert something unverified.
+  const faceDetectedRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
 
   const loadCaptcha = useCallback(async () => {

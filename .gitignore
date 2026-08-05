@@ -18,6 +18,9 @@ coverage/
 
 # Environment files
 .env
+# Backups written by scripts/generate-secrets.sh — these contain the OLD
+# secrets, so they must never be committed.
+.env.bak.*
 .env.local
 .env.development.local
 .env.test.local

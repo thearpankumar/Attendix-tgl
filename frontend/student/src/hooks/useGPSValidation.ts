@@ -1,3 +1,14 @@
+// NOTE: this hook is not imported by any page — it was written and never wired
+// up. It is kept rather than deleted because the multi-sample baseline and
+// mock-pattern heuristics below are real detection logic with their own test
+// suite, and removing working anti-spoofing code is the wrong direction.
+//
+// It is a *client-side* signal and can only ever add suspicion: the server
+// re-derives GPS anomalies itself in
+// backend-rust/src/middleware/security_extractors.rs, which is the check that
+// actually gates attendance. Wiring this up would enrich the telemetry sent
+// with a submission, not replace the server-side verdict.
+
 import { useState, useCallback } from 'react';
 
 export interface GPSMetadata {

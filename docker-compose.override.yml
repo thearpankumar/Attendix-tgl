@@ -7,6 +7,11 @@ services:
     deploy:
       replicas: 1
     environment:
+      # This file is auto-merged by a bare `docker compose up`, so it applies
+      # unless explicitly excluded. It is a development override — never use a
+      # bare `docker compose up` (or `make restart-backend`) on a prod host.
+      # Secrets no longer depend on NODE_ENV, so this is now a logging/verbosity
+      # switch rather than a security one.
       - NODE_ENV=development
       - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-attendance_geotag}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379

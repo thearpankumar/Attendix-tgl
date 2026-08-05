@@ -97,12 +97,14 @@ pub async fn create_location(
 
 pub async fn get_locations(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let locations =
-        sqlx::query_as::<_, Location>("SELECT * FROM locations ORDER BY created_at DESC")
-            .fetch_all(&state.db)
-            .await?;
+    let locations = sqlx::query_as::<_, Location>(
+        "SELECT * FROM locations WHERE created_by = $1 ORDER BY created_at DESC",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
 
     let response: Vec<LocationResponse> =
         locations.into_iter().map(LocationResponse::from).collect();
@@ -112,24 +114,26 @@ pub async fn get_locations(
 
 pub async fn get_location(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
-        .bind(location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    let location =
+        sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1 AND created_by = $2")
+            .bind(location_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
     Ok(Json(LocationResponse::from(location)))
 }
 
 pub async fn update_location(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
     Json(payload): Json<LocationUpdate>,
 ) -> Result<impl IntoResponse> {
@@ -150,11 +154,15 @@ pub async fn update_location(
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let existing = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
-        .bind(location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // A geofence defines what "present" means. Letting one admin move
+    // another's would falsify that session's attendance wholesale.
+    let existing =
+        sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1 AND created_by = $2")
+            .bind(location_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
     let merged = Location {
         id: existing.id,
@@ -187,16 +195,21 @@ pub async fn update_location(
 
 pub async fn delete_location(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    sqlx::query("DELETE FROM locations WHERE id = $1")
+    let result = sqlx::query("DELETE FROM locations WHERE id = $1 AND created_by = $2")
         .bind(location_id)
+        .bind(auth.id)
         .execute(&state.db)
         .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Location not found".to_string()));
+    }
 
     Ok(Json(serde_json::json!({
         "message": "Location deleted successfully"

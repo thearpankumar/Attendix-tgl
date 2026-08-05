@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -10,32 +10,56 @@ use std::sync::Arc;
 
 use crate::AppState;
 
-/// Extract client IP from request headers (x-forwarded-for or x-real-ip)
-fn get_client_ip<T>(request: &Request<T>) -> String {
-    // Try x-forwarded-for header first (may contain multiple IPs, take the first one)
-    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
-        if let Ok(forwarded_str) = forwarded.to_str() {
-            if let Some(first_ip) = forwarded_str.split(',').next() {
-                let ip = first_ip.trim();
-                if !ip.is_empty() {
-                    return ip.to_string();
+/// Determines the client IP to key rate limits on.
+///
+/// The socket peer address is the source of truth. `X-Forwarded-For` is only
+/// consulted when the peer is itself a configured trusted proxy — otherwise
+/// any client can mint a fresh rate-limit bucket per request just by varying
+/// the header, which defeated the login brute-force limiter along with every
+/// other limit in the system. The previous implementation trusted the header
+/// unconditionally and fell back to the literal string `"unknown"`, putting
+/// every header-less client into one shared bucket.
+fn get_client_ip<T>(request: &Request<T>, trusted_proxies: &[ipnet::IpNet]) -> String {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+
+    let peer_is_trusted = match peer {
+        Some(ip) => trusted_proxies.iter().any(|net| net.contains(&ip)),
+        // No ConnectInfo (e.g. in tests): treat as untrusted.
+        None => false,
+    };
+
+    if peer_is_trusted {
+        // Right-most entry that is not itself a trusted proxy is the closest
+        // address the trusted hop actually observed. Walking from the right
+        // prevents a client from prepending forged entries.
+        if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+            if let Ok(forwarded_str) = forwarded.to_str() {
+                for candidate in forwarded_str.rsplit(',') {
+                    let candidate = candidate.trim();
+                    if candidate.is_empty() {
+                        continue;
+                    }
+                    match candidate.parse::<std::net::IpAddr>() {
+                        Ok(ip) if !trusted_proxies.iter().any(|net| net.contains(&ip)) => {
+                            return ip.to_string();
+                        }
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
                 }
             }
         }
     }
 
-    // Fall back to x-real-ip header
-    if let Some(real_ip) = request.headers().get("x-real-ip") {
-        if let Ok(ip_str) = real_ip.to_str() {
-            let ip = ip_str.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
+    match peer {
+        Some(ip) => ip.to_string(),
+        // Falling back to a constant would merge all such callers into one
+        // bucket, so be explicit that this is a degraded path.
+        None => "unknown-peer".to_string(),
     }
-
-    // Default to unknown if no headers present
-    "unknown".to_string()
 }
 
 /// Return a 429 Too Many Requests response
@@ -63,7 +87,7 @@ pub async fn login_rate_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = get_client_ip(&request);
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
 
     let config = state.get_system_config().await;
     let allowed = state
@@ -88,7 +112,7 @@ pub async fn admin_rate_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = get_client_ip(&request);
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
 
     let config = state.get_system_config().await;
     let allowed = state
@@ -113,7 +137,7 @@ pub async fn student_rate_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = get_client_ip(&request);
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
 
     let config = state.get_system_config().await;
     let allowed = state
@@ -138,7 +162,7 @@ pub async fn client_log_rate_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = get_client_ip(&request);
+    let ip = get_client_ip(&request, &state.config.trusted_proxies);
 
     let config = state.get_system_config().await;
     let allowed = state

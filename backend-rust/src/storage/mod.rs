@@ -1,6 +1,6 @@
 mod s3;
 
-pub use s3::S3Storage;
+pub use s3::{validate_attendance_photo_key, S3Storage, ATTENDANCE_PHOTO_PREFIX};
 
 use crate::config::S3Config;
 use crate::error::AppError;

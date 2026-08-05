@@ -35,13 +35,63 @@ pub struct SecuritySummary {
     pub flag_percentage: String,
 }
 
+/// Confirms the session belongs to the calling admin.
+///
+/// These endpoints previously took `Extension(_auth)` and looked rows up by
+/// path parameter alone, so any admin could read any other admin's flagged
+/// submissions and student PII, or approve their attendance records.
+async fn assert_session_owned(pool: &sqlx::PgPool, session_id: Uuid, admin_id: Uuid) -> Result<()> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND created_by = $2)",
+    )
+    .bind(session_id)
+    .bind(admin_id)
+    .fetch_one(pool)
+    .await?;
+
+    if owned {
+        Ok(())
+    } else {
+        Err(AppError::NotFound("Session not found".to_string()))
+    }
+}
+
+/// Confirms the attendance row belongs to a session the calling admin owns.
+async fn assert_attendance_owned(
+    pool: &sqlx::PgPool,
+    attendance_id: Uuid,
+    admin_id: Uuid,
+) -> Result<()> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+             SELECT 1 FROM attendances a \
+             JOIN sessions s ON s.id = a.session_id \
+             WHERE a.id = $1 AND s.created_by = $2 \
+         )",
+    )
+    .bind(attendance_id)
+    .bind(admin_id)
+    .fetch_one(pool)
+    .await?;
+
+    if owned {
+        Ok(())
+    } else {
+        Err(AppError::NotFound(
+            "Attendance record not found".to_string(),
+        ))
+    }
+}
+
 pub async fn get_security_summary(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
+
+    assert_session_owned(&state.db, session_id, auth.id).await?;
 
     let total_submissions: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
@@ -119,16 +169,7 @@ pub async fn review_submission(
     let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
-    // Verify attendance exists before reviewing
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attendances WHERE id = $1)")
-        .bind(attendance_uuid)
-        .fetch_one(&state.db)
-        .await?;
-    if !exists {
-        return Err(AppError::NotFound(
-            "Attendance record not found".to_string(),
-        ));
-    }
+    assert_attendance_owned(&state.db, attendance_uuid, auth.id).await?;
 
     let message = match payload.action.as_str() {
         "approve" => {
@@ -219,11 +260,13 @@ impl FlaggedSubmissionResponse {
 
 pub async fn get_flagged_submissions(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
+
+    assert_session_owned(&state.db, session_id, auth.id).await?;
 
     let attendances: Vec<Attendance> = sqlx::query_as(
         "SELECT * FROM attendances WHERE session_id = $1 AND flagged = true LIMIT 100",
@@ -260,11 +303,13 @@ pub struct SubmissionDetailsResponse {
 
 pub async fn get_submission_details(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(attendance_id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
+
+    assert_attendance_owned(&state.db, attendance_uuid, auth.id).await?;
 
     let attendance: Attendance = sqlx::query_as("SELECT * FROM attendances WHERE id = $1")
         .bind(attendance_uuid)

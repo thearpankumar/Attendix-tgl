@@ -5,17 +5,31 @@ on:
     branches: [master]
     paths:
       - 'backend-rust/**/*.rs'
-      - 'frontend/admin/src/**/*.{js,jsx}'
-      - 'frontend/student/src/**/*.{js,jsx,ts,tsx}'
-      - 'frontend/home/src/**/*.{ts,tsx}'
+      - 'frontend/admin/src/**/*.js'
+      - 'frontend/admin/src/**/*.jsx'
+      - 'frontend/admin/src/**/*.ts'
+      - 'frontend/admin/src/**/*.tsx'
+      - 'frontend/student/src/**/*.js'
+      - 'frontend/student/src/**/*.jsx'
+      - 'frontend/student/src/**/*.ts'
+      - 'frontend/student/src/**/*.tsx'
+      - 'frontend/home/src/**/*.ts'
+      - 'frontend/home/src/**/*.tsx'
       - '.github/workflows/codeql.yml'
   pull_request:
     branches: [master]
     paths:
       - 'backend-rust/**/*.rs'
-      - 'frontend/admin/src/**/*.{js,jsx}'
-      - 'frontend/student/src/**/*.{js,jsx,ts,tsx}'
-      - 'frontend/home/src/**/*.{ts,tsx}'
+      - 'frontend/admin/src/**/*.js'
+      - 'frontend/admin/src/**/*.jsx'
+      - 'frontend/admin/src/**/*.ts'
+      - 'frontend/admin/src/**/*.tsx'
+      - 'frontend/student/src/**/*.js'
+      - 'frontend/student/src/**/*.jsx'
+      - 'frontend/student/src/**/*.ts'
+      - 'frontend/student/src/**/*.tsx'
+      - 'frontend/home/src/**/*.ts'
+      - 'frontend/home/src/**/*.tsx'
       - '.github/workflows/codeql.yml'
   schedule:
     - cron: '0 6 * * 1'

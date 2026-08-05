@@ -45,7 +45,15 @@ pub async fn register(
     };
     validate_request(&validation_req)?;
 
-    if payload.admin_secret != state.config.admin_secret {
+    // Constant-time: a byte-wise `!=` leaks the correct prefix through timing,
+    // and this endpoint is public.
+    use subtle::ConstantTimeEq;
+    let secret_matches: bool = payload
+        .admin_secret
+        .as_bytes()
+        .ct_eq(state.config.admin_secret.as_bytes())
+        .into();
+    if !secret_matches {
         return Err(AppError::Unauthorized("Invalid admin secret".to_string()));
     }
 

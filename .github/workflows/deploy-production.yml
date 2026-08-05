@@ -44,6 +44,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # Long-lived IAM keys. These are almost certainly the same AKIA pair that
+      # sits in .env, so a leak from either place is a leak from both, and they
+      # never expire. Replace with OIDC — no stored secret at all:
+      #
+      #   permissions:
+      #     id-token: write
+      #     contents: read
+      #   ...
+      #   - uses: aws-actions/configure-aws-credentials@v6
+      #     with:
+      #       role-to-assume: arn:aws:iam::<account>:role/<github-deploy-role>
+      #       aws-region: ap-south-1
+      #
+      # Requires an IAM role in the AWS account with a trust policy for
+      # token.actions.githubusercontent.com scoped to this repo and branch.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:

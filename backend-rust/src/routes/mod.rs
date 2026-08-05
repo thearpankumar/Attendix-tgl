@@ -12,6 +12,7 @@ use chrono::Utc;
 use serde::Serialize;
 use std::sync::{Arc, OnceLock};
 
+use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::AppState;
 
 /// `PrometheusMetricLayer::pair()` installs a process-wide global metrics
@@ -24,12 +25,16 @@ fn metric_layer_and_handle() -> (PrometheusMetricLayer<'static>, PrometheusHandl
     PAIR.get_or_init(PrometheusMetricLayer::pair).clone()
 }
 
+/// Public storage capability advertisement.
+///
+/// The frontends gate their direct-S3-upload path on `supportsDirectUpload`,
+/// so that field must stay. The bucket name and region used to be returned
+/// alongside it to any anonymous caller — infrastructure disclosure with no
+/// client use — and have been dropped.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StorageInfo {
     provider: String,
-    bucket: String,
-    region: String,
     supports_direct_upload: bool,
 }
 
@@ -72,18 +77,79 @@ pub fn create_routes(state: Arc<AppState>) -> Router {
 
     let (metric_layer, metric_handle) = metric_layer_and_handle();
 
-    Router::new()
-        .route("/health", get(health_check))
-        .route("/health/ready", get(health_ready))
-        .route("/health/live", get(health_live))
+    // Prometheus scrapes this; browsers must not. It exposes per-route request
+    // volumes and timing for the whole instance and previously had no auth at
+    // all. Scoped to trusted proxies (the monitoring network) plus an optional
+    // bearer token.
+    let metrics_routes = Router::new()
         .route(
             "/metrics",
             get(move || async move { metric_handle.render() }),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::metrics_auth_middleware,
+        ));
+
+    let router = Router::new()
+        .route("/health", get(health_check))
+        .route("/health/ready", get(health_ready))
+        .route("/health/live", get(health_live))
+        .merge(metrics_routes)
         .nest("/api", api_routes)
         .layer(metric_layer)
-        .with_state(state)
+        // Attendance bodies are small JSON documents; photos go to S3
+        // out-of-band. The Excel roster upload raises this locally. Without a
+        // limit anywhere, an unauthenticated caller could stream arbitrarily
+        // large bodies into the multipart and JSON parsers.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .with_state(state);
+
+    apply_security_headers(router)
 }
+
+/// Response headers applied to every route.
+///
+/// These live here rather than in `main.rs` so the test suite exercises the
+/// real values. They were previously added to the binary's router only, and
+/// the security tests asserted against a hardcoded copy of the CSP string —
+/// so those tests passed no matter what the service actually sent.
+pub fn apply_security_headers(router: Router) -> Router {
+    use axum::http::{header::HeaderName, HeaderValue};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    const HEADERS: &[(&str, &str)] = &[
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        ("x-xss-protection", "1; mode=block"),
+        ("referrer-policy", "strict-origin-when-cross-origin"),
+        (
+            "permissions-policy",
+            "geolocation=(self), camera=(self), microphone=()",
+        ),
+        ("content-security-policy", API_CONTENT_SECURITY_POLICY),
+    ];
+
+    HEADERS.iter().fold(router, |router, (name, value)| {
+        router.layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        ))
+    })
+}
+
+/// CSP for API responses.
+///
+/// These are JSON documents; nothing here needs to execute script, load styles
+/// or embed images, so the policy is maximally restrictive. It previously
+/// allowed `script-src 'self' 'unsafe-inline'`, which is meaningless for a JSON
+/// endpoint and weakened the policy for no benefit. The frontends get their own
+/// (necessarily looser) policy from Caddy.
+pub const API_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
+     frame-ancestors 'none'; \
+     base-uri 'none'; \
+     form-action 'none'; \
+     object-src 'none'";
 
 async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -147,8 +213,6 @@ async fn get_storage_info(State(state): State<Arc<AppState>>) -> impl axum::resp
     let supports_direct_upload = provider == "s3";
     Json(StorageInfo {
         provider,
-        bucket: state.config.storage.s3.bucket.clone(),
-        region: state.config.storage.s3.region.clone(),
         supports_direct_upload,
     })
 }
@@ -165,14 +229,15 @@ mod storage_info_tests {
     fn serializes_supports_direct_upload_as_camel_case() {
         let info = StorageInfo {
             provider: "s3".to_string(),
-            bucket: "test-bucket".to_string(),
-            region: "us-east-1".to_string(),
             supports_direct_upload: true,
         };
 
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["supportsDirectUpload"], true);
         assert_eq!(json["provider"], "s3");
+        // Infrastructure details must not be advertised publicly.
+        assert!(json.get("bucket").is_none());
+        assert!(json.get("region").is_none());
         // The old snake_case key must not leak onto the wire.
         assert!(json.get("supports_direct_upload").is_none());
     }
@@ -181,8 +246,6 @@ mod storage_info_tests {
     fn non_s3_provider_does_not_support_direct_upload() {
         let info = StorageInfo {
             provider: "cloudinary".to_string(),
-            bucket: String::new(),
-            region: String::new(),
             supports_direct_upload: "cloudinary" == "s3",
         };
 

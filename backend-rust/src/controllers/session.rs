@@ -293,7 +293,7 @@ pub struct GetSessionsQuery {
 
 pub async fn get_sessions(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<GetSessionsQuery>,
 ) -> Result<impl IntoResponse> {
     let location_filter = query
@@ -324,12 +324,14 @@ pub async fn get_sessions(
 
     let sessions: Vec<Session> = sqlx::query_as(
         "SELECT * FROM sessions \
-         WHERE ($1::uuid IS NULL OR location_id = $1) \
-           AND ($2::timestamptz IS NULL OR created_at >= $2) \
-           AND ($3::timestamptz IS NULL OR created_at <= $3) \
+         WHERE created_by = $1 \
+           AND ($2::uuid IS NULL OR location_id = $2) \
+           AND ($3::timestamptz IS NULL OR created_at >= $3) \
+           AND ($4::timestamptz IS NULL OR created_at <= $4) \
          ORDER BY created_at DESC \
-         LIMIT $4",
+         LIMIT $5",
     )
+    .bind(auth.id)
     .bind(location_filter)
     .bind(start_utc)
     .bind(end_utc)
@@ -388,17 +390,19 @@ pub async fn get_sessions(
 
 pub async fn get_session(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
-        .bind(session_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
         .bind(session.location_id)
@@ -445,16 +449,22 @@ pub async fn get_session(
 
 pub async fn deactivate_session(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    sqlx::query("UPDATE sessions SET is_active = false WHERE id = $1")
-        .bind(session_id)
-        .execute(&state.db)
-        .await?;
+    let result =
+        sqlx::query("UPDATE sessions SET is_active = false WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .execute(&state.db)
+            .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Session not found".to_string()));
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -510,8 +520,14 @@ pub async fn delete_session(
     .fetch_all(&state.db)
     .await?;
 
-    // Delete photos from storage
+    // Delete photos from storage. Keys are re-validated here because they were
+    // recorded from a client-supplied field; without this a submitter could
+    // name an unrelated object and have it destroyed when the session ended.
     for public_id in &photo_ids_to_delete {
+        let Ok(public_id) = crate::storage::validate_attendance_photo_key(public_id) else {
+            tracing::warn!("Skipping deletion of out-of-prefix photo key");
+            continue;
+        };
         match state.storage.provider().delete(public_id).await {
             Ok(_) => {}
             Err(e) => {
@@ -551,17 +567,22 @@ pub async fn delete_session(
 
 pub async fn rotate_token(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
-        .bind(session_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Ownership check. Without it any admin could rotate any other admin's
+    // session and receive the new attendance token in the response body,
+    // hijacking that session and breaking it for its owner at the same time.
+    let session: Session =
+        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
+            .bind(session_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let new_token = Session::generate_token();
 

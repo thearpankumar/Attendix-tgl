@@ -7,6 +7,11 @@ on:
     branches: [master]
   workflow_call:
 
+# Explicit least privilege. Without this block the workflow inherits the
+# repository default, which on many orgs is contents: write.
+permissions:
+  contents: read
+
 jobs:
   backend-rust-test:
     name: Backend Rust Tests

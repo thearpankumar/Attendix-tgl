@@ -16,10 +16,35 @@ serde_json = "1"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 argon2 = "0.5"
 bcrypt = "0.19"
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.5", features = [
+    # Ceremony state is persisted in `webauthn_challenges.state` between the
+    # start and finish requests, which are separate HTTP calls.
+    "danger-allow-state-serialisation",
+    # Passkey autofill on the attendance page (discoverable credentials).
+    "conditional-ui",
+    # Enrollment stores resident keys so autofill can discover them.
+    "resident-key-support",
+] }
 ciborium = "0.2"
-aws-config = "1"
-aws-sdk-s3 = "1"
+# `default-features = false` drops the `rustls` feature, which pulls
+# aws-smithy-runtime/tls-rustls -> the legacy hyper-0.14 + rustls 0.21.12 +
+# rustls-webpki 0.101.7 stack. That stack is what RUSTSEC-2026-0098/0099/0104
+# fire on, and those suppressions were sitting in .cargo/audit.toml with no
+# rationale. `rustls-aws-lc` gives the modern rustls 0.23 path instead.
+aws-config = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "behavior-version-latest",
+    "default-https-client",
+    "credentials-process",
+    "sso",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "behavior-version-latest",
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+] }
 image = "0.25"
 image_hasher = "3"
 rust_xlsxwriter = "0.96"
@@ -31,7 +56,7 @@ axum-prometheus = "0.10"
 validator = { version = "0.20", features = ["derive"] }
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
@@ -39,6 +64,8 @@ rand = "0.10"
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
+ipnet = { version = "2", features = ["serde"] }
+subtle = "2.6"
 futures = "0.3"
 async-trait = "0.1"
 regex = "1"

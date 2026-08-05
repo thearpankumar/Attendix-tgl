@@ -17,7 +17,18 @@ pg_dump -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$PGDATABASE" -Fc -f "
 
 log "Dump complete: ${BACKUP_FILE} ($(du -h "$BACKUP_FILE" | cut -f1))"
 
-aws s3 cp "$BACKUP_FILE" "s3://${AWS_S3_BUCKET}/postgres-backups/$(basename "$BACKUP_FILE")" --region "${AWS_REGION:-us-east-1}"
+# These dumps carry the full dataset: names, roll numbers, geolocation traces
+# and photo references. Encrypt server-side rather than relying on whatever the
+# bucket default happens to be. Set BACKUP_KMS_KEY_ID to use a customer-managed
+# key; otherwise this falls back to SSE-S3, which is still better than none.
+if [ -n "${BACKUP_KMS_KEY_ID:-}" ]; then
+    SSE_ARGS="--sse aws:kms --sse-kms-key-id ${BACKUP_KMS_KEY_ID}"
+else
+    SSE_ARGS="--sse AES256"
+fi
+
+# shellcheck disable=SC2086 # SSE_ARGS is intentionally word-split into flags.
+aws s3 cp "$BACKUP_FILE" "s3://${AWS_S3_BUCKET}/postgres-backups/$(basename "$BACKUP_FILE")" --region "${AWS_REGION:-us-east-1}" $SSE_ARGS
 
 log "Uploaded to s3://${AWS_S3_BUCKET}/postgres-backups/$(basename "$BACKUP_FILE")"
 

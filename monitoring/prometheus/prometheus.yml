@@ -17,8 +17,8 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 
-  # Caddy's built-in Prometheus metrics (needs `servers { metrics }` + a
-  # network-reachable `admin` listener in the Caddyfile — already set).
+  # Caddy's metrics-only :2019 listener (see Caddyfile.prod). This used to be
+  # the admin API listener, which also exposes config read/write.
   - job_name: caddy
     metrics_path: /metrics
     static_configs:
@@ -35,6 +35,11 @@ scrape_configs:
         type: A
         port: 5000
     metrics_path: /metrics
+    # /metrics is no longer world-readable; it requires a trusted-proxy source
+    # or this bearer token. Set METRICS_TOKEN identically on the backend.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token
     relabel_configs:
       # Tag each replica's metrics with its resolved IP address.
       - source_labels: [__address__]

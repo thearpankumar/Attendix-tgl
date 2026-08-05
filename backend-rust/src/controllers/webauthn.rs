@@ -23,6 +23,35 @@ pub struct WebAuthnCredentialResponse {
     pub enrolled_at: String,
 }
 
+/// Confirms the student is on the roster of a batch the calling admin created.
+///
+/// WebAuthn credentials belong to students, not admins, so the ownership chain
+/// runs admin -> batch -> student. Without this check any admin could reset,
+/// suspend or enumerate any student's credential in the system.
+async fn assert_student_owned(
+    pool: &sqlx::PgPool,
+    roll_number: &str,
+    admin_id: uuid::Uuid,
+) -> Result<()> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+             SELECT 1 FROM students st \
+             JOIN batches b ON b.id = st.batch_id \
+             WHERE upper(st.roll_number) = upper($1) AND b.created_by = $2 \
+         )",
+    )
+    .bind(roll_number)
+    .bind(admin_id)
+    .fetch_one(pool)
+    .await?;
+
+    if owned {
+        Ok(())
+    } else {
+        Err(AppError::NotFound("Student not found".to_string()))
+    }
+}
+
 pub async fn reset_credential(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -57,6 +86,8 @@ pub async fn reset_credential(
             "Too many credential resets. This action has been flagged for review.".to_string(),
         ));
     }
+
+    assert_student_owned(&state.db, &payload.student_id, auth.id).await?;
 
     let previous_credential_id: Option<String> =
         sqlx::query_scalar("SELECT credential_id FROM webauthn_credentials WHERE student_id = $1")
@@ -102,6 +133,8 @@ pub async fn suspend_credential(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<SuspendCredentialRequest>,
 ) -> Result<impl IntoResponse> {
+    assert_student_owned(&state.db, &payload.student_id, auth.id).await?;
+
     sqlx::query(
         "UPDATE webauthn_credentials \
          SET is_suspended = true, suspended_reason = $1, suspended_at = now(), suspended_by = $2 \
@@ -139,6 +172,8 @@ pub async fn unsuspend_credential(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<UnsuspendCredentialRequest>,
 ) -> Result<impl IntoResponse> {
+    assert_student_owned(&state.db, &payload.student_id, auth.id).await?;
+
     sqlx::query(
         "UPDATE webauthn_credentials \
          SET is_suspended = false, suspended_reason = NULL, suspended_at = NULL \
@@ -171,16 +206,29 @@ pub struct UnsuspendCredentialRequest {
 
 pub async fn get_credentials(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webauthn_credentials")
-        .fetch_one(&state.db)
-        .await?;
+    // Scoped to this admin's roster; previously this dumped every student's
+    // credential metadata in the system.
+    const OWNED_STUDENTS: &str = "SELECT 1 FROM students st \
+         JOIN batches b ON b.id = st.batch_id \
+         WHERE upper(st.roll_number) = upper(webauthn_credentials.student_id) \
+           AND b.created_by = $1";
 
-    let creds: Vec<WebAuthnCredential> =
-        sqlx::query_as("SELECT * FROM webauthn_credentials ORDER BY enrolled_at DESC LIMIT 100")
-            .fetch_all(&state.db)
-            .await?;
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM webauthn_credentials WHERE EXISTS ({OWNED_STUDENTS})"
+    ))
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let creds: Vec<WebAuthnCredential> = sqlx::query_as(&format!(
+        "SELECT * FROM webauthn_credentials WHERE EXISTS ({OWNED_STUDENTS}) \
+         ORDER BY enrolled_at DESC LIMIT 100"
+    ))
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
 
     let creds: Vec<WebAuthnCredentialResponse> = creds
         .into_iter()
@@ -207,21 +255,35 @@ pub async fn get_credentials(
 
 pub async fn get_webauthn_stats(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webauthn_credentials")
-        .fetch_one(&state.db)
-        .await?;
-    let suspended: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM webauthn_credentials WHERE is_suspended")
-            .fetch_one(&state.db)
-            .await?;
+    const OWNED_STUDENTS: &str = "SELECT 1 FROM students st \
+         JOIN batches b ON b.id = st.batch_id \
+         WHERE upper(st.roll_number) = upper(webauthn_credentials.student_id) \
+           AND b.created_by = $1";
 
-    // Count unique students from attendance records (approximate total student count)
-    let unique_students: i64 =
-        sqlx::query_scalar("SELECT COUNT(DISTINCT roll_number) FROM attendances")
-            .fetch_one(&state.db)
-            .await?;
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM webauthn_credentials WHERE EXISTS ({OWNED_STUDENTS})"
+    ))
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+    let suspended: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM webauthn_credentials \
+         WHERE is_suspended AND EXISTS ({OWNED_STUDENTS})"
+    ))
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Roster size for this admin's batches.
+    let unique_students: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT upper(st.roll_number)) FROM students st \
+         JOIN batches b ON b.id = st.batch_id WHERE b.created_by = $1",
+    )
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
 
     let enrollment_rate = if unique_students > 0 {
         (total as f64 / unique_students as f64) * 100.0

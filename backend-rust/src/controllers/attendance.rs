@@ -4,9 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use chrono::Utc;
-use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -31,7 +29,9 @@ use crate::{
 pub struct SubmitAttendanceRequest {
     pub student_name: String,
     pub roll_number: String,
-    pub photo_url: Option<String>,
+    // `photoUrl` is deliberately absent: the stored URL is derived from the
+    // validated object key. It used to be accepted verbatim and rendered in
+    // the admin dashboard.
     pub photo_public_id: Option<String>,
     #[serde(default)]
     pub direct_upload: bool,
@@ -40,49 +40,17 @@ pub struct SubmitAttendanceRequest {
     pub device_fingerprint: Option<String>,
     pub totp_code: Option<String>,
     pub gps_data: Option<crate::middleware::GpsDataPayload>,
-    pub webauthn_verified: Option<bool>,
-    pub webauthn_credential_id: Option<String>,
-    pub face_detected: Option<bool>,
+    // `webauthnVerified`, `webauthnCredentialId` and `faceDetected` are
+    // deliberately absent. They used to be accepted here and written straight
+    // to the attendance row, so `{"webauthnVerified": true}` satisfied the
+    // biometric policy and `{"faceDetected": true}` satisfied the camera check
+    // with no evidence whatsoever. Both are now derived server-side only.
     pub captcha_answer: Option<String>,
     pub captcha_id: Option<String>,
     pub gps_metadata: Option<GpsMetadataPayload>,
     pub dev_bypass_camera: Option<bool>,
     pub dev_bypass_gps: Option<bool>,
     pub dev_bypass_webauthn: Option<bool>,
-}
-
-fn verify_captcha(captcha_answer: &str, captcha_id: &str, jwt_secret: &str) -> Result<()> {
-    let parts: Vec<&str> = captcha_id.split('.').collect();
-    if parts.len() != 2 {
-        return Err(AppError::BadRequest(
-            "Invalid captcha ID format".to_string(),
-        ));
-    }
-
-    let timestamp: i64 = parts[0]
-        .parse()
-        .map_err(|_| AppError::BadRequest("Invalid captcha timestamp".to_string()))?;
-
-    const FIVE_MINUTES_MS: i64 = 5 * 60 * 1000;
-    let now = chrono::Utc::now().timestamp_millis();
-    if now - timestamp > FIVE_MINUTES_MS {
-        return Err(AppError::BadRequest(
-            "Captcha expired. Please refresh and try again.".to_string(),
-        ));
-    }
-
-    let mut mac = Hmac::<Sha256>::new_from_slice(jwt_secret.as_bytes())
-        .map_err(|_| AppError::Internal("Failed to create HMAC".to_string()))?;
-    mac.update(format!("{}:{}", captcha_answer.to_lowercase(), timestamp).as_bytes());
-    let expected_signature = hex::encode(mac.finalize().into_bytes());
-
-    if expected_signature != parts[1] {
-        return Err(AppError::BadRequest(
-            "Incorrect captcha. Please try again.".to_string(),
-        ));
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,37 +365,11 @@ pub async fn get_captcha(
     State(state): State<Arc<crate::AppState>>,
     Path(_token): Path<String>,
 ) -> Result<impl IntoResponse> {
-    use captcha::{
-        filters::{Dots, Noise, Wave},
-        Captcha,
-    };
-
-    let mut captcha = Captcha::new();
-    captcha.add_chars(5);
-    let captcha_text = captcha.chars_as_string();
-
-    captcha
-        .apply_filter(Noise::new(0.4))
-        .apply_filter(Wave::new(2.0, 20.0).horizontal())
-        .view(220, 120)
-        .apply_filter(Dots::new(15));
-
-    let png_data = captcha.as_png().unwrap_or_default();
-    let svg = format!(
-        "<img src=\"data:image/png;base64,{}\" />",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png_data)
-    );
-
-    let timestamp = chrono::Utc::now().timestamp_millis();
-    let mut mac = Hmac::<Sha256>::new_from_slice(state.config.jwt_secret.as_bytes())
-        .map_err(|_| AppError::Internal("Failed to create HMAC".to_string()))?;
-    mac.update(format!("{}:{}", captcha_text.to_lowercase(), timestamp).as_bytes());
-    let signature = hex::encode(mac.finalize().into_bytes());
-    let captcha_id = format!("{}.{}", timestamp, signature);
+    let issued = crate::utils::captcha::issue(&state.config.jwt_secret)?;
 
     Ok(Json(serde_json::json!({
-        "captchaSvg": svg,
-        "captchaId": captcha_id,
+        "captchaSvg": issued.image_html,
+        "captchaId": issued.captcha_id,
     })))
 }
 
@@ -527,7 +469,7 @@ pub async fn submit_attendance(
             (&payload.captcha_answer, &payload.captcha_id)
         {
             let jwt_secret = &state.config.jwt_secret;
-            verify_captcha(captcha_answer, captcha_id, jwt_secret)?;
+            crate::utils::captcha::verify(captcha_answer, captcha_id, jwt_secret)?;
         } else {
             return Err(AppError::BadRequest(
                 "Captcha verification inputs missing".to_string(),
@@ -610,10 +552,12 @@ pub async fn submit_attendance(
         false // No credential, no WebAuthn required
     };
 
-    if webauthn_required
-        && !payload.webauthn_verified.unwrap_or(false)
-        && !(is_dev_bypass_all && payload.dev_bypass_webauthn.unwrap_or(false))
-    {
+    // An enrolled student past the grace period has exactly one legitimate
+    // route: POST /webauthn/authenticate/finish, which verifies the assertion
+    // signature before recording anything. There is no reason for them to
+    // arrive here, so this path is closed to them outright rather than being
+    // gated on a boolean they control.
+    if webauthn_required && !(is_dev_bypass_all && payload.dev_bypass_webauthn.unwrap_or(false)) {
         return Err(AppError::Forbidden(
             "Security policy requires biometric authentication. Please use your enrolled device."
                 .to_string(),
@@ -739,12 +683,28 @@ pub async fn submit_attendance(
     let emulator_flags: Vec<EmulatorFlag> = build_emulator_flags(&emulator_detection);
     let integrity_checks: Vec<IntegrityCheck> = build_integrity_checks(&device_integrity);
 
-    // Perform face detection if photo_url is provided
+    // `photoPublicId` is client-supplied and used to be handed straight to
+    // S3, allowing an arbitrary object in the bucket to be read here and
+    // deleted later when the session was removed. Confine it to the
+    // attendance-photo prefix once, and use only the validated form below.
+    let photo_key: Option<&str> = payload.photo_public_id.as_deref().and_then(|key| {
+        match crate::storage::validate_attendance_photo_key(key) {
+            Ok(valid) => Some(valid),
+            Err(_) => {
+                tracing::warn!("Rejected out-of-prefix photo key from client");
+                None
+            }
+        }
+    });
+
+    // Face detection runs whenever a valid photo key is present. It used to
+    // additionally require `photo_url` to be set — which the direct-upload
+    // path never sends — so on the only supported storage path the server-side
+    // check silently never ran and the client's `faceDetected` claim stood in
+    // for it.
     let face_detected_result = if is_dev_bypass_all && payload.dev_bypass_camera.unwrap_or(false) {
         Some(true)
-    } else if let (Some(photo_public_id), true) =
-        (&payload.photo_public_id, payload.photo_url.is_some())
-    {
+    } else if let Some(photo_public_id) = photo_key {
         match state.storage.provider().download(photo_public_id).await {
             Ok(image_data) => match detect_faces(&image_data).await {
                 Ok(result) => {
@@ -769,15 +729,14 @@ pub async fn submit_attendance(
         None
     };
 
-    // Use the detection result, or fall back to the client-provided value, or default to true
-    let face_detected = face_detected_result
-        .or(payload.face_detected)
-        .unwrap_or(true);
+    // Server-side detection is the only source of truth. When it could not run
+    // — no photo, download failure, or detector error — the result is "not
+    // verified", not "assume a face was present". This previously fell back to
+    // the client's own `faceDetected` boolean and then defaulted to `true`.
+    let face_detected = face_detected_result.unwrap_or(false);
 
     // Compute photo hash and check for reuse
-    let (photo_hash_value, photo_reuse_detected) = if let Some(photo_public_id) =
-        &payload.photo_public_id
-    {
+    let (photo_hash_value, photo_reuse_detected) = if let Some(photo_public_id) = photo_key {
         match state.storage.provider().download(photo_public_id).await {
             Ok(image_data) => {
                 // Compute perceptual hash
@@ -840,7 +799,12 @@ pub async fn submit_attendance(
         session_id: session.id,
         student_name: payload.student_name,
         roll_number: roll_upper.clone(),
-        photo_url: payload.photo_url.unwrap_or_default(),
+        // Derived from the validated key, never taken from the request body.
+        // A client-supplied URL is stored and later rendered in the admin
+        // dashboard, so it must not be attacker-controlled.
+        photo_url: photo_key
+            .map(|key| state.storage.provider().get_file_url(key))
+            .unwrap_or_default(),
         photo_public_id: payload.photo_public_id.unwrap_or_default(),
         photo_hash: photo_hash_value.clone(),
         photo_reuse_detected,
@@ -859,8 +823,12 @@ pub async fn submit_attendance(
         totp_code: payload.totp_code.clone(),
         totp_valid: None,
         device_flag: device_flag.clone(),
-        webauthn_credential_id: payload.webauthn_credential_id,
-        webauthn_verified: payload.webauthn_verified.unwrap_or(false),
+        // Reaching this handler means the student was not required to present
+        // a WebAuthn assertion (not enrolled, or still inside the grace
+        // period). Only `finish_authentication`, which verifies the signature,
+        // may record a credential or set this flag.
+        webauthn_credential_id: None,
+        webauthn_verified: false,
         webauthn_device_type: None,
         webauthn_authenticator_attachment: None,
         webauthn_counter: None,

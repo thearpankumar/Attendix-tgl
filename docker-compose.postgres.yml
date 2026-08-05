@@ -10,6 +10,16 @@ services:
     image: postgres:16-alpine
     container_name: attendance-postgres
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_READ_SEARCH
+      - FOWNER
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-attendance_geotag}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
@@ -32,6 +42,14 @@ services:
       context: ./scripts/backup
     container_name: attendance-pg-backup
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
     environment:
       - PGHOST=postgres
       - PGPORT=5432

@@ -22,13 +22,22 @@ pub fn validate_qr_token(short_code: &str, totp_secret: &str, token: &str) -> bo
     let current_slot = now / QR_TOKEN_VALIDITY_SECS;
     let previous_slot = current_slot - 1;
 
-    // Check current slot
-    if token == generate_qr_token_for_slot(short_code, totp_secret, current_slot) {
-        return true;
-    }
+    // Constant-time comparison: a plain `==` on these strings short-circuits on
+    // the first differing byte, leaking the correct prefix through response
+    // timing. Both slots are always compared so the check takes the same time
+    // whether or not the current slot matched.
+    use subtle::ConstantTimeEq;
 
-    // Check previous slot (allows 8 second window)
-    token == generate_qr_token_for_slot(short_code, totp_secret, previous_slot)
+    let current_match: bool = token
+        .as_bytes()
+        .ct_eq(generate_qr_token_for_slot(short_code, totp_secret, current_slot).as_bytes())
+        .into();
+    let previous_match: bool = token
+        .as_bytes()
+        .ct_eq(generate_qr_token_for_slot(short_code, totp_secret, previous_slot).as_bytes())
+        .into();
+
+    current_match | previous_match
 }
 
 fn generate_qr_token_for_slot(short_code: &str, totp_secret: &str, slot: i64) -> String {

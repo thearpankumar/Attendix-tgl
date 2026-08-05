@@ -58,20 +58,51 @@ impl From<ValidationError> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Internal failures are logged in full but reported opaquely. These
+        // variants previously returned `e.to_string()` straight to the client,
+        // leaking table, column and constraint names from sqlx errors, Redis
+        // and AWS diagnostics, and filesystem paths.
+        const OPAQUE: &str = "An internal error occurred";
+
         let (status, message) = match &self {
-            AppError::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::Redis(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            AppError::Database(e) => {
+                tracing::error!(error = %e, "database error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Redis(e) => {
+                tracing::error!(error = %e, "redis error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Io(e) => {
+                tracing::error!(error = %e, "io error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Internal(msg) => {
+                tracing::error!(error = %msg, "internal error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Aws(msg) => {
+                tracing::error!(error = %msg, "aws error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Image(msg) => {
+                tracing::error!(error = %msg, "image error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            AppError::Storage(msg) => {
+                tracing::error!(error = %msg, "storage error");
+                (StatusCode::INTERNAL_SERVER_ERROR, OPAQUE.to_string())
+            }
+            // Client-facing variants carry messages written for the client.
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::Jwt(e) => (StatusCode::UNAUTHORIZED, e.to_string()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::Io(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::Aws(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::Image(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::Storage(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            AppError::Jwt(_) => (
+                StatusCode::UNAUTHORIZED,
+                "Invalid or expired token".to_string(),
+            ),
         };
 
         let body = Json(json!({

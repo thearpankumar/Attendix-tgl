@@ -44,54 +44,234 @@ pub struct IntegrityCheck {
     pub details: Option<String>,
 }
 
-pub async fn gps_validation_middleware(mut request: Request, next: Next) -> Result<Response> {
-    let gps_data = request.extensions().get::<GpsDataPayload>().cloned();
+/// Upper bound on a buffered attendance request body. Photos are uploaded to
+/// S3 out-of-band, so these bodies are small JSON documents.
+const MAX_SECURITY_BODY_BYTES: usize = 256 * 1024;
 
-    let result = if let Some(gps) = gps_data {
-        validate_gps(&gps)
+/// Security telemetry as the student frontend actually sends it (camelCase,
+/// with `integrityChecks` as an array of findings rather than an object).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientSecurityEnvelope {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub gps_metadata: Option<ClientGpsMetadata>,
+    pub device_metrics: Option<ClientDeviceMetrics>,
+    pub integrity_checks: Vec<ClientIntegrityFinding>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientGpsMetadata {
+    pub accuracy: Option<f64>,
+    pub altitude: Option<f64>,
+    pub speed: Option<f64>,
+    pub timestamp: Option<i64>,
+    pub is_mock_location: Option<bool>,
+    pub provider: Option<String>,
+}
+
+/// Raw device signals reported by the browser. These are *inputs* to the
+/// server-side verdict, never the verdict itself — the client's own
+/// `isEmulation` field is deliberately not read.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientDeviceMetrics {
+    pub webgl_renderer: Option<String>,
+    pub platform: Option<String>,
+    pub user_agent: Option<String>,
+    pub screen_width: Option<i32>,
+    pub screen_height: Option<i32>,
+    pub device_memory: Option<i32>,
+    pub hardware_concurrency: Option<i32>,
+    pub max_touch_points: Option<i32>,
+    pub touch_event_support: Option<bool>,
+    pub has_coarse_pointer: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientIntegrityFinding {
+    #[serde(rename = "type")]
+    pub finding_type: String,
+    pub details: String,
+}
+
+/// Runs GPS, emulator and device-integrity analysis over the request body and
+/// publishes the three results as request extensions.
+///
+/// This replaces three separate middlewares that each read their input from a
+/// request extension that nothing ever populated, so every request took the
+/// "no data" branch and was reported as `valid: true` / `detected: false` /
+/// `passed: true`. The analysis functions were correct; they were simply never
+/// reached. Reading the body here is what actually connects them.
+///
+/// The body is buffered and reinstated so downstream handlers still see it.
+pub async fn security_analysis_middleware(request: Request, next: Next) -> Result<Response> {
+    let (mut parts, body) = request.into_parts();
+
+    let bytes = axum::body::to_bytes(body, MAX_SECURITY_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            crate::error::AppError::BadRequest("Request body too large or unreadable".to_string())
+        })?;
+
+    // GET requests (status, captcha, upload-url) carry no telemetry; an empty
+    // body deserializes to the default envelope and is analysed as "absent".
+    let envelope: ClientSecurityEnvelope = if bytes.is_empty() {
+        ClientSecurityEnvelope::default()
     } else {
-        GpsValidationResult {
-            valid: true,
-            anomalies: vec![],
-            confidence: CONFIDENCE_HIGH.to_string(),
-        }
+        serde_json::from_slice(&bytes).unwrap_or_default()
     };
 
-    request.extensions_mut().insert(result);
+    // The User-Agent the browser actually sent, as seen by the server. A client
+    // that spoofs `deviceMetrics.userAgent` but not the header (or vice versa)
+    // is caught by the cross-check below.
+    let header_user_agent = parts
+        .headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    parts.extensions.insert(analyse_gps(&envelope));
+    parts
+        .extensions
+        .insert(analyse_emulator(&envelope, &header_user_agent));
+    parts
+        .extensions
+        .insert(analyse_integrity(&envelope, &header_user_agent));
+
+    let request = Request::from_parts(parts, axum::body::Body::from(bytes));
     Ok(next.run(request).await)
 }
 
-pub async fn emulator_detection_middleware(mut request: Request, next: Next) -> Result<Response> {
-    let device_metrics = request.extensions().get::<DeviceMetrics>().cloned();
+fn analyse_gps(envelope: &ClientSecurityEnvelope) -> GpsValidationResult {
+    let (Some(latitude), Some(longitude)) = (envelope.latitude, envelope.longitude) else {
+        // No coordinates at all: nothing to validate, and nothing to vouch for.
+        return GpsValidationResult {
+            valid: false,
+            anomalies: vec![GpsAnomaly {
+                anomaly_type: ANOMALY_MISSING_METADATA.to_string(),
+                severity: Severity::Medium,
+                details: "Request carried no GPS coordinates".to_string(),
+            }],
+            confidence: CONFIDENCE_LOW.to_string(),
+        };
+    };
 
-    let result = if let Some(metrics) = device_metrics {
-        detect_emulator(&metrics)
-    } else {
-        EmulatorDetectionResult {
+    let Some(metadata) = envelope.gps_metadata.as_ref() else {
+        // Coordinates but no metadata: cannot check accuracy, speed or mock
+        // flags, so this must not be reported as high-confidence clean.
+        return GpsValidationResult {
+            valid: false,
+            anomalies: vec![GpsAnomaly {
+                anomaly_type: ANOMALY_MISSING_METADATA.to_string(),
+                severity: Severity::Medium,
+                details: "Coordinates supplied without GPS metadata; cannot verify".to_string(),
+            }],
+            confidence: CONFIDENCE_LOW.to_string(),
+        };
+    };
+
+    validate_gps(&GpsDataPayload {
+        latitude,
+        longitude,
+        accuracy: metadata.accuracy,
+        altitude: metadata.altitude,
+        speed: metadata.speed,
+        timestamp: metadata.timestamp,
+        mock_location: metadata.is_mock_location,
+        provider: metadata.provider.clone(),
+    })
+}
+
+fn analyse_emulator(
+    envelope: &ClientSecurityEnvelope,
+    header_user_agent: &str,
+) -> EmulatorDetectionResult {
+    let Some(metrics) = envelope.device_metrics.as_ref() else {
+        return EmulatorDetectionResult {
             detected: false,
-            flags: vec![],
+            flags: vec![EMULATOR_FLAG_METRICS_MISSING.to_string()],
             has_high_severity: false,
-        }
+        };
     };
 
-    request.extensions_mut().insert(result);
-    Ok(next.run(request).await)
+    let mut result = detect_emulator(&DeviceMetrics {
+        webgl_renderer: metrics.webgl_renderer.clone(),
+        platform: metrics.platform.clone(),
+        // Prefer the header the server observed over the value the client
+        // reported about itself.
+        user_agent: Some(header_user_agent.to_string()),
+        screen_width: metrics.screen_width,
+        screen_height: metrics.screen_height,
+        device_memory: metrics.device_memory,
+        hardware_concurrency: metrics.hardware_concurrency,
+    });
+
+    // A mismatch between the claimed and observed User-Agent is a strong
+    // tampering signal: an honest browser reports the same string twice.
+    if let Some(claimed) = metrics.user_agent.as_deref() {
+        if !claimed.is_empty() && !header_user_agent.is_empty() && claimed != header_user_agent {
+            result.detected = true;
+            result.has_high_severity = true;
+            result
+                .flags
+                .push(EMULATOR_FLAG_USER_AGENT_MISMATCH.to_string());
+        }
+    }
+
+    result
 }
 
-pub async fn device_integrity_middleware(mut request: Request, next: Next) -> Result<Response> {
-    let integrity_data = request.extensions().get::<IntegrityData>().cloned();
-
-    let result = if let Some(data) = integrity_data {
-        check_integrity(&data)
-    } else {
-        DeviceIntegrityResult {
-            checks: vec![],
-            passed: true,
-        }
+fn analyse_integrity(
+    envelope: &ClientSecurityEnvelope,
+    header_user_agent: &str,
+) -> DeviceIntegrityResult {
+    let Some(metrics) = envelope.device_metrics.as_ref() else {
+        // Fail closed: absent telemetry is "unverified", not "passed". This
+        // flags the submission for admin review rather than rejecting it, so a
+        // browser that cannot supply the signals does not lose its attendance.
+        return DeviceIntegrityResult {
+            checks: vec![IntegrityCheck {
+                name: "DEVICE_TELEMETRY_MISSING".to_string(),
+                passed: false,
+                details: Some("No device metrics supplied; integrity unverified".to_string()),
+            }],
+            passed: false,
+        };
     };
 
-    request.extensions_mut().insert(result);
-    Ok(next.run(request).await)
+    let device_info = super::mobile_check::check_mobile(header_user_agent);
+    let is_mobile = device_info.is_mobile || device_info.is_tablet;
+
+    let mut result = check_integrity(&IntegrityData {
+        timing_manipulation: None,
+        browser_inconsistency: None,
+        performance_now: None,
+        date_now: None,
+        platform: metrics.platform.clone(),
+        touch_support: metrics.touch_event_support,
+        max_touch_points: metrics.max_touch_points,
+        screen_width: metrics.screen_width,
+        pointer_events_supported: metrics.has_coarse_pointer,
+        touch_events_supported: metrics.touch_event_support,
+        is_mobile: Some(is_mobile),
+    });
+
+    // Client-reported findings can only add suspicion — they are recorded, but
+    // an empty list never clears a server-derived failure.
+    for finding in &envelope.integrity_checks {
+        result.checks.push(IntegrityCheck {
+            name: format!("CLIENT_{}", finding.finding_type),
+            passed: false,
+            details: Some(finding.details.clone()),
+        });
+    }
+
+    result.passed = result.checks.iter().all(|check| check.passed);
+    result
 }
 
 fn validate_gps(gps: &GpsDataPayload) -> GpsValidationResult {

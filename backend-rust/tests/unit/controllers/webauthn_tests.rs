@@ -646,6 +646,7 @@ mod challenge_expiry_tests {
             student_name: None,
             expires_at: Utc::now() - Duration::seconds(1), // Expired
             used: false,
+            state: None,
             created_at: Utc::now() - Duration::minutes(10),
         };
 
@@ -709,6 +710,7 @@ mod challenge_expiry_tests {
             student_name: None,
             expires_at: Utc::now() + Duration::minutes(5), // Not expired
             used: true,                                    // Already used
+            state: None,
             created_at: Utc::now(),
         };
 
@@ -2072,6 +2074,7 @@ mod webauthn_security_tests {
             student_name: None,
             expires_at: Utc::now() + Duration::minutes(5),
             used: true, // Mark as used
+            state: None,
             created_at: Utc::now(),
         };
 
@@ -2668,7 +2671,8 @@ fn create_mock_webauthn_credential(student_id: &str, is_suspended: bool) -> WebA
         id: Uuid::new_v4(),
         student_id: student_id.to_string(),
         credential_id: format!("cred-{}", student_id),
-        public_key: vec![0u8; 32], // Mock public key
+        passkey: vec![0u8; 32], // Opaque stand-in; not deserialised by these tests
+        user_handle: None,
         counter: 0,
         device_label: "Unknown Device".to_string(),
         device_type: "multiDevice".to_string(),
@@ -2709,6 +2713,7 @@ fn create_mock_webauthn_challenge(
         student_name: Some(format!("Student {}", student_id)),
         expires_at: Utc::now() + Duration::minutes(5),
         used: false,
+        state: None,
         created_at: Utc::now(),
     }
 }

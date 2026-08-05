@@ -26,8 +26,11 @@
 # monitoring-net (that's exactly how Grafana's own datasource reaches it).
 services:
 
-  # Internal-only: no host port, no Caddy route. Stays on web-net only to
-  # scrape caddy:2019/metrics — not to be reached from it.
+  # Internal-only: no host port, no Caddy route, and no longer on web-net.
+  # Docker bridge networks are bidirectional, so sharing web-net with the three
+  # internet-facing frontends meant any one of them could reach this
+  # completely unauthenticated instance. Caddy joins monitoring-net instead so
+  # its metrics listener stays scrapeable.
   prometheus:
     image: prom/prometheus:v3.12.0
     container_name: attendance-prometheus
@@ -42,7 +45,6 @@ services:
       - node-exporter
     networks:
       - monitoring-net
-      - web-net
 
   # ponytail: on Docker Desktop (Mac/Windows) cAdvisor's container metrics
   # are limited/best-effort — it runs inside the Desktop VM, not directly on
@@ -51,12 +53,23 @@ services:
     image: ghcr.io/google/cadvisor:v0.60.5
     container_name: attendance-cadvisor
     restart: unless-stopped
-    privileged: true
+    # `privileged: true` combined with a writable host /var/run — which
+    # contains docker.sock — made any RCE in cAdvisor, or anything able to
+    # reach cadvisor:8080 on monitoring-net, a path to host root. cAdvisor
+    # needs read access to these paths, not write, and not full privilege.
+    privileged: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Required to stat cgroup and process paths owned by other users.
+      - DAC_READ_SEARCH
     devices:
       - /dev/kmsg
     volumes:
       - /:/rootfs:ro
-      - /var/run:/var/run:rw
+      - /var/run:/var/run:ro
       - /sys:/sys:ro
     expose:
       - "8080"

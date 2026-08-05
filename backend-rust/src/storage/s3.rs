@@ -33,6 +33,36 @@ impl S3Storage {
     }
 }
 
+/// Object-key prefix every attendance photo lives under.
+pub const ATTENDANCE_PHOTO_PREFIX: &str = "attendance-photos/";
+
+/// Validates a client-supplied object key before it reaches S3.
+///
+/// `photo_public_id` arrives in the attendance request body and used to be
+/// passed straight to `download()` (arbitrary read of any object in the
+/// bucket) and later to `delete()` when a session was removed — so a submitter
+/// could name another session's photo, or a database backup, and have it
+/// destroyed. Keys are now confined to the attendance-photo prefix with no
+/// traversal segments.
+pub fn validate_attendance_photo_key(key: &str) -> Result<&str, AppError> {
+    if !key.starts_with(ATTENDANCE_PHOTO_PREFIX) {
+        return Err(AppError::BadRequest("Invalid photo reference".to_string()));
+    }
+
+    // `..` and absolute-looking segments would escape the prefix once S3
+    // normalises the key; backslashes and control characters are never valid
+    // in a key this service generates.
+    if key.contains("..")
+        || key.contains("//")
+        || key.contains('\\')
+        || key.chars().any(|c| c.is_control())
+    {
+        return Err(AppError::BadRequest("Invalid photo reference".to_string()));
+    }
+
+    Ok(key)
+}
+
 #[async_trait]
 impl StorageProvider for S3Storage {
     async fn upload(
@@ -180,5 +210,38 @@ impl StorageProvider for S3Storage {
 
     fn get_name(&self) -> &'static str {
         "s3"
+    }
+}
+
+#[cfg(test)]
+mod key_validation_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_a_generated_attendance_key() {
+        let key = "attendance-photos/8f14e45f-ea8d-4c2b-9f1a-0d3c5b7e9a11_1721654400.jpg";
+        assert!(validate_attendance_photo_key(key).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_key_outside_the_prefix() {
+        assert!(validate_attendance_photo_key("db-backups/dump.sql.gz").is_err());
+    }
+
+    #[test]
+    fn rejects_traversal_out_of_the_prefix() {
+        assert!(
+            validate_attendance_photo_key("attendance-photos/../db-backups/dump.sql.gz").is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_a_prefix_lookalike() {
+        assert!(validate_attendance_photo_key("attendance-photos-evil/x.jpg").is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters() {
+        assert!(validate_attendance_photo_key("attendance-photos/a\nb.jpg").is_err());
     }
 }

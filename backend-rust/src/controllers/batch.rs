@@ -123,11 +123,14 @@ pub async fn create_batch(
 
 pub async fn get_batches(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let batches = sqlx::query_as::<_, Batch>("SELECT * FROM batches ORDER BY created_at DESC")
-        .fetch_all(&state.db)
-        .await?;
+    let batches = sqlx::query_as::<_, Batch>(
+        "SELECT * FROM batches WHERE created_by = $1 ORDER BY created_at DESC",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
 
     let counts: Vec<(Uuid, i64)> =
         sqlx::query_as("SELECT batch_id, COUNT(*) FROM students GROUP BY batch_id")
@@ -157,17 +160,19 @@ pub async fn get_batches(
 
 pub async fn get_batch(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    let batch = sqlx::query_as::<_, Batch>("SELECT * FROM batches WHERE id = $1")
-        .bind(batch_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
+    let batch =
+        sqlx::query_as::<_, Batch>("SELECT * FROM batches WHERE id = $1 AND created_by = $2")
+            .bind(batch_id)
+            .bind(auth.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
 
     let students = fetch_students(&state.db, batch_id).await?;
 
@@ -184,16 +189,21 @@ pub async fn get_batch(
 
 pub async fn delete_batch(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    sqlx::query("DELETE FROM batches WHERE id = $1")
+    let result = sqlx::query("DELETE FROM batches WHERE id = $1 AND created_by = $2")
         .bind(batch_id)
+        .bind(auth.id)
         .execute(&state.db)
         .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Batch not found".to_string()));
+    }
 
     Ok(Json(serde_json::json!({
         "message": "Batch deleted successfully"

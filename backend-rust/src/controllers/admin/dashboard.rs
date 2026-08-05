@@ -821,6 +821,11 @@ pub async fn get_dashboard_stats(
     }))
 }
 
+/// Instance-wide infrastructure health (database, Redis, object storage).
+///
+/// Intentionally not scoped to the calling admin — there is no per-admin view
+/// of whether Postgres is reachable. Authentication alone is the correct gate
+/// here, unlike the handlers that read or mutate per-admin records.
 pub async fn get_system_health(
     State(state): State<Arc<crate::AppState>>,
     Extension(_auth): Extension<AuthenticatedAdmin>,

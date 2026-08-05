@@ -17,6 +17,8 @@ pub struct WebAuthnChallenge {
     pub expires_at: DateTime<Utc>,
     #[serde(default)]
     pub used: bool,
+    /// Serialised `webauthn-rs` ceremony state, replayed at finish time.
+    pub state: Option<sqlx::types::JsonValue>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -49,6 +51,7 @@ impl WebAuthnChallenge {
             student_name: None,
             expires_at: Utc::now() + Duration::minutes(5),
             used: false,
+            state: None,
             created_at: Utc::now(),
         }
     }

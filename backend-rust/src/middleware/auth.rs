@@ -109,32 +109,6 @@ pub async fn auth_middleware(
     Ok(next.run(request).await)
 }
 
-/// Middleware to require specific role for endpoint access
-pub fn require_role(
-    required_role: &'static str,
-) -> impl Fn(
-    Request<axum::body::Body>,
-    Next,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response>> + Send + 'static>> {
-    move |request: Request<axum::body::Body>, next: Next| {
-        Box::pin(async move {
-            let auth = request
-                .extensions()
-                .get::<AuthenticatedAdmin>()
-                .ok_or_else(|| AppError::Unauthorized("Not authenticated".into()))?;
-
-            if auth.role != required_role && auth.role != "superadmin" {
-                return Err(AppError::Forbidden(format!(
-                    "Requires {} role",
-                    required_role
-                )));
-            }
-
-            Ok(next.run(request).await)
-        })
-    }
-}
-
 impl<S> axum::extract::FromRequestParts<S> for AuthenticatedAdmin
 where
     S: Send + Sync,

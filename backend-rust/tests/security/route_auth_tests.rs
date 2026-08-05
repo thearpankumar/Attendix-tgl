@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 
 /// Creates a test application router
 async fn create_test_app() -> axum::Router {
-    let config = AppConfig::default();
+    let config = AppConfig::for_testing();
     // Lazy pool: none of the routes exercised in this file's tests actually
     // reach the database (they either 401 before a handler runs, or hit
     // handlers with no DB access), so no real Postgres connection is needed.
@@ -36,6 +36,10 @@ async fn create_test_app() -> axum::Router {
     let storage = attendance_geotag_backend::storage::Storage::new(&aws_config, &config.storage)
         .unwrap_or_else(|_| panic!("Failed to initialize test storage"));
 
+    let webauthn = Arc::new(
+        attendance_geotag_backend::build_webauthn(&config).expect("valid test webauthn config"),
+    );
+
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
@@ -47,11 +51,16 @@ async fn create_test_app() -> axum::Router {
         storage,
         http_client: reqwest::Client::new(),
         system_config,
+        webauthn,
     });
 
     routes::create_routes(state)
 }
 
+/// `/metrics` exposes per-route request volumes and latency for the whole
+/// instance. It was mounted on the root router with no auth at all — this test
+/// existed under this name but asserted 200. It is now gated on a trusted-proxy
+/// source or a `METRICS_TOKEN` bearer token, and the test config sets neither.
 #[tokio::test]
 async fn test_metrics_not_world_accessible() {
     let app = create_test_app().await;
@@ -66,7 +75,7 @@ async fn test_metrics_not_world_accessible() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 /// Regression test: /metrics must actually report HTTP request metrics, not
@@ -91,10 +100,14 @@ async fn test_metrics_reports_actual_http_metrics() {
         .await
         .unwrap();
 
+    // SAFETY: single-threaded test setup, before any concurrent access.
+    unsafe { std::env::set_var("METRICS_TOKEN", "test-metrics-scrape-token") };
+
     let response = app
         .oneshot(
             Request::builder()
                 .uri("/metrics")
+                .header("authorization", "Bearer test-metrics-scrape-token")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -167,13 +180,17 @@ async fn test_storage_info_response_body_shape() {
         .as_bool()
         .unwrap_or_else(|| panic!("`supportsDirectUpload` must be a boolean: {json}"));
 
-    // Default test AppConfig uses the s3 provider (see AppConfig::default),
-    // which is the only StorageProvider actually implemented.
+    // Test config uses the s3 provider (see AppConfig::for_testing), the only
+    // StorageProvider actually implemented.
     assert_eq!(json["provider"], "s3");
     assert!(
         supports_direct_upload,
         "s3 provider must report supportsDirectUpload: true"
     );
+    // Regression: the bucket name and region used to be returned to any
+    // anonymous caller alongside this field.
+    assert!(json.get("bucket").is_none(), "must not disclose the bucket");
+    assert!(json.get("region").is_none(), "must not disclose the region");
 }
 
 #[tokio::test]

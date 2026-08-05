@@ -83,15 +83,11 @@ mod tests {
             ))
             .layer(SetResponseHeaderLayer::if_not_present(
                 axum::http::HeaderName::from_static("content-security-policy"),
+                // The real policy, not a copy. These tests previously asserted
+                // against a hardcoded duplicate of the CSP string, so they
+                // passed regardless of what the service actually sent.
                 axum::http::HeaderValue::from_static(
-                    "default-src 'self'; \
-                     script-src 'self' 'unsafe-inline'; \
-                     style-src 'self' 'unsafe-inline'; \
-                     img-src 'self' data: blob: https:; \
-                     font-src 'self' data:; \
-                     connect-src 'self' https:; \
-                     frame-ancestors 'none'; \
-                     base-uri 'self';",
+                    attendance_geotag_backend::routes::API_CONTENT_SECURITY_POLICY,
                 ),
             ))
     }
@@ -127,10 +123,11 @@ mod tests {
             );
         }
 
-        /// Test: should have default-src self in CSP
-        /// Node.js: lines 12-15
+        /// API responses are JSON, so the policy denies every fetch directive
+        /// outright. `default-src 'none'` is strictly stronger than the
+        /// `default-src 'self'` + per-directive allowances this replaced.
         #[test]
-        fn should_have_default_src_self_in_csp() {
+        fn should_have_default_src_none_in_csp() {
             let app = create_test_app();
 
             let response = tokio_test::block_on(
@@ -150,8 +147,8 @@ mod tests {
                 .unwrap_or("");
 
             assert!(
-                csp.contains("default-src 'self'"),
-                "CSP should contain default-src 'self'"
+                csp.contains("default-src 'none'"),
+                "CSP should contain default-src 'none', got: {csp}"
             );
         }
 
@@ -186,7 +183,7 @@ mod tests {
         /// Test: should have form-action self
         /// Node.js: lines 22-25
         #[test]
-        fn should_have_form_action_self() {
+        fn should_have_form_action_none() {
             let app = create_test_app();
 
             let response = tokio_test::block_on(
@@ -208,15 +205,15 @@ mod tests {
             // Note: Current main.rs doesn't set form-action, but the test expects it
             // We test that CSP header exists and contains the expected policy
             assert!(
-                csp.contains("default-src 'self'"),
-                "CSP should contain default-src 'self'"
+                csp.contains("default-src 'none'"),
+                "CSP should contain default-src 'none', got: {csp}"
             );
         }
 
         /// Test: should have base-uri self
         /// Node.js: lines 27-30
         #[test]
-        fn should_have_base_uri_self() {
+        fn should_have_base_uri_none() {
             let app = create_test_app();
 
             let response = tokio_test::block_on(
@@ -236,8 +233,8 @@ mod tests {
                 .unwrap_or("");
 
             assert!(
-                csp.contains("base-uri 'self'"),
-                "CSP should contain base-uri 'self'"
+                csp.contains("base-uri 'none'"),
+                "CSP should contain base-uri 'none', got: {csp}"
             );
         }
     }
@@ -627,12 +624,16 @@ mod tests {
     // ============================================
     // CSP Directive Comprehensive Tests
     // ============================================
+    /// With `default-src 'none'` there is no script, style, image, font or
+    /// connect source to permit — the individual directives this module used to
+    /// assert on are redundant, and asserting they exist would push the policy
+    /// back toward being permissive. Assert the absence of the dangerous ones
+    /// instead.
     mod csp_directive_tests {
         use super::*;
 
-        /// Test: CSP should have script-src directive
         #[test]
-        fn csp_should_have_script_src_directive() {
+        fn csp_must_not_permit_inline_or_eval_script() {
             let app = create_test_app();
 
             let response = tokio_test::block_on(
@@ -652,116 +653,16 @@ mod tests {
                 .unwrap_or("");
 
             assert!(
-                csp.contains("script-src"),
-                "CSP should contain script-src directive"
+                !csp.contains("unsafe-inline"),
+                "CSP must not allow inline script, got: {csp}"
             );
-        }
-
-        /// Test: CSP should have style-src directive
-        #[test]
-        fn csp_should_have_style_src_directive() {
-            let app = create_test_app();
-
-            let response = tokio_test::block_on(
-                app.oneshot(
-                    axum::http::Request::builder()
-                        .uri("/health")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                ),
-            )
-            .unwrap();
-
-            let csp = response
-                .headers()
-                .get("content-security-policy")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
             assert!(
-                csp.contains("style-src"),
-                "CSP should contain style-src directive"
+                !csp.contains("unsafe-eval"),
+                "CSP must not allow eval, got: {csp}"
             );
-        }
-
-        /// Test: CSP should have img-src directive for images
-        #[test]
-        fn csp_should_have_img_src_directive() {
-            let app = create_test_app();
-
-            let response = tokio_test::block_on(
-                app.oneshot(
-                    axum::http::Request::builder()
-                        .uri("/health")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                ),
-            )
-            .unwrap();
-
-            let csp = response
-                .headers()
-                .get("content-security-policy")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
             assert!(
-                csp.contains("img-src"),
-                "CSP should contain img-src directive"
-            );
-        }
-
-        /// Test: CSP should have connect-src directive
-        #[test]
-        fn csp_should_have_connect_src_directive() {
-            let app = create_test_app();
-
-            let response = tokio_test::block_on(
-                app.oneshot(
-                    axum::http::Request::builder()
-                        .uri("/health")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                ),
-            )
-            .unwrap();
-
-            let csp = response
-                .headers()
-                .get("content-security-policy")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
-            assert!(
-                csp.contains("connect-src"),
-                "CSP should contain connect-src directive"
-            );
-        }
-
-        /// Test: CSP should have font-src directive
-        #[test]
-        fn csp_should_have_font_src_directive() {
-            let app = create_test_app();
-
-            let response = tokio_test::block_on(
-                app.oneshot(
-                    axum::http::Request::builder()
-                        .uri("/health")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                ),
-            )
-            .unwrap();
-
-            let csp = response
-                .headers()
-                .get("content-security-policy")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
-            assert!(
-                csp.contains("font-src"),
-                "CSP should contain font-src directive"
+                csp.contains("object-src 'none'"),
+                "CSP should block plugins, got: {csp}"
             );
         }
     }

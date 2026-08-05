@@ -130,6 +130,9 @@ pub const ANOMALY_LOW_ACCURACY: &str = "LOW_ACCURACY";
 pub const ANOMALY_IMPOSSIBLE_SPEED: &str = "IMPOSSIBLE_SPEED";
 pub const ANOMALY_TIMESTAMP_DRIFT: &str = "TIMESTAMP_DRIFT";
 pub const ANOMALY_PROVIDER_MISMATCH: &str = "PROVIDER_MISMATCH";
+/// Raised when a submission carries no GPS metadata at all, so none of the
+/// spoofing checks above could run. Absent evidence is not evidence of absence.
+pub const ANOMALY_MISSING_METADATA: &str = "GPS_METADATA_MISSING";
 
 // Emulator flag type constants
 pub const EMULATOR_FLAG_DESKTOP_GPU: &str = "DESKTOP_GPU_DETECTED";
@@ -138,7 +141,17 @@ pub const EMULATOR_FLAG_TIMING_ANOMALY: &str = "TIMING_ANOMALY";
 pub const EMULATOR_FLAG_SCREEN_RESOLUTION: &str = "SCREEN_RESOLUTION_SUSPICIOUS";
 pub const EMULATOR_FLAG_WEBGL_RENDERER: &str = "WEBGL_RENDERER_EMULATOR";
 pub const EMULATOR_FLAG_PLATFORM_INCONSISTENCY: &str = "PLATFORM_INCONSISTENCY";
+/// No device metrics were supplied, so emulator detection could not run.
+pub const EMULATOR_FLAG_METRICS_MISSING: &str = "DEVICE_METRICS_MISSING";
+/// The User-Agent the client reported about itself differs from the one the
+/// server observed on the wire — an honest browser reports the same string.
+pub const EMULATOR_FLAG_USER_AGENT_MISMATCH: &str = "USER_AGENT_MISMATCH";
 
 // WebAuthn constants
 pub const WEBAUTHN_DEVICE_UNKNOWN: &str = "Unknown Device";
 pub const WEBAUTHN_AUTHENTICATOR_TYPE_MULTI: &str = "multiDevice";
+
+/// Ceiling on any single request body. Attendance submissions are small JSON
+/// documents (photos are uploaded to S3 out-of-band); the roster spreadsheet
+/// upload is the largest legitimate payload.
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;

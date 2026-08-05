@@ -8,7 +8,9 @@
 	# Admin API bound to all interfaces (not published to the host — only
 	# reachable by other containers on web-net, e.g. Prometheus) so
 	# /metrics can be scraped as caddy:2019/metrics.
-	admin 0.0.0.0:2019
+	# See Caddyfile.prod: the admin API can rewrite the running config and
+	# export certs, and every container on web-net could reach it here.
+	admin off
 	metrics
 
 	log {

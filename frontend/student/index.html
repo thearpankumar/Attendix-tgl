@@ -11,8 +11,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-    <!-- Device fingerprinting — used by TOTP/WebAuthn page -->
-    <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
+    <!-- FingerprintJS is now a bundled dependency, imported in StudentScan.tsx.
+         It used to load from jsDelivr at a floating major version with no SRI,
+         on the page that handles attendance — so the CDN could execute
+         arbitrary code in that context, and the CSP had to allowlist it. -->
     <title>Mark Attendance</title>
   </head>
   <body>

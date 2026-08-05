@@ -143,7 +143,7 @@ pub struct ShortLinksQuery {
 
 pub async fn get_short_links(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<ShortLinksQuery>,
 ) -> Result<impl IntoResponse> {
     let page = query.page.unwrap_or(1);
@@ -157,11 +157,13 @@ pub async fn get_short_links(
 
     let links = sqlx::query_as::<_, ShortLink>(
         "SELECT * FROM short_links \
-         WHERE ($1::uuid IS NULL OR session_id = $1) \
-           AND ($2::bool IS NULL OR is_active = $2) \
+         WHERE created_by = $1 \
+           AND ($2::uuid IS NULL OR session_id = $2) \
+           AND ($3::bool IS NULL OR is_active = $3) \
          ORDER BY created_at DESC \
-         OFFSET $3 LIMIT $4",
+         OFFSET $4 LIMIT $5",
     )
+    .bind(auth.id)
     .bind(session_id_filter)
     .bind(is_active_filter)
     .bind((page - 1) * limit)
@@ -188,14 +190,17 @@ pub async fn get_short_links(
 
 pub async fn get_short_link_by_code(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let link = sqlx::query_as::<_, ShortLink>("SELECT * FROM short_links WHERE short_code = $1")
-        .bind(short_code.to_lowercase())
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
+    let link = sqlx::query_as::<_, ShortLink>(
+        "SELECT * FROM short_links WHERE short_code = $1 AND created_by = $2",
+    )
+    .bind(short_code.to_lowercase())
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
     if let Some(expires_at) = link.expires_at {
         if expires_at < Utc::now() {
@@ -317,14 +322,17 @@ pub async fn attach_short_link(
 
 pub async fn detach_short_link(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let link = sqlx::query_as::<_, ShortLink>("SELECT * FROM short_links WHERE short_code = $1")
-        .bind(short_code.to_lowercase())
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
+    let link = sqlx::query_as::<_, ShortLink>(
+        "SELECT * FROM short_links WHERE short_code = $1 AND created_by = $2",
+    )
+    .bind(short_code.to_lowercase())
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Short link not found".to_string()))?;
 
     sqlx::query("UPDATE short_links SET session_id = NULL, is_active = false WHERE id = $1")
         .bind(link.id)
@@ -338,11 +346,12 @@ pub async fn detach_short_link(
 
 pub async fn delete_short_link(
     State(state): State<Arc<crate::AppState>>,
-    Extension(_auth): Extension<AuthenticatedAdmin>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let result = sqlx::query("DELETE FROM short_links WHERE short_code = $1")
+    let result = sqlx::query("DELETE FROM short_links WHERE short_code = $1 AND created_by = $2")
         .bind(short_code.to_lowercase())
+        .bind(auth.id)
         .execute(&state.db)
         .await?;
 

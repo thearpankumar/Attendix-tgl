@@ -147,84 +147,48 @@ async fn main() -> anyhow::Result<()> {
         storage,
         http_client,
         system_config: Arc::new(RwLock::new(system_config_startup)),
+        webauthn: Arc::new(attendance_geotag_backend::build_webauthn(&config)?),
     });
 
     spawn_webauthn_challenge_cleanup(state.db.clone());
 
-    let cors_origins: Vec<axum::http::HeaderValue> = config
+    // Fail closed: every configured origin must parse. Previously this used
+    // `filter_map(..ok())`, so a single typo silently emptied the list and the
+    // code below fell through to `allow_origin(Any)`.
+    let cors_origins = config
         .cors_origin
         .split(',')
-        .filter_map(|origin| origin.trim().parse().ok())
-        .collect();
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            origin.parse::<axum::http::HeaderValue>().map_err(|_| {
+                anyhow::anyhow!("CORS_ORIGIN entry {origin:?} is not a valid origin header")
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let cors = if cors_origins.is_empty() || config.cors_origin == "*" {
-        CorsLayer::new()
-            .allow_origin(tower_http::cors::Any)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-    } else {
-        CorsLayer::new()
-            .allow_origin(cors_origins)
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::PUT,
-                axum::http::Method::DELETE,
-                axum::http::Method::PATCH,
-                axum::http::Method::OPTIONS,
-            ])
-            .allow_headers(tower_http::cors::Any)
-    };
+    if cors_origins.is_empty() {
+        anyhow::bail!("CORS_ORIGIN must list at least one origin");
+    }
+
+    let cors = CorsLayer::new()
+        .allow_origin(cors_origins)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::PATCH,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+        ]);
 
     let app = Router::new()
         .merge(attendance_geotag_backend::routes::create_routes(state))
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("x-content-type-options"),
-                axum::http::HeaderValue::from_static("nosniff"),
-            ),
-        )
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("x-frame-options"),
-                axum::http::HeaderValue::from_static("DENY"),
-            ),
-        )
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("x-xss-protection"),
-                axum::http::HeaderValue::from_static("1; mode=block"),
-            ),
-        )
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("referrer-policy"),
-                axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
-            ),
-        )
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("permissions-policy"),
-                axum::http::HeaderValue::from_static(
-                    "geolocation=(self), camera=(self), microphone=()",
-                ),
-            ),
-        )
-        .layer(
-            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
-                axum::http::header::HeaderName::from_static("content-security-policy"),
-                axum::http::HeaderValue::from_static(
-                    "default-src 'self'; \
-                 script-src 'self' 'unsafe-inline'; \
-                 style-src 'self' 'unsafe-inline'; \
-                 img-src 'self' data: blob: https:; \
-                 font-src 'self' data:; \
-                 connect-src 'self' https:; \
-                 frame-ancestors 'none'; \
-                 base-uri 'self';",
-                ),
-            ),
-        )
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(cors);

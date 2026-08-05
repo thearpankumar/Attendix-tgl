@@ -30,17 +30,77 @@ async fn get_config(
     Ok(Json(config))
 }
 
+/// The subset of `SystemConfig` an admin may change through `PUT /api/config`.
+///
+/// `dev_bypass_enabled` is deliberately absent. It used to be reachable here
+/// because the handler deserialised a whole `SystemConfig`, so
+/// `PUT {"devBypassEnabled": true}` flipped the global bypass without the
+/// password re-confirmation that `POST /api/config/dev-bypass` enforces —
+/// after which students could self-assert `devBypassGps`/`devBypassCamera`/
+/// `devBypassWebauthn` and skip the geofence, camera and biometric checks.
+///
+/// Every field is optional and omitted fields keep their current value.
+/// Previously omitted fields silently reset to defaults, so a partial PUT
+/// wiped rate limits, lockout thresholds and GPS tolerances.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateConfigRequest {
+    gps_validation: Option<crate::models::GpsValidationConfig>,
+    emulator_detection: Option<crate::models::EmulatorDetectionConfig>,
+    trust_score: Option<crate::models::TrustScoreConfig>,
+    rate_limits: Option<crate::models::RateLimitsConfig>,
+    webauthn_config: Option<crate::models::WebAuthnSystemConfig>,
+    photo_verification: Option<crate::models::PhotoVerificationConfig>,
+    session_config: Option<crate::models::SessionConfig>,
+    lockout_config: Option<crate::models::LockoutConfig>,
+    attendance_config: Option<crate::models::AttendanceConfig>,
+}
+
 async fn update_config(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
-    Json(mut payload): Json<SystemConfig>,
+    Json(payload): Json<UpdateConfigRequest>,
 ) -> Result<impl axum::response::IntoResponse> {
     use chrono::Utc;
 
-    payload.updated_by = Some(auth.id);
-    payload.updated_at = Utc::now();
+    // Merge onto the persisted config so `dev_bypass_enabled` survives
+    // untouched and omitted sections are preserved.
+    let mut current = SystemConfig::load(&state.db)
+        .await?
+        .unwrap_or_else(SystemConfig::default);
 
-    let saved = payload.save(&state.db).await?;
+    if let Some(v) = payload.gps_validation {
+        current.gps_validation = v;
+    }
+    if let Some(v) = payload.emulator_detection {
+        current.emulator_detection = v;
+    }
+    if let Some(v) = payload.trust_score {
+        current.trust_score = v;
+    }
+    if let Some(v) = payload.rate_limits {
+        current.rate_limits = v;
+    }
+    if let Some(v) = payload.webauthn_config {
+        current.webauthn_config = v;
+    }
+    if let Some(v) = payload.photo_verification {
+        current.photo_verification = v;
+    }
+    if let Some(v) = payload.session_config {
+        current.session_config = v;
+    }
+    if let Some(v) = payload.lockout_config {
+        current.lockout_config = v;
+    }
+    if let Some(v) = payload.attendance_config {
+        current.attendance_config = v;
+    }
+
+    current.updated_by = Some(auth.id);
+    current.updated_at = Utc::now();
+
+    let saved = current.save(&state.db).await?;
 
     // Flush in-memory hot-reload cache
     state.set_system_config(saved.clone()).await;

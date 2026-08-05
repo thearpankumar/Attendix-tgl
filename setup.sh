@@ -391,7 +391,7 @@ install_nvm() {
     print_info "Installing NVM $NVM_VERSION..."
     
     # Download and install NVM
-    curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
+    curl --proto '=https' --tlsv1.2 -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
     
     # Load NVM
     export NVM_DIR="$HOME/.nvm"
@@ -625,15 +625,32 @@ check_deps() {
 # DOCKER COMPOSE OPERATIONS
 #===============================================================================
 
+# Secret generation lives in scripts/generate-secrets.sh so there is one
+# implementation rather than a copy here that can drift.
+SECRETS_SCRIPT="$SCRIPT_DIR/scripts/generate-secrets.sh"
+
 copy_env_file() {
     print_section "Setting Up Environment File"
-    
+
     if [ ! -f "$SCRIPT_DIR/.env" ]; then
         if [ -f "$SCRIPT_DIR/.env.example" ]; then
             print_info "Copying .env.example to .env"
             cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
-            print_success ".env file created from .env.example"
-            print_warning "Please edit .env with your actual configuration before running Docker Compose"
+
+            # .env.example ships placeholders like
+            # JWT_SECRET=CHANGE-THIS-TO-A-SECURE-RANDOM-STRING. Copying it
+            # verbatim and then starting the stack — which the menu offers as
+            # "Production" — used to hand the service a publicly known signing
+            # key. Generate real values instead.
+            if [ -x "$SECRETS_SCRIPT" ]; then
+                bash "$SECRETS_SCRIPT" || return 1
+            else
+                print_error "scripts/generate-secrets.sh not found or not executable"
+                return 1
+            fi
+
+            print_success ".env file created with generated secrets"
+            print_warning "Still required: AWS_* credentials, DOMAIN, CORS_ORIGIN, WEBAUTHN_*"
         else
             print_error ".env.example not found"
             return 1
@@ -641,6 +658,23 @@ copy_env_file() {
     else
         print_success ".env file already exists"
     fi
+}
+
+# Refuses to start the stack while any secret is missing, short or still a
+# placeholder. The backend rejects these at boot too, but failing here gives a
+# clearer message than a container crash-loop.
+assert_no_placeholder_secrets() {
+    if [ ! -x "$SECRETS_SCRIPT" ]; then
+        print_warning "scripts/generate-secrets.sh missing; skipping secret validation"
+        return 0
+    fi
+
+    if ! bash "$SECRETS_SCRIPT" --check; then
+        print_error "Refusing to start with unsafe secrets."
+        print_info "Fix with: ./scripts/generate-secrets.sh"
+        return 1
+    fi
+    return 0
 }
 
 docker_compose_up() {
@@ -654,6 +688,10 @@ docker_compose_up() {
         copy_env_file
     fi
     
+    if ! assert_no_placeholder_secrets; then
+        return 1
+    fi
+
     print_info "Starting services with Docker Compose..."
     
     # Check Docker Compose availability

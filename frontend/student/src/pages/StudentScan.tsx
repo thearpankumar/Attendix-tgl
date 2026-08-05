@@ -7,9 +7,9 @@ import { useDeviceIntegrity } from '../hooks/useDeviceIntegrity';
 import MobileDeviceRequired from '../components/MobileDeviceRequired';
 import PermissionOnboarding from '../components/PermissionOnboarding';
 import HelpDrawer from '../components/HelpDrawer';
+import FingerprintJS from '@fingerprintjs/fingerprintjs';
 
 /* ponytail: globals loaded via CDN in index.html */
-declare const FingerprintJS: { load(): Promise<{ get(): Promise<{ visitorId: string }> }> };
 
 type Step = 'loading' | 'permissions' | 'error' | 'rollInput' | 'webauthnAction' | 'form' | 'success';
 
@@ -662,11 +662,9 @@ export default function StudentScan() {
           photoPublicId: urlData.publicId,
           latitude: locData?.latitude,
           longitude: locData?.longitude,
-          faceDetected: faceDetectedRef.current,
           captchaAnswer: captchaAnswer.trim(),
           captchaId,
           deviceFingerprint: fingerRef.current,
-          webauthnVerified,
           devBypassCamera: usedDevBypassCamera,
           devBypassGps: usedDevBypassGps,
           devBypassWebauthn: devBypassEnabled && !credentialRef.current,
@@ -686,11 +684,9 @@ export default function StudentScan() {
           photo: photoDataRef.current,
           latitude: locData?.latitude,
           longitude: locData?.longitude,
-          faceDetected: faceDetectedRef.current,
           captchaAnswer: captchaAnswer.trim(),
           captchaId,
           deviceFingerprint: fingerRef.current,
-          webauthnVerified,
           devBypassCamera: usedDevBypassCamera,
           devBypassGps: usedDevBypassGps,
           devBypassWebauthn: devBypassEnabled && !credentialRef.current,

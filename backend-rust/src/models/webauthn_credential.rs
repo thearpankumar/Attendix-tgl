@@ -25,11 +25,16 @@ pub struct WebAuthnCredential {
     pub id: Uuid,
     pub student_id: String,
     pub credential_id: String,
+    /// Serialised `webauthn_rs::prelude::Passkey`. Replaces the raw COSE key
+    /// that the previous, unverified implementation stored: verification needs
+    /// the full credential state, not just the public key.
     #[serde(
         serialize_with = "serialize_bytes",
         deserialize_with = "deserialize_bytes"
     )]
-    pub public_key: Vec<u8>,
+    pub passkey: Vec<u8>,
+    /// Opaque, stable WebAuthn user handle derived from the roll number.
+    pub user_handle: Option<Uuid>,
     /// WebAuthn signature counters are u32 on the wire; stored as i64 since
     /// Postgres has no unsigned integer type.
     #[serde(default)]
