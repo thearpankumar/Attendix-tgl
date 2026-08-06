@@ -5,12 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use rand::RngExt;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::RwLock;
+use std::{sync::Arc, time::Duration};
 
 const DENY_LIST_PREFIX: &str = "denylist:";
 
@@ -20,20 +15,14 @@ const DENY_LIST_PREFIX: &str = "denylist:";
 /// either), so there's little cost to a long block.
 pub const DENY_LIST_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// Same dual-backend shape as `RateLimiter`: Redis when configured (shared
-/// across replicas/restarts), an in-memory map otherwise.
 #[derive(Clone)]
 pub struct DenyList {
-    redis: Option<Arc<redis::Client>>,
-    memory: Arc<RwLock<HashMap<String, Instant>>>,
+    redis: Arc<redis::Client>,
 }
 
 impl DenyList {
-    pub fn with_redis(redis: Option<Arc<redis::Client>>) -> Self {
-        Self {
-            redis,
-            memory: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new(redis: Arc<redis::Client>) -> Self {
+        Self { redis }
     }
 
     pub async fn add(&self, ip: &str, reason: &str) {
@@ -45,39 +34,43 @@ impl DenyList {
             "IP added to deny-list"
         );
 
-        if let Some(ref redis) = self.redis {
-            if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+        match self.redis.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
                 use redis::AsyncCommands;
                 let key = format!("{}{}", DENY_LIST_PREFIX, ip);
-                let _: Result<(), _> = conn.set_ex(key, reason, DENY_LIST_TTL_SECS).await;
-                return;
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(key, reason, DENY_LIST_TTL_SECS)
+                    .await
+                {
+                    tracing::error!("Failed to write deny-list entry to Redis: {}", e);
+                }
             }
+            Err(e) => tracing::error!("Failed to connect to Redis for deny-list add: {}", e),
         }
-
-        let mut store = self.memory.write().await;
-        store.insert(ip.to_string(), Instant::now());
     }
 
+    /// Fails open (not-denied) on a Redis error: this is checked on every
+    /// request via `deny_list_middleware`, so an outage here must not turn
+    /// into a full-site outage — the deny-list is a defense-in-depth signal,
+    /// not the primary access control.
     pub async fn contains(&self, ip: &str) -> bool {
-        if let Some(ref redis) = self.redis {
-            if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+        match self.redis.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
                 use redis::AsyncCommands;
                 let key = format!("{}{}", DENY_LIST_PREFIX, ip);
-                return conn.exists::<_, bool>(key).await.unwrap_or(false);
+                match conn.exists::<_, bool>(key).await {
+                    Ok(denied) => denied,
+                    Err(e) => {
+                        tracing::error!("Deny-list Redis lookup failed: {}", e);
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect to Redis for deny-list check: {}", e);
+                false
             }
         }
-
-        let store = self.memory.read().await;
-        store
-            .get(ip)
-            .map(|inserted| inserted.elapsed() < Duration::from_secs(DENY_LIST_TTL_SECS))
-            .unwrap_or(false)
-    }
-}
-
-impl Default for DenyList {
-    fn default() -> Self {
-        Self::with_redis(None)
     }
 }
 

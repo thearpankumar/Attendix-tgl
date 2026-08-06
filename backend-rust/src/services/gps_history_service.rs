@@ -32,13 +32,13 @@ pub struct GpsPositionEntry {
 }
 
 pub struct GpsHistoryService {
-    redis: Option<Arc<redis::Client>>,
+    redis: Arc<redis::Client>,
     max_history: usize,
     ttl_secs: u64,
 }
 
 impl GpsHistoryService {
-    pub fn new(redis: Option<Arc<redis::Client>>) -> Self {
+    pub fn new(redis: Arc<redis::Client>) -> Self {
         Self {
             redis,
             max_history: MAX_HISTORY_SIZE,
@@ -51,19 +51,8 @@ impl GpsHistoryService {
         device_id: &str,
         position: GpsPositionEntry,
     ) -> crate::error::Result<()> {
-        if let Some(ref redis_client) = self.redis {
-            self.add_to_redis(redis_client, device_id, position).await?;
-        }
-        Ok(())
-    }
-
-    async fn add_to_redis(
-        &self,
-        redis_client: &Arc<redis::Client>,
-        device_id: &str,
-        position: GpsPositionEntry,
-    ) -> crate::error::Result<()> {
-        let mut conn = redis_client
+        let mut conn = self
+            .redis
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| {
@@ -99,19 +88,8 @@ impl GpsHistoryService {
         &self,
         device_id: &str,
     ) -> crate::error::Result<Vec<GpsPositionEntry>> {
-        if let Some(ref redis_client) = self.redis {
-            self.get_from_redis(redis_client, device_id).await
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    async fn get_from_redis(
-        &self,
-        redis_client: &Arc<redis::Client>,
-        device_id: &str,
-    ) -> crate::error::Result<Vec<GpsPositionEntry>> {
-        let mut conn = redis_client
+        let mut conn = self
+            .redis
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| {
@@ -137,19 +115,19 @@ impl GpsHistoryService {
     }
 
     pub async fn clear_history(&self, device_id: &str) -> crate::error::Result<()> {
-        if let Some(ref redis_client) = self.redis {
-            let mut conn = redis_client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| {
-                    crate::error::AppError::Internal(format!("Redis connection failed: {}", e))
-                })?;
-
-            let key = format!("{}{}", GPS_HISTORY_PREFIX, device_id);
-            let _: () = conn.del(&key).await.map_err(|e| {
-                crate::error::AppError::Internal(format!("Redis DEL failed: {}", e))
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| {
+                crate::error::AppError::Internal(format!("Redis connection failed: {}", e))
             })?;
-        }
+
+        let key = format!("{}{}", GPS_HISTORY_PREFIX, device_id);
+        let _: () = conn
+            .del(&key)
+            .await
+            .map_err(|e| crate::error::AppError::Internal(format!("Redis DEL failed: {}", e)))?;
         Ok(())
     }
 
@@ -226,13 +204,4 @@ impl GpsHistoryService {
         Ok(anomalies)
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.redis.is_some()
-    }
-}
-
-impl Default for GpsHistoryService {
-    fn default() -> Self {
-        Self::new(None)
-    }
 }

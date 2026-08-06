@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -73,27 +74,29 @@ async fn main() -> anyhow::Result<()> {
 
     sqlx::migrate!("./migrations").run(&db).await?;
 
-    let redis_client = if !config.redis.url.is_empty() {
-        match redis::Client::open(config.redis.url.as_str()) {
-            Ok(client) => {
-                tracing::info!("Redis client initialized successfully");
-                Some(Arc::new(client))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to initialize Redis client: {}. Falling back to in-memory caching.",
-                    e
-                );
-                None
-            }
-        }
-    } else {
-        tracing::info!("REDIS_URL not set, using in-memory caching");
-        None
-    };
+    tracing::info!("Connecting to Redis...");
 
-    let rate_limiter = Arc::new(RateLimiter::with_redis(redis_client.clone()));
-    let deny_list = Arc::new(DenyList::with_redis(redis_client.clone()));
+    // Rate limiting, the IP deny-list, session caching, and GPS anomaly
+    // detection are all Redis-backed with no in-memory fallback: with 3
+    // backend replicas in production, a per-process fallback would let each
+    // replica track its own independent counters/deny-list/cache, silently
+    // defeating all of them. A bad REDIS_URL or an unreachable Redis must
+    // fail startup, not boot into that state.
+    let redis_client = redis::Client::open(config.redis.url.as_str())
+        .with_context(|| format!("REDIS_URL {:?} is not a valid Redis URL", config.redis.url))?;
+    {
+        use redis::AsyncCommands;
+        let mut conn = redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .context("Failed to connect to Redis")?;
+        let _: String = conn.ping().await.context("Redis PING failed")?;
+    }
+    tracing::info!("Redis connection established");
+    let redis_client = Arc::new(redis_client);
+
+    let rate_limiter = Arc::new(RateLimiter::new(redis_client.clone()));
+    let deny_list = Arc::new(DenyList::new(redis_client.clone()));
     let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
     let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
 
@@ -136,17 +139,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    if redis_client.is_some() {
-        tracing::info!("Redis-backed services enabled:");
-        tracing::info!("  - Session caching: {}", session_cache.is_redis_enabled());
-        tracing::info!("  - Rate limiting: {}", rate_limiter.is_redis_enabled());
-        tracing::info!("  - GPS history: {}", gps_history.is_enabled());
-    }
-
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
-        redis: redis_client.map(|rc| (*rc).clone()),
+        redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,
         session_cache,

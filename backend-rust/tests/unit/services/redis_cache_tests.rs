@@ -12,6 +12,7 @@
 //! - Security edge cases
 
 use chrono::{Duration, Utc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // Import from the main crate (adjust imports based on actual availability)
@@ -22,6 +23,17 @@ use attendance_geotag_backend::models::Session;
 // Helper Functions for Tests
 // ============================================================================
 
+// `SessionCache` is Redis-backed only (no in-memory fallback — see
+// `backend-rust/src/middleware/session_cache.rs`), so tests run against the
+// shared testcontainers Redis instance. Every test uses a freshly generated
+// random token hash, so concurrent tests sharing one Redis instance don't
+// collide on keys.
+async fn test_session_cache(ttl_secs: i64) -> SessionCache {
+    let env = crate::test_db::get_test_environment().await;
+    let client = Arc::new(redis::Client::open(env.redis_uri()).expect("valid test redis URL"));
+    SessionCache::new(client, ttl_secs)
+}
+
 // ============================================================================
 // Session Caching Middleware Tests
 // ============================================================================
@@ -30,22 +42,9 @@ mod get_cached_session {
     use super::*;
 
     #[tokio::test]
-    async fn should_fetch_session_from_mongodb_when_redis_is_not_connected() {
-        // Arrange: Set up in-memory cache (no Redis)
-        let cache = SessionCache::new_memory_only(300);
-
-        // Verify Redis is not connected
-        assert!(!cache.is_redis_enabled());
-
-        // Note: Full integration test would require test database
-        // This test verifies the cache can be created in memory-only mode
-        // and that is_redis_enabled returns false
-    }
-
-    #[tokio::test]
     async fn should_populate_location_data_when_fetching_session() {
         // Arrange: Create in-memory cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         // Create mock session data with location
         let session_id = Uuid::new_v4();
@@ -88,7 +87,7 @@ mod get_cached_session {
     #[tokio::test]
     async fn should_return_none_for_inactive_sessions() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -132,7 +131,7 @@ mod get_cached_session {
     #[tokio::test]
     async fn should_return_none_for_expired_sessions() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -171,7 +170,7 @@ mod get_cached_session {
     #[tokio::test]
     async fn should_return_none_for_non_existent_token_hash() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         // Act: Try to get a session with a non-existent token hash
         let fake_token_hash = "nonexistent123456789012345678901234567890";
@@ -188,7 +187,7 @@ mod session_validation_flow {
     #[tokio::test]
     async fn should_validate_active_session_correctly() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -228,7 +227,7 @@ mod session_validation_flow {
     #[tokio::test]
     async fn should_handle_multiple_sequential_requests_to_same_session() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -277,7 +276,7 @@ mod token_rotation {
     #[tokio::test]
     async fn should_allow_token_hash_to_be_updated() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -350,21 +349,13 @@ mod redis_configuration {
     use super::*;
 
     #[tokio::test]
-    async fn should_handle_redis_connection_gracefully_when_not_configured() {
-        // Arrange: Create memory-only cache (no Redis)
-        let cache = SessionCache::new_memory_only(300);
-
-        // Assert: is_redis_enabled returns false
-        assert!(!cache.is_redis_enabled());
-    }
-
-    #[tokio::test]
     async fn should_fallback_to_mongodb_when_redis_is_unavailable() {
-        // This test verifies that memory-only mode works
-        // which simulates the fallback to MongoDB when Redis is unavailable
+        // This test verifies a basic set/get round-trip through the
+        // Redis-backed cache (simulates the DB-fallback flow when the
+        // cache misses).
 
         // Arrange: Create memory-only cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -412,7 +403,7 @@ mod cache_ttl_behavior {
     async fn should_respect_session_expiration_logic() {
         // Arrange: Create cache with very short TTL
         let ttl = 1_i64; // 1 second
-        let cache = SessionCache::new_memory_only(ttl);
+        let cache = test_session_cache(ttl).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -462,7 +453,7 @@ mod error_handling {
     #[tokio::test]
     async fn should_handle_malformed_token_hash_gracefully() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         // Act: Try to get session with empty string
         let malformed_hash = "";
@@ -478,7 +469,7 @@ mod error_handling {
         // In a real scenario, get_cached_session would catch database errors
 
         // Arrange: Create memory-only cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         // Act: Get non-existent session (simulates connection error case)
         let result = cache.get("somehash").await;
@@ -498,7 +489,7 @@ mod security_edge_cases {
     #[tokio::test]
     async fn should_not_expose_sensitive_token_hash_in_session_data() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();
@@ -535,7 +526,7 @@ mod security_edge_cases {
     #[tokio::test]
     async fn should_prevent_accessing_other_users_sessions() {
         // Arrange: Create session cache
-        let cache = SessionCache::new_memory_only(300);
+        let cache = test_session_cache(300).await;
 
         // Create session for user 1
         let session_id_1 = Uuid::new_v4();
@@ -601,7 +592,7 @@ mod security_edge_cases {
     #[tokio::test]
     async fn should_handle_concurrent_requests_to_same_session() {
         // Arrange: Create session cache
-        let cache = std::sync::Arc::new(SessionCache::new_memory_only(300));
+        let cache = std::sync::Arc::new(test_session_cache(300).await);
 
         let session_id = Uuid::new_v4();
         let location_id = Uuid::new_v4();

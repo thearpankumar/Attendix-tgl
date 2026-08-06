@@ -284,7 +284,7 @@ pub async fn get_dashboard_stats(
     if session_ids.is_empty() {
         let system_health = crate::services::system_health::get_system_health(
             &state.db,
-            state.redis.as_ref(),
+            Some(&state.redis),
             &state.storage,
         )
         .await?;
@@ -681,7 +681,7 @@ pub async fn get_dashboard_stats(
     // System health
     let system_health = crate::services::system_health::get_system_health(
         &state.db,
-        state.redis.as_ref(),
+        Some(&state.redis),
         &state.storage,
     )
     .await?;
@@ -832,7 +832,7 @@ pub async fn get_system_health(
 ) -> Result<impl IntoResponse> {
     use crate::services::system_health::get_system_health as check_system_health;
 
-    let health = check_system_health(&state.db, state.redis.as_ref(), &state.storage).await?;
+    let health = check_system_health(&state.db, Some(&state.redis), &state.storage).await?;
     Ok(Json(health))
 }
 

@@ -174,9 +174,9 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> impl axum::response
         "disconnected"
     };
 
-    let redis_status = if let Some(ref redis_client) = state.redis {
+    let redis_status = {
         use redis::AsyncCommands;
-        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
+        if let Ok(mut conn) = state.redis.get_multiplexed_async_connection().await {
             if conn.ping::<String>().await.is_ok() {
                 "connected"
             } else {
@@ -185,8 +185,6 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> impl axum::response
         } else {
             "disconnected"
         }
-    } else {
-        "not_configured"
     };
 
     let status = if db_status == "connected" {

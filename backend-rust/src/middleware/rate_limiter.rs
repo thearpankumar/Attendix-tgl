@@ -1,10 +1,5 @@
 use redis::AsyncCommands;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::RwLock;
+use std::sync::Arc;
 
 const RATE_LIMIT_PREFIX: &str = "rl:";
 
@@ -34,28 +29,12 @@ impl RateLimitConfig {
 
 #[derive(Clone)]
 pub struct RateLimiter {
-    redis: Option<Arc<redis::Client>>,
-    memory_store: Arc<RwLock<HashMap<String, RateEntry>>>,
-    use_redis: bool,
-}
-
-#[derive(Clone)]
-struct RateEntry {
-    count: u32,
-    window_start: Instant,
+    redis: Arc<redis::Client>,
 }
 
 impl RateLimiter {
-    pub fn new() -> Self {
-        Self::with_redis(None)
-    }
-
-    pub fn with_redis(redis: Option<Arc<redis::Client>>) -> Self {
-        Self {
-            use_redis: redis.is_some(),
-            redis,
-            memory_store: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new(redis: Arc<redis::Client>) -> Self {
+        Self { redis }
     }
 
     pub async fn check_rate_limit(&self, key: &str, config: &RateLimitConfig) -> bool {
@@ -64,70 +43,40 @@ impl RateLimiter {
             return true;
         }
 
-        if self.use_redis {
-            match self.check_with_redis(key, config).await {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::warn!(
-                        "Redis rate limit check failed: {}, falling back to memory",
-                        e
-                    );
-                    self.check_with_config(key, config).await
-                }
+        match self.check_with_redis(key, config).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Redis rate limit check failed: {}", e);
+                // Fail closed: an unreachable Redis must not silently grant
+                // unlimited requests on the endpoints this protects (login,
+                // registration, attendance submission, etc).
+                false
             }
-        } else {
-            self.check_with_config(key, config).await
         }
     }
 
     async fn check_with_redis(&self, key: &str, config: &RateLimitConfig) -> Result<bool, String> {
-        if let Some(ref redis_client) = self.redis {
-            let mut conn = redis_client
-                .get_multiplexed_async_connection()
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        let redis_key = format!("{}{}:{}", RATE_LIMIT_PREFIX, limit_type_from_key(key), key);
+
+        let count: i64 = conn
+            .incr(&redis_key, 1)
+            .await
+            .map_err(|e| format!("INCR failed: {}", e))?;
+
+        if count == 1 {
+            let _: () = conn
+                .expire(&redis_key, config.window_secs as i64)
                 .await
-                .map_err(|e| format!("Connection failed: {}", e))?;
-
-            let redis_key = format!("{}{}:{}", RATE_LIMIT_PREFIX, limit_type_from_key(key), key);
-
-            let count: i64 = conn
-                .incr(&redis_key, 1)
-                .await
-                .map_err(|e| format!("INCR failed: {}", e))?;
-
-            if count == 1 {
-                let _: () = conn
-                    .expire(&redis_key, config.window_secs as i64)
-                    .await
-                    .map_err(|e| format!("EXPIRE failed: {}", e))?;
-            }
-
-            Ok(count <= config.max_requests as i64)
-        } else {
-            Ok(self.check_with_config(key, config).await)
-        }
-    }
-
-    async fn check_with_config(&self, key: &str, config: &RateLimitConfig) -> bool {
-        let mut store = self.memory_store.write().await;
-
-        if store.len() > 10000 {
-            let now = Instant::now();
-            let max_age = Duration::from_secs(config.window_secs * 2);
-            store.retain(|_, entry| now.duration_since(entry.window_start) < max_age);
+                .map_err(|e| format!("EXPIRE failed: {}", e))?;
         }
 
-        let entry = store.entry(key.to_string()).or_insert(RateEntry {
-            count: 0,
-            window_start: Instant::now(),
-        });
-
-        if entry.window_start.elapsed() > Duration::from_secs(config.window_secs) {
-            entry.count = 0;
-            entry.window_start = Instant::now();
-        }
-
-        entry.count += 1;
-        entry.count <= config.max_requests
+        Ok(count <= config.max_requests as i64)
     }
 
     pub async fn student_rate_limit(&self, ip: &str, max_requests: u32, window_secs: u64) -> bool {
@@ -208,15 +157,6 @@ impl RateLimiter {
             .await
     }
 
-    pub fn is_redis_enabled(&self) -> bool {
-        self.use_redis
-    }
-}
-
-impl Default for RateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 fn limit_type_from_key(key: &str) -> &str {

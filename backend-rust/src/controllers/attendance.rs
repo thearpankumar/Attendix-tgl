@@ -183,7 +183,7 @@ pub(crate) async fn track_gps_history(
         .add_position(device_id, gps_position_entry.clone())
         .await
     {
-        tracing::warn!("Failed to add GPS position to history: {}", e);
+        tracing::error!("Failed to add GPS position to history: {}", e);
     }
 
     match state
@@ -207,7 +207,7 @@ pub(crate) async fn track_gps_history(
         }
         Ok(false) => {}
         Err(e) => {
-            tracing::warn!("Failed to detect position jump: {}", e);
+            tracing::error!("Failed to detect position jump: {}", e);
         }
     }
 
@@ -239,7 +239,7 @@ pub(crate) async fn track_gps_history(
         }
         Ok(_) => {}
         Err(e) => {
-            tracing::warn!("Failed to detect impossible travel: {}", e);
+            tracing::error!("Failed to detect impossible travel: {}", e);
         }
     }
 }

@@ -66,7 +66,6 @@ pub struct S3Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RedisConfig {
     pub url: String,
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,7 +187,11 @@ impl AppConfig {
             );
         }
 
-        let redis_url = env::var("REDIS_URL").unwrap_or_default();
+        // Every shared-state service (rate limiter, deny-list, session cache,
+        // GPS anomaly detection) is Redis-backed with no in-memory fallback —
+        // a missing REDIS_URL must fail startup, not silently degrade a
+        // multi-replica deployment down to per-process state.
+        let redis_url = require_env("REDIS_URL")?;
 
         Ok(AppConfig {
             port: env::var("PORT")
@@ -214,10 +217,7 @@ impl AppConfig {
                 &env::var("TRUSTED_PROXIES").unwrap_or_default(),
             )?,
             storage: StorageConfig { provider, s3 },
-            redis: RedisConfig {
-                enabled: !redis_url.is_empty(),
-                url: redis_url,
-            },
+            redis: RedisConfig { url: redis_url },
             webauthn: WebAuthnConfig {
                 rp_name: env::var("WEBAUTHN_RP_NAME")
                     .unwrap_or_else(|_| "Attendix Attendance System".to_string()),
@@ -263,8 +263,8 @@ impl AppConfig {
                 },
             },
             redis: RedisConfig {
-                url: String::new(),
-                enabled: false,
+                url: env::var("REDIS_URL")
+                    .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
             },
             webauthn: WebAuthnConfig {
                 rp_name: "Attendix Test".to_string(),

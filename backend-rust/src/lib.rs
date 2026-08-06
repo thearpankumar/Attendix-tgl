@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 pub struct AppState {
     pub config: AppConfig,
     pub db: sqlx::PgPool,
-    pub redis: Option<redis::Client>,
+    pub redis: redis::Client,
     pub rate_limiter: Arc<RateLimiter>,
     /// Tripwire deny-list: IPs that touched a honeypot path or the canary
     /// admin account get tarpitted-then-blocked on every subsequent request
@@ -75,10 +75,6 @@ pub fn build_webauthn(config: &AppConfig) -> anyhow::Result<webauthn_rs::Webauth
 }
 
 impl AppState {
-    pub fn is_redis_enabled(&self) -> bool {
-        self.redis.is_some() && self.rate_limiter.is_redis_enabled()
-    }
-
     /// Read the current system config snapshot (fast, non-blocking read)
     pub async fn get_system_config(&self) -> SystemConfig {
         self.system_config.read().await.clone()

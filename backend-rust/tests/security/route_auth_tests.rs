@@ -25,10 +25,18 @@ async fn create_test_app() -> axum::Router {
         .connect_lazy(&config.database_url)
         .unwrap();
 
-    let rate_limiter = Arc::new(RateLimiter::with_redis(None));
-    let deny_list = Arc::new(DenyList::with_redis(None));
-    let session_cache = Arc::new(SessionCache::new(None, 300));
-    let gps_history = Arc::new(GpsHistoryService::new(None));
+    // RateLimiter/DenyList/SessionCache/GpsHistoryService are Redis-backed
+    // only (no in-memory fallback), so this uses the shared testcontainers
+    // Redis instance rather than a real connection to `config.redis.url`.
+    let redis_env = crate::test_db::get_test_environment().await;
+    let redis_client = Arc::new(
+        redis::Client::open(redis_env.redis_uri()).expect("valid test redis URL"),
+    );
+
+    let rate_limiter = Arc::new(RateLimiter::new(redis_client.clone()));
+    let deny_list = Arc::new(DenyList::new(redis_client.clone()));
+    let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
+    let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
     let system_config = Arc::new(RwLock::new(SystemConfig::default()));
 
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2026_01_12())
@@ -44,7 +52,7 @@ async fn create_test_app() -> axum::Router {
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
-        redis: None,
+        redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,
         session_cache,

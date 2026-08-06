@@ -3,18 +3,28 @@
 //! Tests cover:
 //! - Rate limit enforcement when max requests exceeded
 //! - Test environment skip behavior
-//! - Build store fallback behavior (is_redis_enabled)
 //!
 //! Original Node.js tests:
 //! 1. 'returns 429 once the login limiter max is exceeded within the window'
 //! 2. 'does not limit when left at the default isTest() skip (NODE_ENV=test)'
-//! 3. 'falls back to the in-memory store when Redis is not connected'
+//!
+//! `RateLimiter` is Redis-backed only (no in-memory fallback — see
+//! `backend-rust/src/middleware/rate_limiter.rs`), so every test here runs
+//! against the shared testcontainers Redis instance from `crate::test_db`.
 
 #[cfg(test)]
 mod tests {
+    use crate::test_db::get_test_environment;
     use attendance_geotag_backend::middleware::RateLimiter;
     use serial_test::serial;
     use std::sync::Arc;
+
+    async fn test_rate_limiter() -> Arc<RateLimiter> {
+        let env = get_test_environment().await;
+        let client =
+            Arc::new(redis::Client::open(env.redis_uri()).expect("valid test redis URL"));
+        Arc::new(RateLimiter::new(client))
+    }
 
     /// Test module for rate limiter enforcement
     /// Port of: describe('rate limiter enforcement', ...)
@@ -35,9 +45,7 @@ mod tests {
         #[tokio::test]
         #[serial]
         async fn returns_429_once_login_limiter_max_exceeded_within_window() {
-            // Create a rate limiter without Redis (in-memory store)
-            // Equivalent to createLoginLimiter({ skip: () => false }) in Node.js
-            let rate_limiter = Arc::new(RateLimiter::new());
+            let rate_limiter = test_rate_limiter().await;
 
             // Temporarily disable test environment to enable rate limiting
             // In Node.js, NODE_ENV=test skips rate limiting
@@ -92,8 +100,7 @@ mod tests {
         #[tokio::test]
         #[serial]
         async fn does_not_limit_when_left_at_default_is_test_skip() {
-            // Create rate limiter with default behavior
-            let rate_limiter = Arc::new(RateLimiter::new());
+            let rate_limiter = test_rate_limiter().await;
 
             // Set test environment (equivalent to NODE_ENV=test in Node.js)
             std::env::set_var("NODE_ENV", "test");
@@ -137,7 +144,7 @@ mod tests {
         #[tokio::test]
         #[serial]
         async fn node_env_test_also_skips_rate_limiting() {
-            let rate_limiter = Arc::new(RateLimiter::new());
+            let rate_limiter = test_rate_limiter().await;
 
             // Set NODE_ENV=test (Node.js compatibility)
             std::env::set_var("NODE_ENV", "test");
@@ -158,50 +165,6 @@ mod tests {
         }
     }
 
-    /// Test module for buildStore functionality
-    /// Port of: describe('buildStore', ...)
-    mod build_store {
-        use super::*;
-
-        /// Test: falls back to the in-memory store when Redis is not connected
-        /// Port of: it('falls back to the in-memory store when Redis is not connected', ...)
-        ///
-        /// Original Node.js test behavior:
-        /// - buildStore('rl:test:') is called
-        /// - Since Redis is not initialized in test environment, returns undefined
-        /// - This indicates the fallback to in-memory store
-        ///
-        /// In Rust:
-        /// - RateLimiter::new() creates a limiter without Redis
-        /// - is_redis_enabled() returns false
-        /// - This indicates fallback to in-memory HashMap store
-        #[test]
-        fn falls_back_to_in_memory_store_when_redis_not_connected() {
-            // Create a rate limiter without Redis (in-memory store)
-            // Equivalent to buildStore('rl:test:') returning undefined in Node.js
-            let limiter = RateLimiter::new();
-
-            // Verify Redis is not enabled
-            // In Node.js, buildStore returns undefined when Redis is not connected
-            // In Rust, is_redis_enabled() returns false for the same condition
-            assert!(
-                !limiter.is_redis_enabled(),
-                "Expected Redis to be disabled when not connected (equivalent to buildStore returning undefined in Node.js)"
-            );
-        }
-
-        /// Test: RateLimiter::with_redis(None) also falls back to memory store
-        #[test]
-        fn with_redis_none_falls_back_to_in_memory_store() {
-            let limiter = RateLimiter::with_redis(None);
-
-            assert!(
-                !limiter.is_redis_enabled(),
-                "Expected Redis to be disabled when None is passed to with_redis"
-            );
-        }
-    }
-
     /// Additional edge case tests for rate limiter behavior
     mod rate_limiter_edge_cases {
         use super::*;
@@ -213,9 +176,8 @@ mod tests {
         async fn different_ips_have_independent_rate_limits() {
             // Disable test environment to enable rate limiting
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
 
             // IP 1: exhaust rate limit (5 requests max)
             for _ in 0..10 {
@@ -235,9 +197,8 @@ mod tests {
         #[serial]
         async fn different_rate_limit_types_are_independent() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.3";
 
             // Exhaust login rate limit
@@ -261,9 +222,8 @@ mod tests {
         #[serial]
         async fn login_rate_limit_allows_exactly_five_requests() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.4";
 
             // First 5 requests should be allowed
@@ -288,9 +248,8 @@ mod tests {
         #[serial]
         async fn admin_rate_limit_allows_hundred_requests() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.5";
 
             // First 100 requests should be allowed
@@ -315,9 +274,8 @@ mod tests {
         #[serial]
         async fn student_rate_limit_allows_twenty_requests() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.6";
 
             // First 20 requests should be allowed
@@ -342,9 +300,8 @@ mod tests {
         #[serial]
         async fn registration_rate_limit_allows_five_requests() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.7";
 
             // First 5 requests should be allowed
@@ -369,9 +326,8 @@ mod tests {
         #[serial]
         async fn client_log_rate_limit_allows_ten_requests() {
             std::env::set_var("NODE_ENV", "development");
-            std::env::set_var("NODE_ENV", "development");
 
-            let limiter = Arc::new(RateLimiter::new());
+            let limiter = test_rate_limiter().await;
             let ip = "10.0.0.8";
 
             // First 10 requests should be allowed

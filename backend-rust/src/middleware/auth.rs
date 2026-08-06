@@ -216,14 +216,11 @@ pub async fn auth_middleware(
 
     let claims = verify_token(&token, &state.config.jwt_secret)?;
 
-    // Blacklist check — only possible when Redis is configured.
     // Tokens are blacklisted on logout so revocation takes effect immediately.
-    if let Some(ref redis) = state.redis {
-        if is_token_blacklisted(redis, &claims.jti).await {
-            return Err(AppError::Unauthorized(
-                "Token has been revoked. Please log in again.".to_string(),
-            ));
-        }
+    if is_token_blacklisted(&state.redis, &claims.jti).await {
+        return Err(AppError::Unauthorized(
+            "Token has been revoked. Please log in again.".to_string(),
+        ));
     }
 
     let admin_id = Uuid::parse_str(&claims.id)

@@ -310,15 +310,7 @@ pub async fn logout(
     Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse> {
     // Blacklist the jti so no further requests can use this token
-    if let Some(ref redis) = state.redis {
-        blacklist_token(redis, &claims.jti, claims.exp).await;
-    } else {
-        tracing::warn!(
-            jti = %claims.jti,
-            "Redis not configured — token blacklisting skipped. \
-             Token will remain valid until natural expiry."
-        );
-    }
+    blacklist_token(&state.redis, &claims.jti, claims.exp).await;
 
     let clear_cookie = clear_auth_cookie(state.config.is_production());
     let body = Json(serde_json::json!({ "message": "Logged out successfully" }));

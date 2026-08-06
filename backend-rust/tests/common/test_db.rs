@@ -1,12 +1,21 @@
-use std::sync::OnceLock;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use tokio::sync::OnceCell;
 
-static TEST_ENV: OnceLock<TestEnvironment> = OnceLock::new();
+// `tokio::sync::OnceCell` rather than `std::sync::OnceLock`: the latter's
+// `get_or_init` is synchronous, which previously forced this through
+// `block_in_place` — a call that panics outside a multi-threaded Tokio
+// runtime, which `#[tokio::test]` doesn't use by default.
+static TEST_ENV: OnceCell<TestEnvironment> = OnceCell::const_new();
 
 pub struct TestEnvironment {
-    pub postgres_container: testcontainers::Container<Postgres>,
-    pub redis_container: testcontainers::Container<Redis>,
+    // Held only to keep the containers alive for the process lifetime (they
+    // stop on drop) — never read directly, connections go through
+    // `database_url`/`redis_uri`.
+    #[allow(dead_code)]
+    pub postgres_container: testcontainers::ContainerAsync<Postgres>,
+    #[allow(dead_code)]
+    pub redis_container: testcontainers::ContainerAsync<Redis>,
     pub database_url: String,
     pub redis_uri: String,
 }
@@ -59,19 +68,14 @@ impl TestEnvironment {
 }
 
 pub async fn get_test_environment() -> &'static TestEnvironment {
-    TEST_ENV
-        .get_or_init(|| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(TestEnvironment::new())
-            })
-        })
+    TEST_ENV.get_or_init(TestEnvironment::new).await
 }
 
 /// Connects to the shared test Postgres container and applies migrations,
 /// returning a pool ready for use. Each call reuses the same underlying
 /// database (Postgres testcontainers only expose one DB per container) —
 /// callers that need isolation should clean up their own rows/tables.
+#[allow(dead_code)]
 pub async fn get_test_database() -> sqlx::PgPool {
     let env = get_test_environment().await;
 
@@ -89,6 +93,7 @@ pub async fn get_test_database() -> sqlx::PgPool {
     pool
 }
 
+#[allow(dead_code)]
 pub async fn get_test_redis() -> redis::Connection {
     let env = get_test_environment().await;
 
@@ -99,6 +104,7 @@ pub async fn get_test_redis() -> redis::Connection {
 }
 
 /// Truncates all tables so the shared test database starts clean for the next test.
+#[allow(dead_code)]
 pub async fn cleanup_test_db(pool: &sqlx::PgPool) {
     let pool = pool.clone();
     tokio::spawn(async move {

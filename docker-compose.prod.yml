@@ -22,7 +22,7 @@ x-logging: &default-logging
 services:
 
   redis:
-    image: redis:7-alpine
+    image: valkey/valkey:8-alpine
     container_name: attendance-redis
     restart: unless-stopped
     security_opt:
@@ -39,7 +39,16 @@ services:
     expose:
       - "6379"
     volumes:
-      - redis_data:/data
+      # Named `valkey_data`, not `redis_data`: this switched from redis:7-alpine
+      # to valkey/valkey:8-alpine, and Valkey can't read an RDB file written by
+      # a newer Redis (seen locally: "Can't handle RDB format version 12",
+      # which crash-loops the container on boot). Giving Valkey its own volume
+      # means this deploy never touches whatever the old `redis_data` volume
+      # contains — no manual migration/cleanup step to remember on the prod
+      # host. The old volume is orphaned but harmless (only rate-limit/
+      # session/deny-list cache, nothing durable) and can be removed manually
+      # later with `docker volume rm`.
+      - valkey_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -207,7 +216,7 @@ services:
       - web-net
 
 volumes:
-  redis_data:
+  valkey_data:
 
 networks:
   db-net:
