@@ -9,9 +9,25 @@ use tokio::sync::OnceCell;
 static TEST_ENV: OnceCell<TestEnvironment> = OnceCell::const_new();
 
 pub struct TestEnvironment {
-    // Held only to keep the containers alive for the process lifetime (they
-    // stop on drop) — never read directly, connections go through
-    // `database_url`/`redis_uri`.
+    // Held so the handle stays alive for the process lifetime, but note these
+    // are `with_reuse(Always)` containers (see below) -- they do NOT stop on
+    // drop/process exit by design. Every `[[test]]` binary is its own OS
+    // process (so this `static` is NOT actually shared across e.g.
+    // `tests/security` and `tests/middleware`), and without a fixed name +
+    // reuse, each of the 5 binaries used to start its own throwaway
+    // Postgres+Redis pair every single `cargo test` run, and none of them
+    // ever got cleaned up (relies on the `ryuk` reaper container, which
+    // wasn't running in the environment these were leaking in) -- so a full
+    // suite run, repeated a few times, left dozens of orphaned containers
+    // behind. Reuse collapses that to exactly 2 containers total, shared by
+    // name across every binary and every run, never multiplying.
+    //
+    // Trade-off: since `cargo test` runs different `[[test]]` binaries
+    // concurrently by default, they now share one live database/redis
+    // instance instead of each getting a fully isolated one -- tests that
+    // read/write global state here should account for that (via
+    // `cleanup_test_db` or their own scoping) rather than assuming exclusive
+    // access the way a fresh-per-binary container used to guarantee.
     #[allow(dead_code)]
     pub postgres_container: testcontainers::ContainerAsync<Postgres>,
     #[allow(dead_code)]
@@ -22,14 +38,30 @@ pub struct TestEnvironment {
 
 impl TestEnvironment {
     pub async fn new() -> Self {
-        use testcontainers::runners::AsyncRunner;
+        use testcontainers::{runners::AsyncRunner, ImageExt, ReuseDirective};
 
+        // testcontainers-modules' default Postgres image is 11-alpine, which
+        // predates core `gen_random_uuid()` (added in Postgres 13) — every
+        // `id UUID PRIMARY KEY DEFAULT gen_random_uuid()` column in the
+        // migrations failed to apply against this container with "function
+        // gen_random_uuid() does not exist" until pgcrypto (which backports
+        // it) is installed. The prod/dev image (postgres:18-alpine, see
+        // docker-compose.yml) doesn't need this — it's new enough already.
         let postgres_container = Postgres::default()
+            .with_init_sql(
+                "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+                    .to_string()
+                    .into_bytes(),
+            )
+            .with_container_name("backend-rust-test-postgres")
+            .with_reuse(ReuseDirective::Always)
             .start()
             .await
             .expect("Failed to start Postgres container");
 
         let redis_container = Redis::default()
+            .with_container_name("backend-rust-test-redis")
+            .with_reuse(ReuseDirective::Always)
             .start()
             .await
             .expect("Failed to start Redis container");

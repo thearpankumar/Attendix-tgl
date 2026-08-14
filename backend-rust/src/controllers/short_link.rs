@@ -452,7 +452,7 @@ pub async fn get_short_link_session(
         "valid": true,
         "session": {
             "sessionId": session.id.to_string(),
-            "locationId": session.location_id.to_string(),
+            "locationId": session.location_id.map(|id| id.to_string()),
             "locationName": location.name,
             "description": session.description,
             "expiresAt": session.expires_at,

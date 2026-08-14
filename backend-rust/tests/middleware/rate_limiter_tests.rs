@@ -21,8 +21,7 @@ mod tests {
 
     async fn test_rate_limiter() -> Arc<RateLimiter> {
         let env = get_test_environment().await;
-        let client =
-            Arc::new(redis::Client::open(env.redis_uri()).expect("valid test redis URL"));
+        let client = Arc::new(redis::Client::open(env.redis_uri()).expect("valid test redis URL"));
         Arc::new(RateLimiter::new(client))
     }
 

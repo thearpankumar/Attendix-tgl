@@ -20,6 +20,12 @@ pub async fn get_flagged_attendance(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<FlaggedQuery>,
 ) -> Result<impl IntoResponse> {
+    // Companion fix while adding the mentor role: without a `session_id`
+    // filter this query has no ownership scoping at all (a pre-existing
+    // cross-tenant leak), and a mentor role now exists that could otherwise
+    // reach it with a valid cookie. The mentor app never needs this route.
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     let session_id_filter = match query.session_id {
         Some(session_id_str) => {
             let session_id = Uuid::parse_str(&session_id_str)
@@ -72,6 +78,8 @@ pub async fn review_attendance(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(payload): Json<AttendanceReviewRequest>,
 ) -> Result<impl IntoResponse> {
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     let attendance_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
@@ -100,6 +108,8 @@ pub async fn verify_attendance(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(payload): Json<VerifyRequest>,
 ) -> Result<impl IntoResponse> {
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     let attendance_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 

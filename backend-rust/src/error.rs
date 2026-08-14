@@ -51,6 +51,9 @@ pub enum AppError {
 
     #[error("Too many requests: {0}")]
     TooManyRequests(String),
+
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 impl From<ValidationError> for AppError {
@@ -103,6 +106,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Jwt(_) => (
                 StatusCode::UNAUTHORIZED,
                 "Invalid or expired token".to_string(),

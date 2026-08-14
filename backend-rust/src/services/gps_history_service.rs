@@ -203,5 +203,4 @@ impl GpsHistoryService {
 
         Ok(anomalies)
     }
-
 }

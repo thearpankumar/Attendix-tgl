@@ -304,17 +304,22 @@ docker-compose up -d --build
 ```
 This commands provisions the Backend API, Admin Frontend, Student PWA, MongoDB Replica Set, Redis cache, and the entire Prometheus/Grafana observability stack.
 
-4. Create Admin Account:
+4. Create the Super-Admin Account (one-time bootstrap):
+
+`POST /api/admin/register` is a **one-time bootstrap endpoint**, not a general registration route. It is reached through Caddy on port `80`/`443` (the backend's own port is never published to the host — see `docker-compose.yml`), gated by the shared `ADMIN_SECRET` from `.env`. The **first** successful call creates the account as `role: "super_admin"`; every call after that returns `404 Not Found` regardless of how correct `adminSecret` is, because account creation moves exclusively to the authenticated **User Management** page in the admin panel (`/owner-of-attendix-xyz/users`) from then on. Pick a real username/password here — there is no way to run this endpoint again to create a second one.
+
 ```bash
-curl -X POST http://localhost:5000/api/admin/register \
+curl -X POST http://localhost/api/admin/register \
   -H "Content-Type: application/json" \
   -d '{
-    "username": "admin",
-    "email": "admin@example.com",
-    "password": "admin123",
-    "adminSecret": "your-admin-secret"
+    "username": "your-username",
+    "email": "your-email@example.com",
+    "password": "your-strong-password",
+    "adminSecret": "your-admin-secret-from-.env"
   }'
 ```
+
+Log in with those credentials at `/owner-of-attendix-xyz/login`, then use **User Management** to create every admin/mentor account after that (username, college email, full name, college name, password, role — `admin` for a mentor who marks attendance, `super_admin` for another full-access account).
 
 ---
 

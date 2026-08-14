@@ -387,11 +387,11 @@ async fn insert_attendance(pool: &sqlx::PgPool, a: &Attendance) -> sqlx::Result<
             flag_reviewed, flag_reviewed_by, flag_reviewed_at, flagged, flag_reason, flag_details,
             captured_at, gps_accuracy, gps_altitude, gps_altitude_accuracy, gps_speed, gps_heading,
             gps_timestamp, gps_mock_location, gps_provider, gps_anomalies, gps_confidence,
-            emulator_detected, emulator_flags, integrity_checks
+            emulator_detected, emulator_flags, integrity_checks, source, status, marked_by_admin_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
             $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36,
-            $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49
+            $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52
         )
         RETURNING *",
     )
@@ -444,6 +444,9 @@ async fn insert_attendance(pool: &sqlx::PgPool, a: &Attendance) -> sqlx::Result<
     .bind(a.emulator_detected)
     .bind(a.emulator_flags.clone())
     .bind(a.integrity_checks.clone())
+    .bind(a.source)
+    .bind(a.status)
+    .bind(a.marked_by_admin_id)
     .fetch_one(pool)
     .await
 }
@@ -896,6 +899,9 @@ pub async fn submit_attendance(
         network_provider: Some(ip_info.isp),
         network_org: Some(ip_info.org),
         verified: is_within_geofence,
+        source: crate::models::AttendanceSource::SelfSubmitted,
+        status: crate::models::AttendanceStatus::Present,
+        marked_by_admin_id: None,
         face_detected,
         device_fingerprint: payload.device_fingerprint.clone(),
         device_fingerprint_hash,

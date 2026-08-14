@@ -7,12 +7,14 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: Uuid,
-    pub location_id: Uuid,
+    pub location_id: Option<Uuid>,
     pub batch_id: Option<Uuid>,
     pub token_hash: String,
     pub token_prefix: String,
     pub description: Option<String>,
     pub created_by: Uuid,
+    pub college_name: Option<String>,
+    pub starts_at: Option<DateTime<Utc>>,
     #[serde(default = "default_true")]
     pub is_active: bool,
     pub expires_at: DateTime<Utc>,
@@ -66,10 +68,13 @@ impl Session {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCreate {
     pub location_id: Uuid,
-    pub batch_id: Option<Uuid>,
+    pub batch_id: Uuid,
     pub description: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_by: Uuid,
+    pub assigned_admin_id: Uuid,
+    pub college_name: String,
+    pub starts_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

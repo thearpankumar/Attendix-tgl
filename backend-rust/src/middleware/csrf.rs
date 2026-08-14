@@ -90,8 +90,36 @@ pub async fn csrf_middleware(
 
     if is_safe_method {
         // For safe methods: let the request through and attach a fresh CSRF
-        // cookie if one is not already present or is invalid.
+        // cookie only if one is not already present or is invalid. Rotating
+        // a still-valid token on every GET creates a race: pages that fire
+        // several parallel GETs (e.g. a dashboard loading multiple
+        // resources) each try to overwrite the cookie, so a POST fired
+        // moments later can read a header value from one response while the
+        // browser's cookie jar has already been updated by another
+        // response's Set-Cookie — header and cookie then legitimately
+        // mismatch even though the user did nothing wrong. The token has no
+        // expiry (pure random + HMAC signature), so there's no need to
+        // reissue it as long as it still verifies.
+        let existing_cookie = request
+            .headers()
+            .get(axum::http::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|h| extract_cookie(h, CSRF_COOKIE_NAME));
+        let needs_new_token = match existing_cookie {
+            Some(c) => match c.split_once('.') {
+                Some((raw, sig)) => {
+                    let expected = sign_csrf(raw, &state.config.jwt_secret);
+                    !bool::from(expected.as_bytes().ct_eq(sig.as_bytes()))
+                }
+                None => true,
+            },
+            None => true,
+        };
+
         let mut response = next.run(request).await;
+        if !needs_new_token {
+            return Ok(response);
+        }
         let token = generate_csrf_token(&state.config.jwt_secret);
         let is_prod = state.config.is_production();
         let secure_flag = if is_prod { "; Secure" } else { "" };

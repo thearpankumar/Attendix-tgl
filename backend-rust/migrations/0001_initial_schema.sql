@@ -8,6 +8,9 @@ CREATE TABLE admins (
     email TEXT NOT NULL,
     password TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'admin',
+    full_name TEXT,
+    college_name TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true,
     failed_login_attempts INT NOT NULL DEFAULT 0,
     lock_until TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -51,12 +54,17 @@ CREATE INDEX idx_students_roll_number ON students (roll_number);
 
 CREATE TABLE sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    location_id UUID NOT NULL REFERENCES locations(id),
+    -- Nullable: only self-service sessions are geofenced. Exam sessions
+    -- (assigned to mentors via session_admins below) are marked manually and
+    -- have no location.
+    location_id UUID REFERENCES locations(id),
     batch_id UUID REFERENCES batches(id),
     token_hash TEXT NOT NULL,
     token_prefix TEXT NOT NULL,
     description TEXT,
     created_by UUID NOT NULL REFERENCES admins(id),
+    college_name TEXT,
+    starts_at TIMESTAMPTZ,
     is_active BOOLEAN NOT NULL DEFAULT true,
     expires_at TIMESTAMPTZ NOT NULL,
     rotation_count INT NOT NULL DEFAULT 0,
@@ -67,6 +75,15 @@ CREATE INDEX idx_sessions_created_by_created_at ON sessions (created_by, created
 CREATE INDEX idx_sessions_location_id ON sessions (location_id);
 CREATE INDEX idx_sessions_batch_id ON sessions (batch_id);
 CREATE INDEX idx_sessions_token_hash ON sessions (token_hash);
+
+-- An exam session can be assigned to more than one mentor (was a single
+-- assigned_admin_id FK on sessions).
+CREATE TABLE session_admins (
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    PRIMARY KEY (session_id, admin_id)
+);
+CREATE INDEX idx_session_admins_admin_id ON session_admins (admin_id);
 
 CREATE TABLE attendances (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -85,6 +102,9 @@ CREATE TABLE attendances (
     network_provider TEXT,
     network_org TEXT,
     verified BOOLEAN NOT NULL DEFAULT false,
+    source TEXT NOT NULL DEFAULT 'self_submitted',
+    status TEXT NOT NULL DEFAULT 'present',
+    marked_by_admin_id UUID REFERENCES admins(id),
     face_detected BOOLEAN NOT NULL DEFAULT true,
     device_fingerprint TEXT,
     device_fingerprint_hash TEXT,
@@ -117,7 +137,9 @@ CREATE TABLE attendances (
     gps_confidence TEXT,
     emulator_detected BOOLEAN NOT NULL DEFAULT false,
     emulator_flags JSONB NOT NULL DEFAULT '[]',
-    integrity_checks JSONB NOT NULL DEFAULT '[]'
+    integrity_checks JSONB NOT NULL DEFAULT '[]',
+    CONSTRAINT chk_attendances_source CHECK (source IN ('self_submitted', 'manual')),
+    CONSTRAINT chk_attendances_status CHECK (status IN ('present', 'absent'))
 );
 CREATE UNIQUE INDEX idx_attendances_session_roll ON attendances (session_id, roll_number);
 CREATE INDEX idx_attendances_session_captured ON attendances (session_id, captured_at DESC);

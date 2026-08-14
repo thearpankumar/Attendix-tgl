@@ -169,6 +169,31 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/batches/{id}",
             get(crate::controllers::get_batch).delete(crate::controllers::delete_batch),
         )
+        .route(
+            "/users",
+            get(crate::controllers::list_admin_users).post(crate::controllers::create_admin_user),
+        )
+        .route(
+            "/users/{id}",
+            patch(crate::controllers::update_admin_user)
+                .delete(crate::controllers::delete_admin_user),
+        )
+        .route(
+            "/profile/password",
+            patch(crate::controllers::change_own_password),
+        )
+        .route(
+            "/sessions/{id}/roster",
+            get(crate::controllers::get_session_roster),
+        )
+        .route(
+            "/sessions/{id}/attendance/manual",
+            post(crate::controllers::mark_attendance_manual),
+        )
+        .route(
+            "/sessions/{id}/attendance/manual/{rollNumber}",
+            axum::routing::delete(crate::controllers::undo_manual_mark),
+        )
         // Middleware execution order (innermost applied last, runs first):
         // 1. admin_rate_limit  — outermost, applied first, limits traffic
         // 2. auth              — validates the HttpOnly cookie / Bearer token

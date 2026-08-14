@@ -244,34 +244,50 @@ impl LocationCreateRequest {
 
 /// Session Create Request Validator
 ///
+/// Two shapes share this one endpoint:
+/// - **Normal session** (the original QR/link attendance flow): `batch_id`
+///   stays optional, exactly as before this feature existed.
+/// - **Exam session** (mentor-assignment flow): signalled by a present,
+///   non-empty `assigned_admin_id`. When that's set, `batch_id`,
+///   `college_name`, and `starts_at` all become required together — a
+///   session assigned to a mentor must have a roster, a college, and a
+///   scheduled time.
+///
 /// # Validations:
-/// - location_id: valid UUID
+/// - location_id: valid UUID if provided; required unless assigned_admin_ids is set
 /// - duration_minutes: range 5-480
-/// - batch_id: valid UUID if provided
-#[derive(Debug, Deserialize, Validate)]
+/// - batch_id: valid UUID if provided; required if assigned_admin_ids is set
+#[derive(Debug, Clone, Deserialize, Validate)]
 pub struct SessionCreateRequest {
-    #[validate(length(min = 1, message = "Location ID required"))]
-    pub location_id: String,
+    /// Required for a normal self-service session (geofenced); irrelevant
+    /// for an exam session, which is marked manually and has no location.
+    pub location_id: Option<String>,
 
     #[validate(range(min = 5, max = 480, message = "Duration must be 5-480 minutes"))]
     pub duration_minutes: Option<i32>,
 
     pub batch_id: Option<String>,
+    /// One or more mentor IDs. Present (non-empty) + valid signals an exam
+    /// session — see `SessionCreateRequest::is_exam_session`.
+    #[serde(default)]
+    pub assigned_admin_ids: Vec<String>,
+    pub college_name: Option<String>,
+    pub starts_at: Option<String>,
+
     pub description: Option<String>,
 }
 
 impl SessionCreateRequest {
+    /// True when this request is creating an exam session (mentor-assigned,
+    /// mandatory batch/college/time, no location) rather than a normal
+    /// self-service attendance session (optional batch, geofenced, no mentor).
+    pub fn is_exam_session(&self) -> bool {
+        self.assigned_admin_ids.iter().any(|s| !s.trim().is_empty())
+    }
+
     /// Validate the session request including ObjectId format checks
     pub fn validate_with_objectids(&self) -> Result<(), ValidationError> {
         let mut errors = Vec::new();
-
-        // Validate location_id is a valid ObjectId
-        if !is_valid_objectid(&self.location_id) {
-            errors.push(FieldError {
-                field: "location_id".to_string(),
-                message: "Valid location ID required".to_string(),
-            });
-        }
 
         // Validate duration_minutes range
         if let Some(duration) = self.duration_minutes {
@@ -283,13 +299,87 @@ impl SessionCreateRequest {
             }
         }
 
-        // Validate batch_id if provided
-        if let Some(ref batch_id) = self.batch_id {
-            if !batch_id.is_empty() && !is_valid_objectid(batch_id) {
-                errors.push(FieldError {
+        if self.is_exam_session() {
+            // Exam session: batch/mentors/college/start-time are required
+            // together; location does not apply (manual attendance, no
+            // geofencing) so it is never validated here.
+            match self.batch_id.as_deref() {
+                Some(id) if is_valid_objectid(id) => {}
+                _ => errors.push(FieldError {
                     field: "batch_id".to_string(),
-                    message: "Valid batch ID required".to_string(),
+                    message: "Valid batch ID required for an exam session".to_string(),
+                }),
+            }
+
+            let mentor_ids: Vec<&str> = self
+                .assigned_admin_ids
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if mentor_ids.is_empty() {
+                errors.push(FieldError {
+                    field: "assigned_admin_ids".to_string(),
+                    message: "At least one mentor is required for an exam session".to_string(),
                 });
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                for id in &mentor_ids {
+                    if !is_valid_objectid(id) {
+                        errors.push(FieldError {
+                            field: "assigned_admin_ids".to_string(),
+                            message: format!("Invalid mentor ID: {}", id),
+                        });
+                    } else if !seen.insert(*id) {
+                        errors.push(FieldError {
+                            field: "assigned_admin_ids".to_string(),
+                            message: "Duplicate mentor in mentor list".to_string(),
+                        });
+                    }
+                }
+            }
+
+            if self
+                .college_name
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                errors.push(FieldError {
+                    field: "college_name".to_string(),
+                    message: "College name is required for an exam session".to_string(),
+                });
+            }
+            if self
+                .starts_at
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                errors.push(FieldError {
+                    field: "starts_at".to_string(),
+                    message: "Start time is required for an exam session".to_string(),
+                });
+            }
+        } else {
+            // Normal session: location is mandatory (geofenced check-in).
+            match self.location_id.as_deref() {
+                Some(id) if is_valid_objectid(id) => {}
+                _ => errors.push(FieldError {
+                    field: "location_id".to_string(),
+                    message: "Valid location ID required".to_string(),
+                }),
+            }
+            // Batch stays optional, exactly as before.
+            if let Some(ref batch_id) = self.batch_id {
+                if !batch_id.is_empty() && !is_valid_objectid(batch_id) {
+                    errors.push(FieldError {
+                        field: "batch_id".to_string(),
+                        message: "Valid batch ID required".to_string(),
+                    });
+                }
             }
         }
 
@@ -573,50 +663,153 @@ mod tests {
 
     #[test]
     fn test_validate_session_create() {
-        // Valid UUID
-        let valid = SessionCreateRequest {
-            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            duration_minutes: Some(30),
-            batch_id: Some("550e8400-e29b-41d4-a716-446655440001".to_string()),
-            description: None,
-        };
-        assert!(valid.validate_with_objectids().is_ok());
-
-        // Invalid UUID
-        let invalid = SessionCreateRequest {
-            location_id: "invalid-id".to_string(),
+        // ── Normal session (no assigned_admin_ids): location mandatory, batch optional ──
+        let normal_no_batch = SessionCreateRequest {
+            location_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             duration_minutes: Some(30),
             batch_id: None,
+            assigned_admin_ids: vec![],
+            college_name: None,
+            starts_at: None,
             description: None,
         };
-        assert!(invalid.validate_with_objectids().is_err());
+        assert!(!normal_no_batch.is_exam_session());
+        assert!(
+            normal_no_batch.validate_with_objectids().is_ok(),
+            "normal session with no batch should be allowed"
+        );
+
+        let mut normal_with_batch = normal_no_batch.clone();
+        normal_with_batch.batch_id = Some("550e8400-e29b-41d4-a716-446655440001".to_string());
+        assert!(
+            normal_with_batch.validate_with_objectids().is_ok(),
+            "normal session with a valid batch should be allowed"
+        );
+
+        let mut normal_invalid_batch = normal_no_batch.clone();
+        normal_invalid_batch.batch_id = Some("invalid".to_string());
+        assert!(
+            normal_invalid_batch.validate_with_objectids().is_err(),
+            "normal session with a malformed batch id should still be rejected"
+        );
+
+        // Invalid location UUID (normal session only — location isn't checked for exam sessions)
+        let invalid_location = SessionCreateRequest {
+            location_id: Some("invalid-id".to_string()),
+            duration_minutes: Some(30),
+            batch_id: None,
+            assigned_admin_ids: vec![],
+            college_name: None,
+            starts_at: None,
+            description: None,
+        };
+        assert!(invalid_location.validate_with_objectids().is_err());
+
+        // Missing location entirely on a normal session
+        let missing_location = SessionCreateRequest {
+            location_id: None,
+            ..invalid_location.clone()
+        };
+        assert!(
+            missing_location.validate_with_objectids().is_err(),
+            "normal session requires a location"
+        );
 
         // Invalid duration (out of range)
         let invalid_duration = SessionCreateRequest {
-            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            location_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             duration_minutes: Some(500), // Max is 480
             batch_id: None,
+            assigned_admin_ids: vec![],
+            college_name: None,
+            starts_at: None,
             description: None,
         };
         assert!(invalid_duration.validate_with_objectids().is_err());
 
-        // Invalid batch_id
-        let invalid_batch = SessionCreateRequest {
-            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+        // ── Exam session (assigned_admin_ids non-empty): batch/mentors/college/time
+        // required, location does not apply ──
+        let valid_exam = SessionCreateRequest {
+            location_id: None,
             duration_minutes: Some(30),
-            batch_id: Some("invalid".to_string()),
+            batch_id: Some("550e8400-e29b-41d4-a716-446655440001".to_string()),
+            assigned_admin_ids: vec!["550e8400-e29b-41d4-a716-446655440002".to_string()],
+            college_name: Some("Example College".to_string()),
+            starts_at: Some("2026-08-14T09:00:00Z".to_string()),
             description: None,
         };
-        assert!(invalid_batch.validate_with_objectids().is_err());
+        assert!(valid_exam.is_exam_session());
+        assert!(
+            valid_exam.validate_with_objectids().is_ok(),
+            "exam session needs no location"
+        );
 
-        // Valid: empty batch_id allowed
-        let valid_empty_batch = SessionCreateRequest {
-            location_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            duration_minutes: Some(30),
-            batch_id: Some("".to_string()),
-            description: None,
+        // Multiple mentors is valid
+        let multi_mentor = SessionCreateRequest {
+            assigned_admin_ids: vec![
+                "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                "550e8400-e29b-41d4-a716-446655440003".to_string(),
+            ],
+            ..valid_exam.clone()
         };
-        assert!(valid_empty_batch.validate_with_objectids().is_ok());
+        assert!(
+            multi_mentor.validate_with_objectids().is_ok(),
+            "exam session may have more than one mentor"
+        );
+
+        // Duplicate mentor in the list is rejected
+        let duplicate_mentor = SessionCreateRequest {
+            assigned_admin_ids: vec![
+                "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                "550e8400-e29b-41d4-a716-446655440002".to_string(),
+            ],
+            ..valid_exam.clone()
+        };
+        assert!(
+            duplicate_mentor.validate_with_objectids().is_err(),
+            "duplicate mentor id should be rejected"
+        );
+
+        // Exam session missing batch_id
+        let exam_missing_batch = SessionCreateRequest {
+            batch_id: None,
+            ..valid_exam.clone()
+        };
+        assert!(
+            exam_missing_batch.validate_with_objectids().is_err(),
+            "exam session requires a batch"
+        );
+
+        // Exam session with no mentors at all
+        let exam_no_mentors = SessionCreateRequest {
+            assigned_admin_ids: vec![],
+            ..valid_exam.clone()
+        };
+        assert!(
+            !exam_no_mentors.is_exam_session(),
+            "empty mentor list is not an exam session"
+        );
+
+        // Exam session with an invalid mentor id mixed into an otherwise valid list
+        let exam_invalid_mentor = SessionCreateRequest {
+            assigned_admin_ids: vec!["invalid".to_string()],
+            ..valid_exam.clone()
+        };
+        assert!(exam_invalid_mentor.validate_with_objectids().is_err());
+
+        // Exam session missing college_name
+        let exam_missing_college = SessionCreateRequest {
+            college_name: None,
+            ..valid_exam.clone()
+        };
+        assert!(exam_missing_college.validate_with_objectids().is_err());
+
+        // Exam session missing starts_at
+        let exam_missing_starts_at = SessionCreateRequest {
+            starts_at: None,
+            ..valid_exam.clone()
+        };
+        assert!(exam_missing_starts_at.validate_with_objectids().is_err());
     }
 
     #[test]

@@ -244,6 +244,16 @@ pub async fn auth_middleware(
         )));
     }
 
+    // Deactivation (User Management's "deactivate" toggle) must take effect
+    // immediately on the account's very next request — the DB row is the
+    // source of truth here, checked on every request, so no Redis
+    // coordination with the token blacklist is needed.
+    if !admin.is_active {
+        return Err(AppError::Unauthorized(
+            "Account has been deactivated.".to_string(),
+        ));
+    }
+
     // Stash the full claims so logout can extract jti + exp without re-parsing
     request.extensions_mut().insert(claims);
     request.extensions_mut().insert(AuthenticatedAdmin {

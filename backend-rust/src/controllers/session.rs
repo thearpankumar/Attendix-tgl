@@ -22,8 +22,19 @@ use crate::{
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
-    pub location_id: String,
+    /// Required for a normal session (geofenced); irrelevant for an exam
+    /// session, which is marked manually and has no location.
+    pub location_id: Option<String>,
+    /// Present + valid on every request; whether it's *required* to be
+    /// non-empty depends on whether this is an exam session (mandatory) or
+    /// a normal self-service session (optional) — see `is_exam_session()`.
     pub batch_id: Option<String>,
+    /// One or more mentor IDs. Non-empty signals an exam session — see
+    /// `SessionCreateRequest::is_exam_session`.
+    #[serde(default)]
+    pub assigned_admin_ids: Vec<String>,
+    pub college_name: Option<String>,
+    pub starts_at: Option<String>,
     pub description: Option<String>,
     #[serde(alias = "durationMinutes", alias = "expiresInHours")]
     pub duration_minutes: Option<i32>,
@@ -38,7 +49,7 @@ pub struct SessionResponse {
     pub id: String,
     pub token: String,
     #[serde(rename = "locationId")]
-    pub location_id: String,
+    pub location_id: Option<String>,
     #[serde(rename = "locationName")]
     pub location_name: Option<String>,
     #[serde(rename = "batchId")]
@@ -58,6 +69,62 @@ pub struct SessionResponse {
     pub attendance_count: Option<i64>,
     #[serde(rename = "shortCode")]
     pub short_code: Option<String>,
+    #[serde(rename = "assignedAdminIds")]
+    pub assigned_admin_ids: Vec<String>,
+    #[serde(rename = "assignedAdminNames")]
+    pub assigned_admin_names: Vec<String>,
+    #[serde(rename = "collegeName")]
+    pub college_name: Option<String>,
+    #[serde(rename = "startsAt")]
+    pub starts_at: Option<DateTime<Utc>>,
+}
+
+/// Fetches the mentors assigned to a session (id + display name), ordered by
+/// name. Shared by every handler that returns a `SessionResponse`.
+async fn fetch_assigned_mentors(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let mentors: Vec<Admin> = sqlx::query_as(
+        "SELECT a.* FROM admins a \
+         JOIN session_admins sa ON sa.admin_id = a.id \
+         WHERE sa.session_id = $1 \
+         ORDER BY a.full_name NULLS LAST, a.username",
+    )
+    .bind(session_id)
+    .fetch_all(db)
+    .await?;
+
+    let ids = mentors.iter().map(|m| m.id.to_string()).collect();
+    let names = mentors
+        .into_iter()
+        .map(|m| m.full_name.unwrap_or(m.username))
+        .collect();
+    Ok((ids, names))
+}
+
+/// Role-scoped session lookup shared by every session read/sub-resource
+/// handler: super-admins see sessions they created, mentors only ever see
+/// sessions a super-admin has explicitly assigned to them. Never trust a
+/// client-supplied filter for this — the role check happens at the SQL level.
+pub async fn find_session_for_admin(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+    auth: &AuthenticatedAdmin,
+) -> Result<Session> {
+    sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 \
+         AND (($2 = 'super_admin' AND created_by = $3) \
+              OR ($2 <> 'super_admin' AND EXISTS ( \
+                    SELECT 1 FROM session_admins sa WHERE sa.session_id = sessions.id AND sa.admin_id = $3 \
+              )))",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
 }
 
 pub async fn create_session(
@@ -65,13 +132,81 @@ pub async fn create_session(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<CreateSessionRequest>,
 ) -> Result<impl IntoResponse> {
+    // Only super-admins create sessions. Whether a batch/mentor/college/time
+    // is mandatory depends on which of the two shapes this request is (see
+    // SessionCreateRequest::is_exam_session): an exam session (assigned to a
+    // mentor) requires all four; a normal self-service session keeps the
+    // original optional-batch behavior. Mentors never create sessions of
+    // either kind — they only ever see sessions assigned to them (see
+    // get_sessions/get_session's role branch).
+    auth.require_role(ROLE_SUPER_ADMIN)?;
+
     let validation_req = SessionCreateRequest {
         location_id: payload.location_id.clone(),
         duration_minutes: payload.duration_minutes,
         batch_id: payload.batch_id.clone(),
+        assigned_admin_ids: payload.assigned_admin_ids.clone(),
+        college_name: payload.college_name.clone(),
+        starts_at: payload.starts_at.clone(),
         description: payload.description.clone(),
     };
     validate_request(&validation_req)?;
+    validation_req
+        .validate_with_objectids()
+        .map_err(AppError::from)?;
+
+    let is_exam_session = validation_req.is_exam_session();
+
+    // Exam session: mentors/college/start-time are all mandatory and
+    // validated together (validate_with_objectids already guarantees they're
+    // present and well-formed above); location does not apply — exam
+    // attendance is marked manually, not geofenced. Normal session: none of
+    // that applies, but location is mandatory.
+    let (assigned_admin_ids, location_id, college_name, starts_at) = if is_exam_session {
+        let mut assigned_admin_ids = Vec::with_capacity(payload.assigned_admin_ids.len());
+        for raw_id in &payload.assigned_admin_ids {
+            let raw_id = raw_id.trim();
+            if raw_id.is_empty() {
+                continue;
+            }
+            let mentor_id = Uuid::parse_str(raw_id)
+                .map_err(|e| AppError::BadRequest(format!("Invalid mentor ID: {}", e)))?;
+
+            // Each assignee must exist, still hold the mentor ("admin") role,
+            // and be active — otherwise a session could be handed to a
+            // super-admin account or to a mentor who has since been
+            // deactivated.
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM admins WHERE id = $1 AND role = $2 AND is_active = true",
+            )
+            .bind(mentor_id)
+            .bind(ROLE_ADMIN)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "Every assigned mentor must be an active admin/mentor account".to_string(),
+                )
+            })?;
+            assigned_admin_ids.push(mentor_id);
+        }
+
+        let starts_at =
+            DateTime::parse_from_rfc3339(payload.starts_at.as_deref().unwrap_or_default())
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|e| AppError::BadRequest(format!("Invalid start time: {}", e)))?;
+
+        (
+            assigned_admin_ids,
+            None,
+            payload.college_name.clone(),
+            Some(starts_at),
+        )
+    } else {
+        let location_id = Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
+            .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
+        (Vec::new(), Some(location_id), None, None)
+    };
 
     let mode = payload.shortlink_mode.as_deref().unwrap_or("auto");
 
@@ -130,9 +265,6 @@ pub async fn create_session(
         None
     };
 
-    let location_id = Uuid::parse_str(&payload.location_id)
-        .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
-
     let batch_id = payload
         .batch_id
         .as_ref()
@@ -143,8 +275,8 @@ pub async fn create_session(
     let expires_at = Utc::now() + chrono::Duration::minutes(duration_minutes);
 
     let session: Session = sqlx::query_as(
-        "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, is_active, expires_at, rotation_count, totp_secret, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, 0, $9, now()) \
+        "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, college_name, starts_at, is_active, expires_at, rotation_count, totp_secret, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, 0, $11, now()) \
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -154,6 +286,8 @@ pub async fn create_session(
     .bind(Session::get_token_prefix(&token))
     .bind(&payload.description)
     .bind(auth.id)
+    .bind(&college_name)
+    .bind(starts_at)
     .bind(expires_at)
     .bind(Session::generate_totp_secret())
     .fetch_one(&state.db)
@@ -161,8 +295,23 @@ pub async fn create_session(
 
     let session_id = session.id;
 
-    // Atomically create or assign short link
-    let created_short_code = match mode {
+    let mut assigned_admin_names = Vec::with_capacity(assigned_admin_ids.len());
+    for mentor_id in &assigned_admin_ids {
+        sqlx::query("INSERT INTO session_admins (session_id, admin_id) VALUES ($1, $2)")
+            .bind(session_id)
+            .bind(mentor_id)
+            .execute(&state.db)
+            .await?;
+    }
+    if !assigned_admin_ids.is_empty() {
+        let (_, names) = fetch_assigned_mentors(&state.db, session_id).await?;
+        assigned_admin_names = names;
+    }
+
+    // Atomically create or assign short link. Exam sessions have no
+    // self-service check-in flow to link to, so "none" skips this entirely.
+    let created_short_code: Option<String> = match mode {
+        "none" => None,
         "custom" => {
             let code = custom_code_to_use.unwrap();
             let insert_res: sqlx::Result<ShortLink> = sqlx::query_as(
@@ -186,7 +335,7 @@ pub async fn create_session(
                     e
                 )));
             }
-            code
+            Some(code)
         }
         "existing" => {
             let code = existing_code_to_use.unwrap();
@@ -208,7 +357,7 @@ pub async fn create_session(
                     e
                 )));
             }
-            code
+            Some(code)
         }
         _ => {
             let mut attempts = 0;
@@ -254,21 +403,26 @@ pub async fn create_session(
                     e
                 )));
             }
-            code
+            Some(code)
         }
     };
 
-    let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-        .bind(location_id)
-        .fetch_optional(&state.db)
-        .await?;
+    let location: Option<Location> = match location_id {
+        Some(id) => {
+            sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await?
+        }
+        None => None,
+    };
 
     Ok((
         StatusCode::CREATED,
         Json(SessionResponse {
             id: session_id.to_string(),
             token,
-            location_id: payload.location_id,
+            location_id: session.location_id.map(|id| id.to_string()),
             location_name: location.as_ref().map(|l| l.name.clone()),
             batch_id: session.batch_id.map(|b| b.to_string()),
             batch_name: None,
@@ -278,7 +432,11 @@ pub async fn create_session(
             token_prefix: Some(session.token_prefix),
             created_at: Some(session.created_at),
             attendance_count: Some(0),
-            short_code: Some(created_short_code),
+            short_code: created_short_code,
+            assigned_admin_ids: assigned_admin_ids.iter().map(|id| id.to_string()).collect(),
+            assigned_admin_names,
+            college_name: session.college_name,
+            starts_at: session.starts_at,
         }),
     ))
 }
@@ -322,15 +480,21 @@ pub async fn get_sessions(
         (None, None)
     };
 
+    // Super-admins see everything they created; mentors only ever see
+    // sessions a super-admin has assigned them to (via session_admins).
     let sessions: Vec<Session> = sqlx::query_as(
         "SELECT * FROM sessions \
-         WHERE created_by = $1 \
-           AND ($2::uuid IS NULL OR location_id = $2) \
-           AND ($3::timestamptz IS NULL OR created_at >= $3) \
-           AND ($4::timestamptz IS NULL OR created_at <= $4) \
+         WHERE (($1 = 'super_admin' AND created_by = $2) \
+                OR ($1 <> 'super_admin' AND EXISTS ( \
+                      SELECT 1 FROM session_admins sa WHERE sa.session_id = sessions.id AND sa.admin_id = $2 \
+                ))) \
+           AND ($3::uuid IS NULL OR location_id = $3) \
+           AND ($4::timestamptz IS NULL OR created_at >= $4) \
+           AND ($5::timestamptz IS NULL OR created_at <= $5) \
          ORDER BY created_at DESC \
-         LIMIT $5",
+         LIMIT $6",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .bind(location_filter)
     .bind(start_utc)
@@ -368,10 +532,13 @@ pub async fn get_sessions(
                 .fetch_optional(&state.db)
                 .await?;
 
+        let (assigned_admin_ids, assigned_admin_names) =
+            fetch_assigned_mentors(&state.db, session.id).await?;
+
         sessions_list.push(SessionResponse {
             id: session.id.to_string(),
             token: String::new(),
-            location_id: session.location_id.to_string(),
+            location_id: session.location_id.map(|id| id.to_string()),
             location_name: location.map(|l| l.name),
             batch_id: session.batch_id.map(|b| b.to_string()),
             batch_name: batch.map(|b| b.name),
@@ -382,6 +549,10 @@ pub async fn get_sessions(
             created_at: Some(session.created_at),
             attendance_count: Some(attendance_count),
             short_code: short_link.map(|s| s.short_code),
+            assigned_admin_ids,
+            assigned_admin_names,
+            college_name: session.college_name,
+            starts_at: session.starts_at,
         });
     }
 
@@ -396,13 +567,7 @@ pub async fn get_session(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
     let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
         .bind(session.location_id)
@@ -430,10 +595,13 @@ pub async fn get_session(
             .fetch_optional(&state.db)
             .await?;
 
+    let (assigned_admin_ids, assigned_admin_names) =
+        fetch_assigned_mentors(&state.db, session.id).await?;
+
     Ok(Json(SessionResponse {
         id: session.id.to_string(),
         token: String::new(),
-        location_id: session.location_id.to_string(),
+        location_id: session.location_id.map(|id| id.to_string()),
         location_name: location.map(|l| l.name),
         batch_id: session.batch_id.map(|b| b.to_string()),
         batch_name: batch.map(|b| b.name),
@@ -444,6 +612,10 @@ pub async fn get_session(
         created_at: Some(session.created_at),
         attendance_count: Some(attendance_count),
         short_code: short_link.map(|s| s.short_code),
+        assigned_admin_ids,
+        assigned_admin_names,
+        college_name: session.college_name,
+        starts_at: session.starts_at,
     }))
 }
 
@@ -622,11 +794,16 @@ pub async fn export_session_attendance(
             .await?
             .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let location: Location = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // Exam sessions have no location (manual attendance, not geofenced).
+    let location: Option<Location> = match session.location_id {
+        Some(id) => {
+            sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await?
+        }
+        None => None,
+    };
 
     let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
         sqlx::query_as("SELECT * FROM batches WHERE id = $1")
@@ -669,7 +846,12 @@ pub async fn export_session_attendance(
         attendance_data = merge_with_batch(attendance_data, &students);
     }
 
-    let excel_data = generate_excel(&attendance_data, &session, &location, batch.as_ref())?;
+    let excel_data = generate_excel(
+        &attendance_data,
+        &session,
+        location.as_ref(),
+        batch.as_ref(),
+    )?;
 
     let filename = format!(
         "attendance_{}_{}.xlsx",
@@ -744,7 +926,7 @@ fn merge_with_batch(
 fn generate_excel(
     data: &[AttendanceExportRow],
     session: &Session,
-    location: &Location,
+    location: Option<&Location>,
     batch: Option<&Batch>,
 ) -> Result<Vec<u8>> {
     use rust_xlsxwriter::Workbook;
@@ -834,7 +1016,13 @@ fn generate_excel(
         .write_string(row + 3, 0, "Location:")
         .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
     worksheet
-        .write_string(row + 3, 1, &location.name)
+        .write_string(
+            row + 3,
+            1,
+            location
+                .map(|l| l.name.as_str())
+                .unwrap_or("N/A (exam session — manually marked)"),
+        )
         .map_err(|e| AppError::Internal(format!("Excel error: {}", e)))?;
     worksheet
         .write_string(row + 4, 0, "Session ID:")

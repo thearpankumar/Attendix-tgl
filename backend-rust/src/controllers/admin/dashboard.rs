@@ -967,7 +967,8 @@ pub async fn get_recent_activity(
         .bind(auth.id)
         .fetch_all(&state.db)
         .await?;
-    let mut session_map: std::collections::HashMap<Uuid, Uuid> = std::collections::HashMap::new();
+    let mut session_map: std::collections::HashMap<Uuid, Option<Uuid>> =
+        std::collections::HashMap::new();
     for session in &sessions {
         session_map.insert(session.id, session.location_id);
     }
@@ -978,8 +979,10 @@ pub async fn get_recent_activity(
 
     let session_ids: Vec<Uuid> = session_map.keys().cloned().collect();
 
-    // Pre-fetch all unique location IDs to avoid N+1 queries
-    let location_ids: std::collections::HashSet<Uuid> = session_map.values().copied().collect();
+    // Pre-fetch all unique location IDs to avoid N+1 queries. Exam sessions
+    // have no location — filtered out here, not queried.
+    let location_ids: std::collections::HashSet<Uuid> =
+        session_map.values().filter_map(|v| *v).collect();
     let location_ids_vec: Vec<Uuid> = location_ids.into_iter().collect();
 
     let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = ANY($1)")
@@ -1007,6 +1010,7 @@ pub async fn get_recent_activity(
         // Get location name from pre-fetched HashMap
         let location_name = session_map
             .get(&attendance.session_id)
+            .and_then(|loc_id| loc_id.as_ref())
             .and_then(|loc_id| location_names.get(loc_id).cloned())
             .unwrap_or_else(|| "Unknown".to_string());
 
@@ -1068,7 +1072,7 @@ pub async fn get_attendance_series(
             .bind(&location_ids)
             .fetch_all(&state.db)
             .await?;
-    let mut session_map: std::collections::HashMap<Uuid, (Uuid, String)> =
+    let mut session_map: std::collections::HashMap<Uuid, (Option<Uuid>, String)> =
         std::collections::HashMap::new();
     let mut session_ids: Vec<Uuid> = Vec::new();
     for session in sessions {
@@ -1098,8 +1102,8 @@ pub async fn get_attendance_series(
     let mut result = Vec::new();
     for attendance in attendances {
         if let Some((location_id, description)) = session_map.get(&attendance.session_id) {
-            let location = location_names
-                .get(location_id)
+            let location = location_id
+                .and_then(|id| location_names.get(&id))
                 .cloned()
                 .unwrap_or_else(|| "Unknown".to_string());
             let date = attendance.captured_at.format("%Y-%m-%d").to_string();
@@ -1160,7 +1164,8 @@ pub async fn get_sessions_by_date(
             .bind(&location_ids)
             .fetch_all(&state.db)
             .await?;
-    let mut session_map: std::collections::HashMap<Uuid, (Uuid, Option<String>, DateTime<Utc>)> =
+    type SessionByDateInfo = (Option<Uuid>, Option<String>, DateTime<Utc>);
+    let mut session_map: std::collections::HashMap<Uuid, SessionByDateInfo> =
         std::collections::HashMap::new();
     let mut session_ids: Vec<Uuid> = Vec::new();
     for session in sessions {
@@ -1205,8 +1210,8 @@ pub async fn get_sessions_by_date(
         if let Some((location_id, description, created_at)) = session_map.get(&session_id) {
             let count = *count_map.get(&session_id).unwrap_or(&0);
             if count > 0 {
-                let location = location_names
-                    .get(location_id)
+                let location = location_id
+                    .and_then(|id| location_names.get(&id))
                     .cloned()
                     .unwrap_or_else(|| "Unknown".to_string());
                 result.push(SessionByDateItem {

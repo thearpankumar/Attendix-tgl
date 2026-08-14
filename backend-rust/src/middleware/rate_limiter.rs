@@ -156,7 +156,6 @@ impl RateLimiter {
         self.check_rate_limit(&key, &RateLimitConfig::new(window_secs, max_requests))
             .await
     }
-
 }
 
 fn limit_type_from_key(key: &str) -> &str {

@@ -32,14 +32,9 @@ pub async fn get_session_attendance(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    // Verify session ownership
-    let _session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Role-scoped: super-admins see sessions they created, mentors only
+    // sessions assigned to them.
+    let _session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
     let attendances: Vec<Attendance> =
         sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at DESC")
@@ -95,13 +90,7 @@ pub async fn get_session_stats(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
     let total_attendance: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
@@ -244,13 +233,7 @@ pub async fn get_session_absent(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
     let batch_id = match session.batch_id {
         Some(id) => id,

@@ -263,8 +263,7 @@ impl AppConfig {
                 },
             },
             redis: RedisConfig {
-                url: env::var("REDIS_URL")
-                    .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+                url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
             },
             webauthn: WebAuthnConfig {
                 rp_name: "Attendix Test".to_string(),

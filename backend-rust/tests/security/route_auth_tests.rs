@@ -29,9 +29,8 @@ async fn create_test_app() -> axum::Router {
     // only (no in-memory fallback), so this uses the shared testcontainers
     // Redis instance rather than a real connection to `config.redis.url`.
     let redis_env = crate::test_db::get_test_environment().await;
-    let redis_client = Arc::new(
-        redis::Client::open(redis_env.redis_uri()).expect("valid test redis URL"),
-    );
+    let redis_client =
+        Arc::new(redis::Client::open(redis_env.redis_uri()).expect("valid test redis URL"));
 
     let rate_limiter = Arc::new(RateLimiter::new(redis_client.clone()));
     let deny_list = Arc::new(DenyList::new(redis_client.clone()));
@@ -289,5 +288,168 @@ async fn test_admin_dashboard_requires_auth() {
         .await
         .unwrap();
 
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ===================================================================
+// Super-admin / mentor / manual-attendance feature: every new route must be
+// behind the same auth layer as everything else in `protected_routes` — a
+// route added to the router but missing from that group would silently be
+// reachable with no cookie/token at all. One assertion per route.
+// ===================================================================
+
+#[tokio::test]
+async fn test_admin_users_list_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/users")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_users_create_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/users")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_users_update_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/admin/users/{}", uuid::Uuid::new_v4()))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_users_delete_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/admin/users/{}", uuid::Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_profile_password_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/admin/profile/password")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_session_roster_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/admin/sessions/{}/roster",
+                    uuid::Uuid::new_v4()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_manual_attendance_mark_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/admin/sessions/{}/attendance/manual",
+                    uuid::Uuid::new_v4()
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_manual_attendance_undo_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/admin/sessions/{}/attendance/manual/TEST001",
+                    uuid::Uuid::new_v4()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_sessions_create_requires_auth() {
+    let app = create_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/sessions")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

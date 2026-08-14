@@ -10,7 +10,7 @@ const SESSION_CACHE_PREFIX: &str = "session:";
 pub struct CachedSession {
     pub id: Uuid,
     pub token_hash: String,
-    pub location_id: Uuid,
+    pub location_id: Option<Uuid>,
     pub location_name: Option<String>,
     pub location_latitude: Option<f64>,
     pub location_longitude: Option<f64>,

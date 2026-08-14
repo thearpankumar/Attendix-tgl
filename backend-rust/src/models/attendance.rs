@@ -26,6 +26,11 @@ pub struct Attendance {
     pub network_org: Option<String>,
     #[serde(default)]
     pub verified: bool,
+    #[serde(default)]
+    pub source: AttendanceSource,
+    #[serde(default)]
+    pub status: AttendanceStatus,
+    pub marked_by_admin_id: Option<Uuid>,
     #[serde(default = "default_true")]
     pub face_detected: bool,
     pub device_fingerprint: Option<String>,
@@ -75,6 +80,35 @@ pub struct Attendance {
 fn default_true() -> bool {
     true
 }
+
+/// Whether an attendance row came from the student's own self-submission
+/// (photo + geofence + anti-fraud checks) or was marked in-person by a
+/// mentor/admin during an exam session. `source` is the durable signal that
+/// explains why a manual row's anti-fraud columns are empty rather than
+/// missing due to a bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AttendanceSource {
+    #[serde(rename = "self_submitted")]
+    #[default]
+    SelfSubmitted,
+    #[serde(rename = "manual")]
+    Manual,
+}
+text_enum_sqlx!(AttendanceSource);
+
+/// Present/absent state of an attendance row. Self-submitted rows are always
+/// `Present` (submitting a photo from inside the geofence is the presence
+/// event); manually-marked rows can be either, since a mentor can explicitly
+/// record a student as absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AttendanceStatus {
+    #[serde(rename = "present")]
+    #[default]
+    Present,
+    #[serde(rename = "absent")]
+    Absent,
+}
+text_enum_sqlx!(AttendanceStatus);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttendanceDeviceFlag {

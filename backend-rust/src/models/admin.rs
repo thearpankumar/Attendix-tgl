@@ -12,6 +12,10 @@ pub struct Admin {
     pub password: String,
     #[serde(default = "default_role")]
     pub role: String,
+    pub full_name: Option<String>,
+    pub college_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
     #[serde(default)]
     pub failed_login_attempts: i32,
     pub lock_until: Option<DateTime<Utc>>,
@@ -20,6 +24,10 @@ pub struct Admin {
 
 fn default_role() -> String {
     ROLE_ADMIN.to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -327,9 +327,12 @@ mod tests {
         #[test]
         fn should_pass_valid_session_data() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: None,
-                batch_id: None,
+                batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -339,17 +342,28 @@ mod tests {
 
         /// Test: should reject invalid UUID
         /// Node.js: lines 223-231
+        ///
+        /// Location is only validated for a normal session — an exam session
+        /// (assigned_admin_ids present) doesn't use a location at all, so
+        /// this must NOT be an exam session for the invalid location_id to
+        /// actually be checked.
         #[test]
         fn should_reject_invalid_uuid() {
             let req = SessionCreateRequest {
-                location_id: "invalid-id".to_string(),
+                location_id: Some("invalid-id".to_string()),
                 duration_minutes: None,
                 batch_id: None,
+                assigned_admin_ids: vec![],
+                college_name: None,
+                starts_at: None,
                 description: None,
             };
 
             let result = req.validate_with_objectids();
-            assert!(result.is_err(), "Invalid MongoDB ID should be rejected");
+            assert!(
+                result.is_err(),
+                "Invalid location UUID should be rejected on a normal session"
+            );
         }
 
         /// Test: should reject duration < 5 minutes
@@ -357,9 +371,12 @@ mod tests {
         #[test]
         fn should_reject_duration_below_5_minutes() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(4),
-                batch_id: None,
+                batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -371,9 +388,12 @@ mod tests {
         #[test]
         fn should_reject_duration_above_480_minutes() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(500),
-                batch_id: None,
+                batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -385,9 +405,12 @@ mod tests {
         #[test]
         fn should_accept_valid_batch_id() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(30),
                 batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -399,9 +422,12 @@ mod tests {
         #[test]
         fn should_reject_invalid_batch_id() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(30),
                 batch_id: Some("invalid-batch-id".to_string()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -942,9 +968,12 @@ mod tests {
         #[test]
         fn session_duration_at_min_boundary() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(5), // Exactly 5 minutes
-                batch_id: None,
+                batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -959,9 +988,12 @@ mod tests {
         #[test]
         fn session_duration_at_max_boundary() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(480), // Exactly 480 minutes
-                batch_id: None,
+                batch_id: Some(create_valid_object_id()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
@@ -1026,18 +1058,50 @@ mod tests {
             );
         }
 
-        /// Test: Session with empty batch_id allowed
+        /// Test: batch_id is mandatory for an exam session (assigned_admin_ids
+        /// present) — an empty batch_id must be rejected there, even though
+        /// it's still allowed for a normal session (see
+        /// `session_with_empty_batch_id_allowed_for_normal_session` below).
         #[test]
-        fn session_with_empty_batch_id() {
+        fn session_with_empty_batch_id_rejected_for_exam_session() {
             let req = SessionCreateRequest {
-                location_id: create_valid_object_id(),
+                location_id: Some(create_valid_object_id()),
                 duration_minutes: Some(30),
                 batch_id: Some("".to_string()),
+                assigned_admin_ids: vec![create_valid_object_id()],
+                college_name: Some("Test College".to_string()),
+                starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
             };
 
             let result = req.validate_with_objectids();
-            assert!(result.is_ok(), "Empty batch_id should be allowed");
+            assert!(
+                result.is_err(),
+                "Empty batch_id should be rejected for an exam session"
+            );
+        }
+
+        /// Test: a normal session (no assigned_admin_ids) keeps the original
+        /// optional-batch behavior — this is the exact scenario the user
+        /// flagged: exam sessions require a batch, normal sessions don't.
+        #[test]
+        fn session_with_empty_batch_id_allowed_for_normal_session() {
+            let req = SessionCreateRequest {
+                location_id: Some(create_valid_object_id()),
+                duration_minutes: Some(30),
+                batch_id: None,
+                assigned_admin_ids: vec![],
+                college_name: None,
+                starts_at: None,
+                description: None,
+            };
+
+            assert!(!req.is_exam_session());
+            let result = req.validate_with_objectids();
+            assert!(
+                result.is_ok(),
+                "Empty/absent batch_id should be allowed for a normal session"
+            );
         }
     }
 }

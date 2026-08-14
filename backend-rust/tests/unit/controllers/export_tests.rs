@@ -310,12 +310,14 @@ mod export_session_ownership_tests {
         let admin_id = Uuid::new_v4();
         let session = attendance_geotag_backend::models::Session {
             id: Uuid::new_v4(),
-            location_id: Uuid::new_v4(),
+            location_id: Some(Uuid::new_v4()),
             batch_id: Some(Uuid::new_v4()),
             token_hash: "test_hash".to_string(),
             token_prefix: "test".to_string(),
             description: None,
             created_by: admin_id,
+            college_name: None,
+            starts_at: None,
             is_active: true,
             expires_at: Utc::now() + chrono::Duration::hours(1),
             rotation_count: 0,

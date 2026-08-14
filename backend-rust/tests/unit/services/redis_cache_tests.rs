@@ -55,7 +55,7 @@ mod get_cached_session {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -98,7 +98,7 @@ mod get_cached_session {
         let inactive_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -142,7 +142,7 @@ mod get_cached_session {
         let expired_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -198,7 +198,7 @@ mod session_validation_flow {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -237,7 +237,7 @@ mod session_validation_flow {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -290,7 +290,7 @@ mod token_rotation {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: initial_token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -316,7 +316,7 @@ mod token_rotation {
         let rotated_session = CachedSession {
             id: session_id,
             token_hash: new_token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -366,7 +366,7 @@ mod redis_configuration {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Test Location 2".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -414,7 +414,7 @@ mod cache_ttl_behavior {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("TTL Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -499,7 +499,7 @@ mod security_edge_cases {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Security Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -537,7 +537,7 @@ mod security_edge_cases {
         let session_1 = CachedSession {
             id: session_id_1,
             token_hash: token_hash_1.clone(),
-            location_id: location_id_1,
+            location_id: Some(location_id_1),
             location_name: Some("Security Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
@@ -562,7 +562,7 @@ mod security_edge_cases {
         let session_2 = CachedSession {
             id: session_id_2,
             token_hash: token_hash_2.clone(),
-            location_id: location_id_2,
+            location_id: Some(location_id_2),
             location_name: Some("Other Location".to_string()),
             location_latitude: Some(13.0),
             location_longitude: Some(78.0),
@@ -602,7 +602,7 @@ mod security_edge_cases {
         let cached_session = CachedSession {
             id: session_id,
             token_hash: token_hash.clone(),
-            location_id,
+            location_id: Some(location_id),
             location_name: Some("Security Test Location".to_string()),
             location_latitude: Some(12.9716),
             location_longitude: Some(77.5946),
