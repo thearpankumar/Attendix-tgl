@@ -14,7 +14,15 @@ use axum::{
     body::Body,
     http::{header::SET_COOKIE, HeaderMap, Request, StatusCode},
 };
-use serial_test::serial;
+// `file_serial`, not `serial`: `serial_test`'s plain `#[serial]` uses an
+// in-process `Mutex`, which nextest's one-fresh-process-per-test model makes
+// a no-op between these tests (each sees an uncontended fresh lock) — the
+// `file_locks` feature just makes the OS-level-file-lock-backed
+// `#[file_serial]` macro available, it does not change what `#[serial]`
+// itself does. This was the actual cause of the `admin_bootstrap`-group
+// tests interleaving and racing on the shared `admins`/`locations` tables on
+// CI even after `file_locks` was added to Cargo.toml.
+use serial_test::file_serial;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -276,17 +284,17 @@ async fn seed_admin(
 /// account creation moves exclusively to the authenticated User Management
 /// panel once a super_admin exists.
 ///
-/// `#[serial(admin_bootstrap)]` (shared with every other test in this file):
+/// `#[file_serial(admin_bootstrap)]` (shared with every other test in this file):
 /// this test's assertion that the *first* registration becomes super_admin
 /// is a race against any other test in this file inserting its own
 /// super_admin — serializing the whole group, plus the explicit DELETE
 /// below, makes this test's view of "no super_admin exists yet" reliable
 /// regardless of execution order.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn register_bootstraps_super_admin_then_locks_itself() {
     let (app, db) = create_test_app().await;
-    // The other tests in this `#[serial(admin_bootstrap)]` group each seed
+    // The other tests in this `#[file_serial(admin_bootstrap)]` group each seed
     // their own super_admin (plus locations/batches/sessions/audit-log rows
     // that FK-reference it) before this test gets its turn. TRUNCATE...
     // CASCADE clears all of it in one statement — safe here specifically
@@ -323,7 +331,7 @@ async fn register_bootstraps_super_admin_then_locks_itself() {
 /// reach `/api/admin/users` (super-admin-only) or create sessions (also
 /// super-admin-only) even while authenticated.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn super_admin_creates_mentor_and_role_gates_are_enforced() {
     let (app, db) = create_test_app().await;
 
@@ -392,7 +400,7 @@ async fn super_admin_creates_mentor_and_role_gates_are_enforced() {
 /// A super-admin can edit their own profile fields, but cannot demote or
 /// deactivate themselves — there's no email-based recovery to undo it.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn super_admin_cannot_change_own_role_or_active_status() {
     let (app, db) = create_test_app().await;
 
@@ -505,7 +513,7 @@ async fn seed_location_and_batch(
 /// only sees this because it's assigned to them), and both new mutating
 /// endpoints together.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn manual_attendance_mark_then_undo_roundtrip() {
     let (app, db) = create_test_app().await;
 
@@ -618,7 +626,7 @@ async fn manual_attendance_mark_then_undo_roundtrip() {
 /// have their forensic data silently overwritten by a mentor's manual mark
 /// — the endpoint must 409 instead.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn manual_attendance_conflicts_with_self_submitted_row() {
     let (app, db) = create_test_app().await;
 
@@ -709,7 +717,7 @@ async fn manual_attendance_conflicts_with_self_submitted_row() {
 /// location at all (manual attendance isn't geofenced) — both are new
 /// behaviour on top of the original single-mentor, location-mandatory shape.
 #[tokio::test]
-#[serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap)]
 async fn exam_session_supports_multiple_mentors_and_no_location() {
     let (app, db) = create_test_app().await;
 
