@@ -68,6 +68,14 @@
 		reverse_proxy admin-frontend:8080
 	}
 
+	# Mentor attendance-marking app. Deliberately a plain, discoverable path
+	# (not obscured like the super-admin panel above) — mentors need an easy
+	# URL to share/bookmark, and access is still gated by the same login +
+	# role check as everything else under /api/admin.
+	handle_path /mark-attendance* {
+		reverse_proxy mentor-frontend:8080
+	}
+
 	# Grafana (logs + metrics dashboards). NOT handle_path: with
 	# GF_SERVER_SERVE_FROM_SUB_PATH=true, Grafana's own router expects the
 	# full prefixed path — it does its own internal stripping.

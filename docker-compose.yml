@@ -189,6 +189,36 @@ services:
       - web-net
 
 
+  mentor-frontend:
+    build:
+      context: ./frontend/mentor
+      args:
+        VITE_BASE_PATH: /mark-attendance/
+    container_name: attendance-mentor
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    ports:
+      # Loopback only, same rationale as admin-frontend above.
+      - "127.0.0.1:3002:8080"
+    depends_on:
+      - backend
+    networks:
+      - web-net
+
+
   student-frontend:
     build:
       context: ./frontend/student
@@ -283,6 +313,8 @@ services:
       backend:
         condition: service_healthy
       admin-frontend:
+        condition: service_started
+      mentor-frontend:
         condition: service_started
       student-frontend:
         condition: service_started

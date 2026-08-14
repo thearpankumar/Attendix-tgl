@@ -37,6 +37,11 @@ jobs:
             dockerfile: ./frontend/admin/Dockerfile
             build-args: |
               VITE_BASE_PATH=/owner-of-attendix-xyz/
+          - image: mentor-frontend
+            context: ./frontend/mentor
+            dockerfile: ./frontend/mentor/Dockerfile
+            build-args: |
+              VITE_BASE_PATH=/mark-attendance/
           - image: student-frontend
             context: ./frontend/student
             dockerfile: ./frontend/student/Dockerfile

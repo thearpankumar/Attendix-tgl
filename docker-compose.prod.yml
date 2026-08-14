@@ -96,8 +96,13 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       # WebAuthn
       - WEBAUTHN_RP_NAME=${WEBAUTHN_RP_NAME:-Attendix Attendance System}
-      - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-xenkrypt.in}
-      - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://xenkrypt.in}
+      # Must match the domain Caddyfile.prod actually serves (RP ID has to be
+      # a registrable domain suffix of the origin, or passkey ceremonies are
+      # silently rejected by the browser) — these defaults exist only so a
+      # deploy without an explicit .env override still matches that domain
+      # instead of an unrelated one.
+      - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-attendixv2.talenciaglobal.com}
+      - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://attendixv2.talenciaglobal.com}
       # Database Pool (names must match backend-rust/src/config/mod.rs::AppConfig::from_env)
       - PG_MAX_POOL_SIZE=${PG_MAX_POOL_SIZE:-300}
       - PG_MIN_POOL_SIZE=${PG_MIN_POOL_SIZE:-20}
@@ -141,6 +146,34 @@ services:
     # nginx-unprivileged (see frontend/admin/Dockerfile) runs as the `nginx`
     # user from the start and listens on 8080, not 80 — no capabilities
     # needed at all anymore.
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    logging: *default-logging
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    depends_on:
+      - backend
+    networks:
+      - web-net
+
+
+  mentor-frontend:
+    image: ${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}/${ECR_REPOSITORY:-tgl/attendix}:mentor-frontend-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true

@@ -48,7 +48,9 @@ services:
     depends_on:
       - backend
       - admin-frontend
+      - mentor-frontend
       - student-frontend
+      - home-frontend
     networks:
       - web-net
       # So Prometheus can scrape the metrics-only :2019 listener without

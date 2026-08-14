@@ -1,4 +1,4 @@
-.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-backend build-backend deps-backend dev-backend lint-backend restart-backend
+.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-backend build-backend deps-backend dev-backend lint-backend restart-backend clean-orphan-containers
 
 # Run all checks and builds
 all: test-admin build-admin test-home build-home test-student build-student test-backend build-backend
@@ -18,6 +18,7 @@ help:
 	@echo "  dev-backend    - Run the Rust backend in dev mode (cargo run)"
 	@echo "  build-backend  - Build the Rust backend"
 	@echo "  restart-backend - Rebuild and restart the backend container"
+	@echo "  clean-orphan-containers - Remove leaked testcontainers containers (safety net; backend-rust's own tests now use named/reused containers, see tests/common/test_db.rs)"
 
 test-admin:
 	@echo "==============================="
@@ -96,3 +97,30 @@ restart-backend: build-backend
 	@echo "   Restarting Backend          "
 	@echo "==============================="
 	docker compose up -d backend
+
+# Safety net, not the primary fix: backend-rust's tests (tests/common/test_db.rs)
+# now use named, `with_reuse(Always)` Postgres/Redis containers shared across
+# every test binary and run, instead of a fresh throwaway pair per binary --
+# that's what stops the leak at the source. This just mops up anything still
+# labeled testcontainers-managed (e.g. from before that fix, or from a run that
+# got killed hard enough to skip even the reuse path) without touching
+# unrelated containers on the machine.
+#
+# testcontainers stamps org.testcontainers.managed-by=testcontainers on EVERY
+# container it starts, including the two intentionally-reused ones below --
+# they're excluded by name here so this can't undo the fix above by deleting
+# the very containers meant to persist.
+REUSED_TEST_CONTAINERS := backend-rust-test-postgres backend-rust-test-redis
+
+clean-orphan-containers:
+	@echo "==============================="
+	@echo "   Cleaning Orphan Containers  "
+	@echo "==============================="
+	@exclude="$$(echo '$(REUSED_TEST_CONTAINERS)' | tr ' ' '|')"; \
+	ids="$$(docker ps -a --filter 'label=org.testcontainers.managed-by=testcontainers' --format '{{.ID}} {{.Names}}' | grep -Ev " ($$exclude)\$$" | awk '{print $$1}')"; \
+	if [ -n "$$ids" ]; then \
+		echo "Removing $$(echo "$$ids" | wc -l) leaked testcontainers container(s)..."; \
+		docker rm -f $$ids >/dev/null; \
+	else \
+		echo "No leaked testcontainers containers found."; \
+	fi

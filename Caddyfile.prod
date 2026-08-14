@@ -1,7 +1,7 @@
 # Caddy Configuration for Attendance System
-# Production Mode - attendix.talenciaglobal.com
+# Production Mode - attendixv2.talenciaglobal.com
 {
-	email admin@attendix.talenciaglobal.com
+	email admin@attendixv2.talenciaglobal.com
 
 	# Caddy's admin API can read and rewrite the entire running config and
 	# export certificates. It was bound to 0.0.0.0:2019, which made it
@@ -17,9 +17,9 @@
 }
 
 # ============================================
-# PRODUCTION MODE (Active - attendix.talenciaglobal.com)
+# PRODUCTION MODE (Active - attendixv2.talenciaglobal.com)
 # ============================================
-attendix.talenciaglobal.com {
+attendixv2.talenciaglobal.com {
 	encode gzip zstd
 
 	log {
@@ -101,6 +101,14 @@ attendix.talenciaglobal.com {
 	# Admin panel (React app with client-side routing)
 	handle_path /owner-of-attendix-xyz* {
 		reverse_proxy admin-frontend:8080
+	}
+
+	# Mentor attendance-marking app. Deliberately a plain, discoverable path
+	# (not obscured like the super-admin panel above) — mentors need an easy
+	# URL to share/bookmark, and access is still gated by the same login +
+	# role check as everything else under /api/admin.
+	handle_path /mark-attendance* {
+		reverse_proxy mentor-frontend:8080
 	}
 
 	# Grafana (logs + metrics dashboards). NOT handle_path: with
