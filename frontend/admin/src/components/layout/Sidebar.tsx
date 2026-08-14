@@ -57,7 +57,14 @@ const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
 
       {/* ── Footer ───────────────────────────────────── */}
       <div className="sidebar-footer">
-        <span className="sidebar-username sidebar-label">{admin?.username}</span>
+        <span className="sidebar-label" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+          <span className="sidebar-username" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{admin?.username}</span>
+          {admin?.role && (
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-primary)' }}>
+              {admin.role === 'super_admin' ? 'Super Admin' : admin.role}
+            </span>
+          )}
+        </span>
         <button
           className="btn btn-secondary btn-small"
           onClick={logout}

@@ -5,7 +5,7 @@ import Modal from '../components/ui/Modal';
 import Button from '../components/ui/Button';
 import {
   ShieldAlert, Satellite, Cpu, Star, Zap, KeyRound, Camera,
-  Info, RotateCcw, Save, CheckCircle2, Settings as SettingsIcon
+  Info, RotateCcw, Save, CheckCircle2, Settings as SettingsIcon, Lock
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -415,6 +415,60 @@ function PhotoSection({ cfg, onChange }: { cfg: PhotoVerificationConfig; onChang
   );
 }
 
+// ─── Account (password change) ─────────────────────────────────────────────────
+
+function AccountSection() {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 6) { toast.error('New password must be at least 6 characters'); return; }
+    if (newPassword !== confirmPassword) { toast.error('New passwords do not match'); return; }
+    setSaving(true);
+    try {
+      await axios.patch('/api/admin/profile/password', { currentPassword, newPassword });
+      toast.success('Password updated successfully');
+      setCurrentPassword(''); setNewPassword(''); setConfirmPassword('');
+    } catch (err: unknown) {
+      toast.error(axios.isAxiosError(err) ? (err.response?.data?.message || 'Failed to update password') : 'Failed to update password');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 24, padding: '1.25rem 1.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(79,70,229,0.12)', color: 'var(--color-primary)' }}>
+          <Lock size={17} />
+        </div>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text)' }}>Change Password</div>
+          <div style={{ fontSize: 12, color: 'var(--color-muted)' }}>Update your own login password</div>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'end' }}>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>Current Password</label>
+          <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+        </div>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>New Password</label>
+          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={6} required />
+        </div>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>Confirm New Password</label>
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} minLength={6} required />
+        </div>
+        <Button type="submit" variant="primary" disabled={saving} style={{ height: 38 }}>{saving ? 'Saving…' : 'Update Password'}</Button>
+      </form>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const Settings = () => {
@@ -506,6 +560,8 @@ const Settings = () => {
           All settings are persisted to the database and applied in real-time — no restart required.
         </p>
       </div>
+
+      <AccountSection />
 
       {/* Two-column layout */}
       <div className="settings-layout">

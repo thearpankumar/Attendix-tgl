@@ -4,17 +4,19 @@ import Sessions from '../../src/pages/Sessions';
 import axios from 'axios';
 import { MemoryRouter } from 'react-router';
 
-// Shared mock factory — always returns correct shape for all three GET endpoints
+// Shared mock factory — always returns correct shape for all GET endpoints
 const makeMockGet = ({
   sessions = [] as object[],
   locations = [] as object[],
   shortLinks = [] as object[],
   batches = [] as object[],
+  mentors = [BATCH_MENTOR] as object[],
 } = {}) =>
   (url: string) => {
     if (url.includes('/sessions')) return Promise.resolve({ data: sessions });
     if (url.includes('/locations')) return Promise.resolve({ data: locations });
     if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortLinks } });
+    if (url.includes('/users')) return Promise.resolve({ data: mentors });
     if (url.includes('/batches')) return Promise.resolve({ data: batches });
     return Promise.resolve({ data: [] });
   };
@@ -26,6 +28,24 @@ const ACTIVE_SESSION = {
 };
 const LOCATION = { _id: 'loc1', name: 'Room 101', radiusMeters: 50 };
 const FREE_LINK = { _id: 'sl1', shortCode: 'cs101', isActive: true, sessionId: null };
+const BATCH = { _id: 'batch1', name: 'CS101', studentCount: 40 };
+const BATCH_MENTOR = { _id: 'mentor1', username: 'mentor.jane', fullName: 'Jane Mentor', role: 'admin', isActive: true };
+
+// Switches the create-session form to "Exam" mode and fills the fields that
+// mode requires (batch, mentor, college name, start date/time) so tests can
+// submit without the client-side exam-session validation short-circuiting
+// them. Location is deliberately NOT filled — exam sessions don't have one.
+// Normal-mode tests don't need this — batch stays optional there.
+const fillRequiredSessionFields = () => {
+  fireEvent.click(screen.getByText(/Exam \(assign a mentor\)/i));
+  fireEvent.change(screen.getByLabelText(/^Batch$/i), { target: { value: 'batch1' } });
+  // Mentor combobox: focus opens the dropdown, then click the option text.
+  fireEvent.focus(screen.getByLabelText(/Assign Mentor/i));
+  fireEvent.click(screen.getByText('Jane Mentor'));
+  fireEvent.change(screen.getByLabelText(/^College Name$/i), { target: { value: 'XYZ College' } });
+  fireEvent.change(screen.getByLabelText(/^Exam Date$/i), { target: { value: '2026-08-14' } });
+  fireEvent.change(screen.getByLabelText(/^Start Time$/i), { target: { value: '09:00' } });
+};
 
 describe('Sessions', () => {
   beforeEach(() => {
@@ -74,10 +94,52 @@ describe('Sessions', () => {
     await waitFor(() => expect(screen.queryByText(/Select a location/i)).not.toBeInTheDocument());
   });
 
-  // ─── Short Link modes ─────────────────────────────────────────────────────
+  // ─── Exam sessions ────────────────────────────────────────────────────────
+
+  it('exam mode: creates session with mentor(s), batch, college and date/time, no location or shortlink', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    (axios.post as any).mockImplementation((url: string) => {
+      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id' } });
+      return Promise.resolve({ data: {} });
+    });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fillRequiredSessionFields();
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        locationId: undefined,
+        batchId: 'batch1',
+        assignedAdminIds: ['mentor1'],
+        collegeName: 'XYZ College',
+        startsAt: new Date('2026-08-14T09:00').toISOString(),
+        shortlinkMode: 'none',
+      }));
+    });
+    // Clipboard copy only happens when the backend returns a shortCode.
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it('the Location field and Short Link section are hidden in exam mode', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText(/Exam \(assign a mentor\)/i));
+
+    expect(screen.queryByLabelText(/^Location$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Short Link$/i)).not.toBeInTheDocument();
+  });
+
+  // ─── Short Link modes (normal sessions only) ─────────────────────────────
 
   it('auto-generate mode: creates session + new shortlink', async () => {
-    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
     (axios.post as any).mockImplementation((url: string) => {
       if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'abc123' } });
       return Promise.resolve({ data: {} });
@@ -94,13 +156,14 @@ describe('Sessions', () => {
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
         locationId: 'loc1',
+        batchId: undefined,
         shortlinkMode: 'auto',
       }));
     });
   });
 
   it('attach existing mode: shows dropdown of unassigned links and calls attach API', async () => {
-    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], shortLinks: [FREE_LINK] }));
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], shortLinks: [FREE_LINK], batches: [BATCH] }));
     (axios.post as any).mockImplementation((url: string) => {
       if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'cs101' } });
       return Promise.resolve({ data: {} });
@@ -110,13 +173,12 @@ describe('Sessions', () => {
     await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
     // Switch to "Attach existing" mode
     fireEvent.click(screen.getByText(/Attach existing/i));
     // Dropdown with link should appear
     await waitFor(() => expect(screen.getByText(/\/s\/cs101/)).toBeInTheDocument());
 
-    // Select location (by label to avoid ambiguity with the links dropdown)
-    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
     // Pick the existing link
     const linkSelect = screen.getByDisplayValue('Pick a short link…');
     fireEvent.change(linkSelect, { target: { value: 'cs101' } });
@@ -153,23 +215,24 @@ describe('Sessions', () => {
     (axios.get as any).mockImplementation(makeMockGet({
       locations: [LOCATION],
       shortLinks: [{ ...FREE_LINK, sessionId: 'some-other-session' }],
+      batches: [BATCH],
     }));
 
     const { container } = renderComponent();
     await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
     fireEvent.click(screen.getByText(/Attach existing/i));
 
     await waitFor(() => expect(screen.getByText(/\/s\/cs101 \(In use\)/)).toBeInTheDocument());
 
-    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
     const linkSelect = screen.getByDisplayValue('Pick a short link…');
     fireEvent.change(linkSelect, { target: { value: 'cs101' } });
-    
+
     // Submit should open the modal, not call the API immediately
     fireEvent.submit(container.querySelector('form')!);
-    
+
     await waitFor(() => expect(screen.getByText(/Short Link In Use/i)).toBeInTheDocument());
   });
 

@@ -389,7 +389,7 @@ const SessionDetail = () => {
               <span className="detail-label">
                 <MapPin size={14} /> Location:
               </span>
-              <span className="detail-value">{session.locationName || (typeof session.locationId === 'object' ? session.locationId?.name : undefined) || 'Unknown'}</span>
+              <span className="detail-value">{session.locationName || (typeof session.locationId === 'object' ? session.locationId?.name : undefined) || (session.locationId ? 'Unknown' : 'N/A (exam session — marked manually)')}</span>
             </div>
             <div className="session-detail-item">
               <span className="detail-label">

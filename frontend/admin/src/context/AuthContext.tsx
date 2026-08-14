@@ -4,6 +4,10 @@ import axios from 'axios';
 interface Admin {
   _id: string;
   username: string;
+  email: string;
+  role: 'admin' | 'super_admin';
+  fullName?: string;
+  collegeName?: string;
 }
 
 interface LoginResult {

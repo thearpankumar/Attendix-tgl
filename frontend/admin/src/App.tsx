@@ -12,14 +12,22 @@ import QRDisplay from './pages/QRDisplay';
 import FlaggedAttendance from './pages/FlaggedAttendance';
 import WebAuthnCredentials from './pages/WebAuthnCredentials';
 import Settings from './pages/Settings';
+import UserManagement from './pages/UserManagement';
+import Forbidden from './pages/Forbidden';
 import NotFound from './pages/NotFound';
 import AppShell from './components/layout/AppShell';
 import type { ReactNode } from 'react';
 
+// This panel is super-admin-only from here on — mentors use the separate
+// /mark-attendance app. The backend already enforces this on every request
+// (require_role(ROLE_SUPER_ADMIN) / assigned_admin_id-scoped queries); this
+// is defense-in-depth so a mentor with a valid cookie sees a clear
+// explanation instead of broken/empty admin-only views.
 const PrivateRoute = ({ children }: { children: ReactNode }) => {
   const { admin, loading } = useAuth();
   if (loading) return <div className="loading">Loading...</div>;
   if (!admin) return <Navigate to="/login" />;
+  if (admin.role !== 'super_admin') return <AppShell><Forbidden /></AppShell>;
   return <AppShell>{children}</AppShell>;
 };
 
@@ -39,6 +47,7 @@ function App() {
         <Route path="/batches" element={<PrivateRoute><Batches /></PrivateRoute>} />
         <Route path="/flagged" element={<PrivateRoute><FlaggedAttendance /></PrivateRoute>} />
         <Route path="/webauthn" element={<PrivateRoute><WebAuthnCredentials /></PrivateRoute>} />
+        <Route path="/users" element={<PrivateRoute><UserManagement /></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute><Settings /></PrivateRoute>} />
         <Route path="*" element={<NotFound />} />
       </Routes>

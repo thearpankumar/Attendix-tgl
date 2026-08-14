@@ -1,4 +1,4 @@
-import { LayoutDashboard, MapPin, ClipboardList, Link2, Fingerprint, Flag, Settings as SettingsIcon, Users } from 'lucide-react';
+import { LayoutDashboard, MapPin, ClipboardList, Link2, Fingerprint, Flag, Settings as SettingsIcon, Users, UserCog } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface NavLink {
@@ -17,5 +17,6 @@ export const navLinks: NavLink[] = [
   { to: '/shortlinks', label: 'Short Links',         icon: Link2 },
   { to: '/webauthn',   label: 'WebAuthn Credentials',icon: Fingerprint },
   { to: '/flagged',    label: 'Flagged Records',      icon: Flag, danger: true },
+  { to: '/users',      label: 'User Management',     icon: UserCog },
   { to: '/settings',   label: 'Settings',            icon: SettingsIcon },
 ];

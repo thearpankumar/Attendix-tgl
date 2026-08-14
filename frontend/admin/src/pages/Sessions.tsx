@@ -15,11 +15,13 @@ import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import SessionFilters from '../components/ui/SessionFilters';
+import MultiSelect from '../components/ui/MultiSelect';
 
 interface Location { _id: string; name: string; radiusMeters: number; }
 interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; }
 interface Batch { _id: string; name: string; studentCount: number; }
-type ShortlinkMode = 'auto' | 'custom' | 'existing';
+interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; }
+type ShortlinkMode = 'auto' | 'custom' | 'existing' | 'none';
 interface Session {
   _id: string;
   locationId?: Location | string;
@@ -29,6 +31,9 @@ interface Session {
   createdAt: string;
   attendanceCount: number;
   description?: string;
+  assignedAdminNames?: string[];
+  collegeName?: string;
+  startsAt?: string;
 }
 
 const getLocationName = (s: Session) => {
@@ -51,9 +56,11 @@ const Sessions = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
+  const [mentors, setMentors] = useState<Mentor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [formData, setFormData] = useState({
+  const emptyFormData = {
+    sessionType: 'normal' as 'normal' | 'exam',
     locationId: '',
     durationMinutes: 30,
     description: '',
@@ -61,7 +68,12 @@ const Sessions = () => {
     customShortCode: '',
     existingShortCode: '',
     batchId: '',
-  });
+    assignedAdminIds: [] as string[],
+    collegeName: '',
+    startsDate: '',
+    startsTime: '',
+  };
+  const [formData, setFormData] = useState(emptyFormData);
   const [activeShortLinks, setActiveShortLinks] = useState<ShortLink[]>([]);
   const [reassignConfirm, setReassignConfirm] = useState({ open: false, shortCode: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
@@ -80,16 +92,18 @@ const Sessions = () => {
       if (filters.locationId) params.locationId = filters.locationId;
       if (filters.date) params.date = filters.date;
 
-      const [sessionsRes, locationsRes, shortLinksRes, batchesRes] = await Promise.all([
+      const [sessionsRes, locationsRes, shortLinksRes, batchesRes, mentorsRes] = await Promise.all([
         axios.get<Session[]>('/api/admin/sessions', { params, signal: abortRef.current.signal }),
         axios.get<Location[]>('/api/admin/locations', { signal: abortRef.current.signal }),
         axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { signal: abortRef.current.signal }),
         axios.get<Batch[]>('/api/admin/batches', { signal: abortRef.current.signal }),
+        axios.get<Mentor[]>('/api/admin/users', { signal: abortRef.current.signal }),
       ]);
       setSessions(sessionsRes.data);
       setLocations(locationsRes.data);
       setActiveShortLinks((shortLinksRes.data.shortLinks ?? []).filter((l) => l.isActive || !l.sessionId));
       setBatches(batchesRes.data);
+      setMentors(mentorsRes.data.filter((m) => m.role === 'admin' && m.isActive));
     } catch (error) {
       if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch data');
     } finally { setLoading(false); }
@@ -119,6 +133,16 @@ const Sessions = () => {
     try {
       const duration = parseInt(String(formData.durationMinutes));
       if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
+      const isExam = formData.sessionType === 'exam';
+      if (isExam) {
+        if (!formData.batchId) { toast.error('A batch is required for an exam session'); return; }
+        if (formData.assignedAdminIds.length === 0) { toast.error('Assign at least one mentor to this exam session'); return; }
+        if (!formData.collegeName.trim()) { toast.error('College name is required for an exam session'); return; }
+        if (!formData.startsDate || !formData.startsTime) { toast.error('Start date and time are required for an exam session'); return; }
+      } else if (!formData.locationId) {
+        toast.error('A location is required for a self check-in session');
+        return;
+      }
       if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
         toast.error('Please select an existing short link, or switch to a different mode.');
         return;
@@ -134,13 +158,22 @@ const Sessions = () => {
       }
 
       const res = await axios.post<{ _id: string; shortCode?: string }>('/api/admin/sessions', {
-        locationId: formData.locationId,
+        // Exam sessions have no location — manual attendance, not geofenced.
+        locationId: isExam ? undefined : formData.locationId,
         durationMinutes: duration,
         description: formData.description,
-        batchId: formData.batchId || null,
-        shortlinkMode: formData.shortlinkMode,
-        customShortCode: formData.customShortCode.trim() || undefined,
-        existingShortCode: formData.existingShortCode || undefined,
+        // Normal sessions omit these entirely — an empty mentor list is
+        // exactly what tells the backend "this is a normal session, batch
+        // stays optional" (see SessionCreateRequest::is_exam_session).
+        batchId: isExam ? formData.batchId : (formData.batchId || undefined),
+        assignedAdminIds: isExam ? formData.assignedAdminIds : undefined,
+        collegeName: isExam ? formData.collegeName.trim() : undefined,
+        startsAt: isExam ? new Date(`${formData.startsDate}T${formData.startsTime}`).toISOString() : undefined,
+        // Exam sessions have no self-service check-in flow, so there's
+        // nothing for a short link to point to.
+        shortlinkMode: isExam ? 'none' : formData.shortlinkMode,
+        customShortCode: isExam ? undefined : (formData.customShortCode.trim() || undefined),
+        existingShortCode: isExam ? undefined : (formData.existingShortCode || undefined),
       });
 
       const { protocol, hostname } = window.location;
@@ -154,7 +187,7 @@ const Sessions = () => {
 
       toast.success(successMessage);
       setShowModal(false);
-      setFormData({ locationId: '', durationMinutes: 30, description: '', shortlinkMode: 'auto', customShortCode: '', existingShortCode: '', batchId: '' });
+      setFormData(emptyFormData);
       fetchData();
     } catch (error) {
       const err = error as { response?: { data?: { message?: string; error?: string } } };
@@ -187,11 +220,13 @@ const Sessions = () => {
   const sortedSessions = useMemo(() => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [sessions]);
 
   const columns: Column<Session>[] = [
-    { key: 'location', label: 'Location',   width: '22%', render: (s) => getLocationName(s) },
-    { key: 'status',   label: 'Status',     width: '14%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
-    { key: 'expires',  label: 'Expires At', width: '20%', render: (s) => new Date(s.expiresAt).toLocaleString() },
-    { key: 'students', label: 'Students',   width: '12%', align: 'center', render: (s) => s.attendanceCount },
-    { key: 'actions',  label: 'Actions',    width: '32%', render: (s) => (
+    { key: 'location', label: 'Location',   width: '15%', render: (s) => getLocationName(s) },
+    { key: 'college',  label: 'College',    width: '14%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
+    { key: 'mentor',   label: 'Mentor',     width: '13%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
+    { key: 'status',   label: 'Status',     width: '10%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
+    { key: 'starts',   label: 'Starts At',  width: '14%', render: (s) => s.startsAt ? new Date(s.startsAt).toLocaleString() : '—' },
+    { key: 'students', label: 'Students',   width: '9%', align: 'center', render: (s) => s.attendanceCount },
+    { key: 'actions',  label: 'Actions',    width: '25%', render: (s) => (
       <div className="actions-cell">
         <Link to={`/sessions/${s._id}`} className="btn btn-secondary btn-small">View</Link>
         {s.isActive && !isExpired(s) && <Button variant="danger" size="sm" onClick={() => setDeactivateId(s._id)}>Deactivate</Button>}
@@ -204,16 +239,17 @@ const Sessions = () => {
     <div className="container">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <PageHeader title="Attendance Sessions">
-          <button className="btn btn-primary" onClick={() => setShowModal(true)} disabled={locations.length === 0}>Create Session</button>
+          {/* Not gated on locations existing — exam sessions don't need one. */}
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>Create Session</button>
         </PageHeader>
         <SessionFilters locations={locations} onFilterChange={handleFilterChange} />
       </div>
 
       {locations.length === 0 && (
-        <div className="card"><p>No locations found. <Link to="/locations">Create a location first</Link></p></div>
+        <div className="card"><p>No locations found. <Link to="/locations">Create one</Link> if you need a self check-in (normal) session — exam sessions don't require a location.</p></div>
       )}
 
-      {loading ? <SkeletonRows /> : sessions.length === 0 && locations.length > 0 ? (
+      {loading ? <SkeletonRows /> : sessions.length === 0 ? (
         <EmptyState icon={ClipboardList} title="No sessions yet" message="Create your first attendance session!" />
       ) : sessions.length > 0 ? (
         <div className="card card-table">
@@ -224,12 +260,42 @@ const Sessions = () => {
       <Modal open={showModal} onClose={() => setShowModal(false)} title="Create Attendance Session">
         <form onSubmit={handleCreateSubmit}>
           <div className="form-group">
-            <label htmlFor="session-location">Location</label>
-            <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
-              <option value="">Select a location</option>
-              {locations.map((loc) => <option key={loc._id} value={loc._id}>{loc.name} (Radius: {loc.radiusMeters}m)</option>)}
-            </select>
+            <label>Session Type</label>
+            <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
+              {(['normal', 'exam'] as const).map((type) => (
+                <label key={type} style={{
+                  flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
+                  borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                  border: `1.5px solid ${
+                    formData.sessionType === type ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'
+                  }`,
+                  background: formData.sessionType === type ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                  color: formData.sessionType === type ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                  transition: 'all 0.15s',
+                  userSelect: 'none',
+                }}>
+                  <input type="radio" name="sessionType" value={type}
+                    checked={formData.sessionType === type}
+                    onChange={() => setFormData({ ...formData, sessionType: type })}
+                    style={{ display: 'none' }} />
+                  {type === 'normal' ? 'Normal (self check-in)' : 'Exam (assign a mentor)'}
+                </label>
+              ))}
+            </div>
+            {formData.sessionType === 'exam' && (
+              <small style={{ color: 'var(--color-muted)' }}>Exam sessions require a batch, one or more mentors, a college name, and a start date/time. Attendance is marked manually, so no location is needed.</small>
+            )}
           </div>
+
+          {formData.sessionType === 'normal' && (
+            <div className="form-group">
+              <label htmlFor="session-location">Location</label>
+              <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
+                <option value="">Select a location</option>
+                {locations.map((loc) => <option key={loc._id} value={loc._id}>{loc.name} (Radius: {loc.radiusMeters}m)</option>)}
+              </select>
+            </div>
+          )}
           <div className="form-group">
             <label>Duration (minutes)</label>
             <input type="number" value={formData.durationMinutes} onChange={(e) => setFormData({ ...formData, durationMinutes: parseInt(e.target.value) })} min="5" max="480" required />
@@ -238,18 +304,58 @@ const Sessions = () => {
             <label>Description (optional)</label>
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} placeholder="e.g., Morning attendance for CS101" />
           </div>
-          
+
           <div className="form-group">
-            <label htmlFor="session-batch">Attach Batch (Optional)</label>
-            <select id="session-batch" value={formData.batchId} onChange={(e) => setFormData({ ...formData, batchId: e.target.value })}>
-              <option value="">No Batch</option>
+            <label htmlFor="session-batch">Batch{formData.sessionType === 'normal' ? ' (Optional)' : ''}</label>
+            <select id="session-batch" value={formData.batchId} onChange={(e) => setFormData({ ...formData, batchId: e.target.value })} required={formData.sessionType === 'exam'}>
+              <option value="">{formData.sessionType === 'exam' ? 'Select a batch' : 'No Batch'}</option>
               {(batches || []).map((batch) => (
                 <option key={batch._id} value={batch._id}>{batch.name} ({batch.studentCount} students)</option>
               ))}
             </select>
+            {formData.sessionType === 'exam' && batches.length === 0 && (
+              <small style={{ color: 'var(--color-danger)' }}>No batches found. <Link to="/batches">Create one first</Link>.</small>
+            )}
           </div>
-          
-          {/* ── Short Link mode selector ── */}
+
+          {formData.sessionType === 'exam' && (
+            <>
+              <div className="form-group">
+                <label htmlFor="session-mentor-list">Assign Mentor(s)</label>
+                <MultiSelect
+                  id="session-mentor-list"
+                  options={mentors.map((m) => ({ value: m._id, label: m.fullName || m.username }))}
+                  selected={formData.assignedAdminIds}
+                  onChange={(next) => setFormData({ ...formData, assignedAdminIds: next })}
+                  placeholder={mentors.length === 0 ? 'No active mentor accounts' : 'Search mentors…'}
+                  emptyMessage="No mentors match your search"
+                />
+                {mentors.length === 0 && (
+                  <small style={{ color: 'var(--color-danger)' }}>No active mentor accounts. <Link to="/users">Create one first</Link>.</small>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="session-college">College Name</label>
+                <input id="session-college" type="text" value={formData.collegeName} onChange={(e) => setFormData({ ...formData, collegeName: e.target.value })} placeholder="e.g., XYZ Engineering College" required />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="session-starts-date">Exam Date</label>
+                  <input id="session-starts-date" type="date" value={formData.startsDate} onChange={(e) => setFormData({ ...formData, startsDate: e.target.value })} required />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="session-starts-time">Start Time</label>
+                  <input id="session-starts-time" type="time" value={formData.startsTime} onChange={(e) => setFormData({ ...formData, startsTime: e.target.value })} required />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── Short Link mode selector — exam sessions have no self-service
+               check-in flow to link to, so this is normal-session only ── */}
+          {formData.sessionType === 'normal' && (
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <label>Short Link</label>
             <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
@@ -279,14 +385,15 @@ const Sessions = () => {
               ))}
             </div>
           </div>
+          )}
 
-          {formData.shortlinkMode === 'auto' && (
+          {formData.sessionType === 'normal' && formData.shortlinkMode === 'auto' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               A random 6-character link will be created and copied to your clipboard.
             </p>
           )}
 
-          {formData.shortlinkMode === 'existing' && (
+          {formData.sessionType === 'normal' && formData.shortlinkMode === 'existing' && (
             <div className="form-group">
               {activeShortLinks.length === 0 ? (
                 <div style={{
@@ -315,7 +422,7 @@ const Sessions = () => {
             </div>
           )}
 
-          {formData.shortlinkMode === 'custom' && (
+          {formData.sessionType === 'normal' && formData.shortlinkMode === 'custom' && (
             <div className="form-group">
               <label>Custom Short Code</label>
               <input type="text" value={formData.customShortCode}

@@ -36,7 +36,7 @@ function DataTable<T>({ columns, rows, rowKey }: DataTableProps<T>) {
           {rows.map((row) => (
             <tr key={rowKey(row)}>
               {columns.map((col) => (
-                <td key={col.key} style={{ textAlign: col.align ?? 'center' }}>
+                <td key={col.key} data-label={col.label} style={{ textAlign: col.align ?? 'center' }}>
                   {col.render ? col.render(row) : String((row as Record<string, unknown>)[col.key] ?? '')}
                 </td>
               ))}
