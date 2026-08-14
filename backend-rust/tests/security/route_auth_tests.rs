@@ -36,7 +36,13 @@ async fn create_test_app() -> axum::Router {
     let deny_list = Arc::new(DenyList::new(redis_client.clone()));
     let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
     let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
-    let system_config = Arc::new(RwLock::new(SystemConfig::default()));
+    // See the identical comment in exam_session_flow_tests.rs::create_test_app:
+    // every test binary's oneshot() requests share one "unknown-peer" rate
+    // limit bucket in the now-shared testcontainers Redis instance.
+    let mut default_config = SystemConfig::default();
+    default_config.rate_limits.registration_max_requests = 100_000;
+    default_config.rate_limits.login_max_requests = 100_000;
+    let system_config = Arc::new(RwLock::new(default_config));
 
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2026_01_12())
         .load()

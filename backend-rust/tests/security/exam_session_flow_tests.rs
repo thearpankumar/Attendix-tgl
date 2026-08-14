@@ -40,7 +40,18 @@ async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let deny_list = Arc::new(DenyList::new(redis_client.clone()));
     let session_cache = Arc::new(SessionCache::new(redis_client.clone(), 300));
     let gps_history = Arc::new(GpsHistoryService::new(redis_client.clone()));
-    let system_config = Arc::new(RwLock::new(SystemConfig::default()));
+    // Every oneshot()-driven request in every test binary has no real
+    // ConnectInfo, so the rate limiter's client-IP fallback ("unknown-peer")
+    // is the SAME key across all of them — and since the shared testcontainers
+    // Redis instance is now one instance reused by every test binary (not a
+    // fresh one per binary), that one bucket is contended by the whole suite
+    // running concurrently. The production default (3 registrations/window)
+    // would trip spuriously under that load; raise it here, in this test-only
+    // config, not in SystemConfig::default() itself.
+    let mut default_config = SystemConfig::default();
+    default_config.rate_limits.registration_max_requests = 100_000;
+    default_config.rate_limits.login_max_requests = 100_000;
+    let system_config = Arc::new(RwLock::new(default_config));
 
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2026_01_12())
         .load()

@@ -36,6 +36,19 @@ pub struct TestEnvironment {
     pub redis_uri: String,
 }
 
+// `with_reuse(Always)` races across the ~7 separate test-binary processes
+// nextest spawns concurrently: if two processes both see "no container named
+// backend-rust-test-postgres yet" at the same moment, both call `docker
+// create --name backend-rust-test-postgres`, and only one wins — the loser
+// gets a hard 409 Conflict from the Docker daemon instead of the library
+// falling back to reuse. Retrying the whole `start()` call is the fix: by
+// the next attempt the winner's container already exists (even if still
+// starting up — the reuse path waits on the same readiness strategy), so
+// the reuse lookup finds and attaches to it instead of trying to create it
+// again.
+const CONTAINER_START_RETRIES: u32 = 15;
+const CONTAINER_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
 impl TestEnvironment {
     pub async fn new() -> Self {
         use testcontainers::{runners::AsyncRunner, ImageExt, ReuseDirective};
@@ -47,24 +60,62 @@ impl TestEnvironment {
         // gen_random_uuid() does not exist" until pgcrypto (which backports
         // it) is installed. The prod/dev image (postgres:18-alpine, see
         // docker-compose.yml) doesn't need this — it's new enough already.
-        let postgres_container = Postgres::default()
-            .with_init_sql(
-                "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
-                    .to_string()
-                    .into_bytes(),
+        let mut last_err = None;
+        let mut postgres_container = None;
+        for attempt in 0..CONTAINER_START_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(CONTAINER_START_RETRY_DELAY).await;
+            }
+            match Postgres::default()
+                .with_init_sql(
+                    "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+                        .to_string()
+                        .into_bytes(),
+                )
+                .with_container_name("backend-rust-test-postgres")
+                .with_reuse(ReuseDirective::Always)
+                .start()
+                .await
+            {
+                Ok(c) => {
+                    postgres_container = Some(c);
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let postgres_container = postgres_container.unwrap_or_else(|| {
+            panic!(
+                "Failed to start Postgres container after {CONTAINER_START_RETRIES} attempts: {:?}",
+                last_err
             )
-            .with_container_name("backend-rust-test-postgres")
-            .with_reuse(ReuseDirective::Always)
-            .start()
-            .await
-            .expect("Failed to start Postgres container");
+        });
 
-        let redis_container = Redis::default()
-            .with_container_name("backend-rust-test-redis")
-            .with_reuse(ReuseDirective::Always)
-            .start()
-            .await
-            .expect("Failed to start Redis container");
+        let mut last_err = None;
+        let mut redis_container = None;
+        for attempt in 0..CONTAINER_START_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(CONTAINER_START_RETRY_DELAY).await;
+            }
+            match Redis::default()
+                .with_container_name("backend-rust-test-redis")
+                .with_reuse(ReuseDirective::Always)
+                .start()
+                .await
+            {
+                Ok(c) => {
+                    redis_container = Some(c);
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let redis_container = redis_container.unwrap_or_else(|| {
+            panic!(
+                "Failed to start Redis container after {CONTAINER_START_RETRIES} attempts: {:?}",
+                last_err
+            )
+        });
 
         let postgres_port = postgres_container
             .get_host_port_ipv4(5432)
