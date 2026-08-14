@@ -86,7 +86,13 @@ wiremock = "0.6"
 pretty_assertions = "1.4"
 
 rstest = "0.26"
-serial_test = "3.5"
+# file_locks: cargo-nextest runs every test in its own fresh OS process, so
+# serial_test's default in-process Mutex never sees real contention between
+# #[serial(...)]-tagged tests — it silently provided zero cross-test
+# protection under nextest specifically (plain `cargo test` runs tests as
+# threads in one process, where the default mode does work). file_locks
+# switches to an OS-level file lock, which is cross-process safe.
+serial_test = { version = "3.5", features = ["file_locks"] }
 tempfile = "3"
 axum-test = "21"
 tower-test = "0.4"
