@@ -261,8 +261,8 @@ function Hero() {
           transition={{ duration: 0.8, delay: 0.45 }}
           className="mt-10 flex flex-wrap items-center justify-center gap-3"
         >
-          <MagneticButton href="#demo" primary>
-            Book a demo <ArrowRight className="h-4 w-4" />
+          <MagneticButton href="/mark-attendance" primary>
+            Mentor login <ArrowRight className="h-4 w-4" />
           </MagneticButton>
           <MagneticButton href="#platform">
             <Play className="h-3.5 w-3.5" /> Watch platform
