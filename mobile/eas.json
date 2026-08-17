@@ -5,6 +5,7 @@
   },
   "build": {
     "development": {
+      "node": "24.18.0",
       "developmentClient": true,
       "distribution": "internal",
       "env": {
@@ -12,12 +13,14 @@
       }
     },
     "preview": {
+      "node": "24.18.0",
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://attendixv2.talenciaglobal.com/api"
       }
     },
     "production": {
+      "node": "24.18.0",
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://attendixv2.talenciaglobal.com/api"
