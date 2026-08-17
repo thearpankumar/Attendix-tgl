@@ -108,6 +108,10 @@ mobile-android:
 	@echo "Setting up adb reverse tcp:8080 tcp:80 (phone's localhost:8080 -> this"
 	@echo "PC's localhost:80, matching mobile/.env) — harmless no-op if no device"
 	@echo "is connected yet; re-run 'make mobile-android' after connecting one."
+	@echo "NOTE: mobile/android/ is only generated ONCE and then reused on every"
+	@echo "run (Continuous Native Generation) — if you changed app.json (icon,"
+	@echo "splash, plugins, package name), that stale folder will NOT pick it up."
+	@echo "Run 'rm -rf mobile/android' first to force a fresh regeneration."
 	-adb reverse tcp:8080 tcp:80
 	cd mobile && REACT_NATIVE_PACKAGER_HOSTNAME=localhost npx expo run:android
 

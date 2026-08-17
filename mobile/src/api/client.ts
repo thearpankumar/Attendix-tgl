@@ -42,11 +42,20 @@ export const api = axios.create({
 // platform other than ios/android — which crashes `expo export --platform
 // web` (used by web preview and the CI build check) if this were a static
 // top-level import.
+//
+// The `CookieManager?.clearAll` guard below is load-bearing, not defensive
+// filler: this native module isn't bundled in plain Expo Go (only in this
+// app's own custom dev-client/production builds), so `require(...).default`
+// resolves to `undefined` there. Without the guard, calling `.clearAll()`
+// throws synchronously at module-eval time, which crashes evaluation of
+// every route module that (transitively) imports this file — the actual
+// cause behind expo-router's unrelated-looking "missing default export"
+// warnings for every single route.
 function clearStrayCookies() {
   if (Platform.OS === 'ios' || Platform.OS === 'android') {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- must stay a runtime require, see comment above.
     const CookieManager = require('@react-native-cookies/cookies').default;
-    CookieManager.clearAll().catch(() => {});
+    CookieManager?.clearAll().catch(() => {});
   }
 }
 clearStrayCookies();
