@@ -236,6 +236,60 @@ describe('Sessions', () => {
     await waitFor(() => expect(screen.getByText(/Short Link In Use/i)).toBeInTheDocument());
   });
 
+  // ─── Excel-upload bulk session creation ────────────────────────────────────
+
+  it('opens the Excel upload modal', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('Upload Excel')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Upload Excel'));
+    expect(screen.getByText(/Upload Roster — Create Multiple Sessions/i)).toBeInTheDocument();
+  });
+
+  it('excludes Excel-generated session-batches from the manual batch dropdown', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({
+      locations: [LOCATION],
+      batches: [BATCH, { _id: 'sbatch1', name: 'CLS 1 — 2-4PM', studentCount: 12, type: 'session' }],
+    }));
+    renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText(/Exam \(assign a mentor\)/i));
+
+    const batchSelect = screen.getByLabelText(/^Batch$/i);
+    expect(screen.getByText('CS101 (40 students)')).toBeInTheDocument();
+    expect(batchSelect.querySelector('option[value="sbatch1"]')).not.toBeInTheDocument();
+  });
+
+  // ─── Bulk export ────────────────────────────────────────────────────────────
+
+  it('selects sessions via checkbox and exports them together', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ sessions: [ACTIVE_SESSION] }));
+    (axios.post as any).mockResolvedValue({
+      data: new Blob(['fake-xlsx']),
+      headers: { 'content-disposition': 'attachment; filename="Attendance_Export_1sessions_17-Aug-2026_1200.xlsx"' },
+    });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('Room 101')).toBeInTheDocument());
+
+    const rowCheckbox = screen.getByLabelText(/Select session 1/i);
+    fireEvent.click(rowCheckbox);
+
+    await waitFor(() => expect(screen.getByText(/Export Selected \(1\)/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/Export Selected \(1\)/i));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/admin/sessions/export-bulk',
+        { sessionIds: ['1'] },
+        expect.objectContaining({ responseType: 'blob' })
+      );
+    });
+  });
+
   // ─── Delete ───────────────────────────────────────────────────────────────
 
   it('handles delete with password confirmation', async () => {
@@ -253,6 +307,28 @@ describe('Sessions', () => {
 
     await waitFor(() => {
       expect(axios.delete).toHaveBeenCalledWith('/api/admin/sessions/1', { data: { password: 'password123' } });
+    });
+  });
+
+  it('deletes multiple selected sessions via the bulk-delete confirmation', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ sessions: [ACTIVE_SESSION] }));
+    (axios.post as any).mockResolvedValue({ data: { success: true, deletedCount: 1, failedIds: [] } });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('Room 101')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText(/Select session 1/i));
+    await waitFor(() => expect(screen.getByText(/Delete Selected \(1\)/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/Delete Selected \(1\)/i));
+
+    fireEvent.change(screen.getByPlaceholderText(/admin password/i), { target: { value: 'password123' } });
+    fireEvent.click(screen.getByText('Confirm Delete'));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions/delete-bulk', {
+        sessionIds: ['1'],
+        password: 'password123',
+      });
     });
   });
 });

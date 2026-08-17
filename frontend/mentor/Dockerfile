@@ -25,6 +25,11 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 8080
+# 127.0.0.1, not localhost: the container is read_only, so nginx's
+# ipv6-enable entrypoint script can't patch the config (fails silently on
+# the read-only fs) and nginx ends up IPv4-only. /etc/hosts resolves
+# localhost to ::1 first, so wget hit "connection refused" every time
+# despite nginx serving fine on IPv4 — a permanently-false "unhealthy".
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
 CMD ["nginx", "-g", "daemon off;"]

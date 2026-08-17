@@ -2,12 +2,14 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { AlertCircle, Calendar, CheckCircle, Clock, MapPin, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle, Clock, MapPin, Pencil, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import Badge from '../components/ui/Badge';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import MultiSelect from '../components/ui/MultiSelect';
 import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
 import AdminSecurityReview from '../components/SecurityReview';
+import { downloadBlob } from '../utils/downloadBlob';
 
 interface Session {
   _id: string;
@@ -20,7 +22,11 @@ interface Session {
   description?: string;
   batchId?: { _id: string; name: string };
   createdAt?: string;
+  assignedAdminIds?: string[];
+  assignedAdminNames?: string[];
 }
+
+interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; }
 
 interface AbsentStudent {
   name: string;
@@ -87,6 +93,13 @@ const SessionDetail = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'rotate' | 'deactivate' | null>(null);
 
+  // ── Mentor assignment (add/remove) ──────────────────────
+  const [mentors, setMentors] = useState<Mentor[]>([]);
+  const [editingMentors, setEditingMentors] = useState(false);
+  const editingMentorsRef = useRef(false);
+  const [mentorSelection, setMentorSelection] = useState<string[]>([]);
+  const [savingMentors, setSavingMentors] = useState(false);
+
   // ── Verification state ──────────────────────────────────
   // Tab filter
   const [activeTab, setActiveTab] = useState<ActiveTab>('all');
@@ -114,16 +127,19 @@ const SessionDetail = () => {
   // ── Fetch ───────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {
-      const [sessionRes, attendanceRes, statsRes, absentRes] = await Promise.all([
+      const [sessionRes, attendanceRes, statsRes, absentRes, mentorsRes] = await Promise.all([
         axios.get<Session>(`/api/admin/sessions/${id}`),
         axios.get<AttendanceRecord[]>(`/api/admin/sessions/${id}/attendance`),
         axios.get<Stats>(`/api/admin/sessions/${id}/stats`),
         axios.get<AbsentStudent[]>(`/api/admin/sessions/${id}/absent`).catch(() => ({ data: [] })),
+        axios.get<Mentor[]>('/api/admin/users').catch(() => ({ data: [] as Mentor[] })),
       ]);
       setSession(sessionRes.data);
       setAttendance(attendanceRes.data);
       setStats(statsRes.data);
       setAbsentStudents(absentRes.data);
+      setMentors(mentorsRes.data.filter((m) => m.role === 'admin' && m.isActive));
+      if (!editingMentorsRef.current) setMentorSelection(sessionRes.data.assignedAdminIds || []);
     } catch { toast.error('Failed to fetch session data'); }
     finally { setLoading(false); }
   }, [id]);
@@ -168,25 +184,64 @@ const SessionDetail = () => {
     setIsExporting(true);
     try {
       const res = await axios.get(`/api/admin/sessions/${id}/export`, { responseType: 'blob' });
-      const url = URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a');
-      
+
       const sessionDate = session?.createdAt ? new Date(session.createdAt) : new Date();
       const dateOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
       const dateStr = sessionDate.toLocaleDateString('en-GB', dateOpts).replace(/ /g, '_');
-      
+
       const locName = session?.locationId?.name || 'Location';
       const batchPart = session?.batchId?.name ? `_${session.batchId.name}` : '';
       const rawName = `${locName}${batchPart}_${dateStr}`;
       const safeName = rawName.replace(/[^a-zA-Z0-9_-]/g, '_');
-      
-      a.href = url;
-      a.download = `${safeName}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success('Verified attendance exported!');
+
+      downloadBlob(new Blob([res.data]), `${safeName}.xlsx`);
+      toast.success('Attendance exported!');
     } catch { toast.error('Failed to export attendance'); }
     finally { setIsExporting(false); }
+  };
+
+  // ── Mentor add/remove ────────────────────────────────────
+  const startEditingMentors = () => {
+    setMentorSelection(session?.assignedAdminIds || []);
+    editingMentorsRef.current = true;
+    setEditingMentors(true);
+  };
+
+  const cancelEditingMentors = () => {
+    editingMentorsRef.current = false;
+    setEditingMentors(false);
+  };
+
+  const saveMentors = async () => {
+    const current = new Set(session?.assignedAdminIds || []);
+    const next = new Set(mentorSelection);
+    const add = mentorSelection.filter((id) => !current.has(id));
+    const remove = [...current].filter((id) => !next.has(id));
+    if (add.length === 0 && remove.length === 0) {
+      editingMentorsRef.current = false;
+      setEditingMentors(false);
+      return;
+    }
+    setSavingMentors(true);
+    try {
+      const res = await axios.patch<{ assignedAdminIds: string[]; assignedAdminNames: string[] }>(
+        `/api/admin/sessions/${id}/mentors`,
+        { add, remove }
+      );
+      setSession((prev) => prev && {
+        ...prev,
+        assignedAdminIds: res.data.assignedAdminIds,
+        assignedAdminNames: res.data.assignedAdminNames,
+      });
+      toast.success('Mentors updated');
+      editingMentorsRef.current = false;
+      setEditingMentors(false);
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to update mentors');
+    } finally {
+      setSavingMentors(false);
+    }
   };
 
   // ── Tab change ──────────────────────────────────────────
@@ -423,6 +478,54 @@ const SessionDetail = () => {
                   <span className="status-pill" style={{ background: 'var(--color-primary-subtle)', color: 'var(--color-primary)', border: '1px solid var(--color-primary)' }}>
                     {session.batchId.name}
                   </span>
+                </span>
+              </div>
+            )}
+            {(!session.locationId || session.assignedAdminNames?.length || editingMentors) && (
+              <div className="session-detail-item" style={{ alignItems: 'flex-start' }}>
+                <span className="detail-label">
+                  <User size={14} /> Mentor(s):
+                </span>
+                <span className="detail-value" style={{ flex: 1 }}>
+                  {editingMentors ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <MultiSelect
+                        options={mentors.map((m) => ({ value: m._id, label: m.fullName || m.username }))}
+                        selected={mentorSelection}
+                        onChange={setMentorSelection}
+                        placeholder="Search mentors…"
+                        emptyMessage="No mentors match your search"
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button type="button" className="btn btn-success btn-small" onClick={saveMentors} disabled={savingMentors}>
+                          {savingMentors ? 'Saving…' : 'Save'}
+                        </button>
+                        <button type="button" className="btn btn-secondary btn-small" onClick={cancelEditingMentors} disabled={savingMentors}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      {(session.assignedAdminNames || []).map((name) => (
+                        <span key={name} className="status-pill" style={{ background: 'var(--color-primary-subtle)', color: 'var(--color-primary)', border: '1px solid var(--color-primary)' }}>
+                          {name}
+                        </span>
+                      ))}
+                      {(!session.assignedAdminNames || session.assignedAdminNames.length === 0) && (
+                        <span style={{ color: 'var(--color-muted)' }}>None assigned</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={startEditingMentors}
+                        aria-label="Edit mentors"
+                        title="Add or remove mentors"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-muted)', display: 'flex', padding: 2 }}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    </span>
+                  )}
                 </span>
               </div>
             )}

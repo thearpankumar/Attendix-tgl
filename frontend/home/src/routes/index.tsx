@@ -21,8 +21,20 @@ import {
   Globe,
   Lock,
   Eye,
+  Download,
   type LucideIcon,
 } from "lucide-react";
+
+// GitHub's `/releases/latest/download/<asset>` alias always redirects to the
+// newest release's asset with this exact filename — no API call, no version
+// number to keep in sync. Asset name is fixed by
+// .github/workflows/mobile-release.yml's build step. iOS is deliberately
+// omitted here: the .ipa in that same release is built with EAS's default
+// "store" distribution profile, so it downloads but won't install on a
+// device without an App Store/TestFlight submission or an ad-hoc profile —
+// linking it today would look broken to anyone who tries it.
+const MENTOR_APK_URL =
+  "https://github.com/thearpankumar/Attendix-tgl/releases/latest/download/attendix-mentor-android.apk";
 
 export const Route = createFileRoute("/")({
   component: Landing,
@@ -130,6 +142,14 @@ function Nav() {
             </a>
           ))}
         </nav>
+        <a
+          href={MENTOR_APK_URL}
+          className="flex items-center gap-1.5 rounded-full bg-white/10 hover:bg-white/20 transition-colors px-4 py-1.5 text-xs font-medium text-white"
+        >
+          <Download className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Download Mentor App</span>
+          <span className="sm:hidden">App</span>
+        </a>
       </div>
     </motion.header>
   );
@@ -1073,6 +1093,9 @@ function FinalCTA() {
             </MagneticButton>
             <MagneticButton href="mailto:sales@talenciaglobal.com">
               Request enterprise pricing
+            </MagneticButton>
+            <MagneticButton href={MENTOR_APK_URL}>
+              <Download className="h-4 w-4" /> Download mentor app (Android)
             </MagneticButton>
           </div>
         </motion.div>

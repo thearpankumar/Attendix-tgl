@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar, CalendarClock } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
+import Badge from '../components/ui/Badge';
 
 interface Batch {
   _id: string;
@@ -12,6 +14,9 @@ interface Batch {
   description: string;
   studentCount: number;
   createdAt: string;
+  /** "manual" (typed/uploaded roster) | "session" (Excel-upload bulk session creation) */
+  type: 'manual' | 'session';
+  linkedSessionId?: string;
 }
 
 interface Student {
@@ -26,6 +31,7 @@ interface DetailedBatch extends Batch {
 }
 
 const Batches = () => {
+  const navigate = useNavigate();
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -58,11 +64,19 @@ const Batches = () => {
     }
   };
 
-  const openBatchDetails = async (id: string) => {
+  const openBatchDetails = async (batch: Batch) => {
+    // Session-batches (Excel-upload bulk session creation) aren't
+    // independently browsable rosters — they're always 1:1 with the
+    // session that generated them, so "view" deep-links there instead of
+    // opening the plain student-roster drawer used for manual batches.
+    if (batch.type === 'session') {
+      if (batch.linkedSessionId) navigate(`/sessions/${batch.linkedSessionId}`);
+      return;
+    }
     setIsDrawerOpen(true);
     setDrawerLoading(true);
     try {
-      const { data } = await axios.get(`/api/admin/batches/${id}`);
+      const { data } = await axios.get(`/api/admin/batches/${batch._id}`);
       setSelectedBatch(data);
     } catch (_err) {
       toast.error('Failed to fetch batch details');
@@ -158,17 +172,32 @@ const Batches = () => {
   };
 
   const columns: Column<Batch>[] = [
-    { key: 'name', label: 'Batch Name' },
-    { key: 'description', label: 'Description' },
-    { 
-      key: 'students',
-      label: 'Students', 
+    {
+      key: 'name',
+      label: 'Batch Name',
       render: (b: Batch) => (
-        <div 
-          className="status-badge status-success" 
-          style={{ 
-            display: 'inline-flex', 
-            alignItems: 'center', 
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>{b.name}</span>
+          {b.type === 'session' && (
+            <Badge tone="neutral">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <CalendarClock size={11} /> Session Batch
+              </span>
+            </Badge>
+          )}
+        </div>
+      ),
+    },
+    { key: 'description', label: 'Description' },
+    {
+      key: 'students',
+      label: 'Students',
+      render: (b: Batch) => (
+        <div
+          className="status-badge status-success"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
             justifyContent: 'center',
             gap: '6px',
             padding: '4px 12px'
@@ -179,9 +208,9 @@ const Batches = () => {
         </div>
       )
     },
-    { 
+    {
       key: 'created',
-      label: 'Created', 
+      label: 'Created',
       render: (b: Batch) => new Date(b.createdAt).toLocaleDateString()
     },
     {
@@ -191,19 +220,21 @@ const Batches = () => {
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
           <button
             className="btn btn-secondary btn-small"
-            onClick={() => openBatchDetails(b._id)}
-            title="View Details"
+            onClick={() => openBatchDetails(b)}
+            title={b.type === 'session' ? 'Open session' : 'View Details'}
           >
             <Eye size={14} />
           </button>
-          <button
-            className="btn btn-danger btn-small"
-            onClick={() => handleDelete(b._id)}
-            disabled={deletingId === b._id}
-            title="Delete Batch"
-          >
-            <Trash2 size={14} />
-          </button>
+          {b.type === 'manual' && (
+            <button
+              className="btn btn-danger btn-small"
+              onClick={() => handleDelete(b._id)}
+              disabled={deletingId === b._id}
+              title="Delete Batch"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
         </div>
       )
     }

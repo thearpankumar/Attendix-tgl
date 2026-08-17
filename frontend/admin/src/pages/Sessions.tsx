@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router';
 import { toast } from 'react-toastify';
-import { ClipboardList, Sparkles, Link as LinkIcon, Pencil, AlertTriangle } from 'lucide-react';
+import { ClipboardList, Sparkles, Link as LinkIcon, Pencil, AlertTriangle, FileSpreadsheet, Download } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
@@ -16,11 +16,13 @@ import Button from '../components/ui/Button';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import SessionFilters from '../components/ui/SessionFilters';
 import MultiSelect from '../components/ui/MultiSelect';
+import ExcelSessionUploadModal from '../components/sessions/ExcelSessionUploadModal';
+import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadBlob';
 
 interface Location { _id: string; name: string; radiusMeters: number; }
 interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; }
-interface Batch { _id: string; name: string; studentCount: number; }
-interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; }
+interface Batch { _id: string; name: string; studentCount: number; type?: 'manual' | 'session'; }
+export interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; email?: string; }
 type ShortlinkMode = 'auto' | 'custom' | 'existing' | 'none';
 interface Session {
   _id: string;
@@ -80,6 +82,12 @@ const Sessions = () => {
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deactivateId, setDeactivateId] = useState<string | null>(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkExporting, setBulkExporting] = useState(false);
+  const [bulkDeleteModal, setBulkDeleteModal] = useState(false);
+  const [bulkDeletePassword, setBulkDeletePassword] = useState('');
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const filtersRef = useRef<{ locationId: string; date: string }>(getInitialFilters());
 
@@ -102,7 +110,10 @@ const Sessions = () => {
       setSessions(sessionsRes.data);
       setLocations(locationsRes.data);
       setActiveShortLinks((shortLinksRes.data.shortLinks ?? []).filter((l) => l.isActive || !l.sessionId));
-      setBatches(batchesRes.data);
+      // Session-batches (Excel-upload bulk creation) are 1:1 with the
+      // session that generated them — they don't belong in the manual
+      // "pick a batch" dropdown below.
+      setBatches(batchesRes.data.filter((b) => b.type !== 'session'));
       setMentors(mentorsRes.data.filter((m) => m.role === 'admin' && m.isActive));
     } catch (error) {
       if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch data');
@@ -219,8 +230,83 @@ const Sessions = () => {
 
   const sortedSessions = useMemo(() => [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [sessions]);
 
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const allSelected = sortedSessions.length > 0 && sortedSessions.every((s) => selectedIds.has(s._id));
+  const someSelected = sortedSessions.some((s) => selectedIds.has(s._id)) && !allSelected;
+
+  const toggleSelectAll = () => {
+    if (allSelected) { setSelectedIds(new Set()); return; }
+    setSelectedIds(new Set(sortedSessions.map((s) => s._id)));
+  };
+
+  const handleBulkExport = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkExporting(true);
+    try {
+      const res = await axios.post('/api/admin/sessions/export-bulk', { sessionIds: [...selectedIds] }, { responseType: 'blob' });
+      const filename = filenameFromContentDisposition(res.headers['content-disposition'], `Attendance_Export_${selectedIds.size}sessions.xlsx`);
+      downloadBlob(new Blob([res.data]), filename);
+      toast.success(`Exported ${selectedIds.size} session${selectedIds.size === 1 ? '' : 's'}`);
+      setSelectedIds(new Set());
+    } catch {
+      toast.error('Failed to export selected sessions');
+    } finally {
+      setBulkExporting(false);
+    }
+  };
+
+  const handleBulkDelete = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!bulkDeletePassword) { toast.error('Please enter your admin password'); return; }
+    setBulkDeleting(true);
+    try {
+      const res = await axios.post('/api/admin/sessions/delete-bulk', {
+        sessionIds: [...selectedIds],
+        password: bulkDeletePassword,
+      });
+      const { deletedCount, failedIds } = res.data as { deletedCount: number; failedIds: string[] };
+      if (failedIds && failedIds.length > 0) {
+        toast.error(`Deleted ${deletedCount} session${deletedCount === 1 ? '' : 's'}; ${failedIds.length} could not be deleted`);
+      } else {
+        toast.success(`Deleted ${deletedCount} session${deletedCount === 1 ? '' : 's'}`);
+      }
+      setBulkDeleteModal(false);
+      setBulkDeletePassword('');
+      setSelectedIds(new Set());
+      fetchData();
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to delete selected sessions');
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   const columns: Column<Session>[] = [
-    { key: 'location', label: 'Location',   width: '15%', render: (s) => getLocationName(s) },
+    { key: 'select', width: '4%', label: (
+      <input
+        type="checkbox"
+        checked={allSelected}
+        ref={(el) => { if (el) el.indeterminate = someSelected; }}
+        onChange={toggleSelectAll}
+        aria-label="Select all sessions"
+      />
+    ), render: (s) => (
+      <input
+        type="checkbox"
+        checked={selectedIds.has(s._id)}
+        onChange={(e) => toggleSelect(s._id, e.target.checked)}
+        aria-label={`Select session ${s._id}`}
+      />
+    )},
+    { key: 'location', label: 'Location',   width: '14%', render: (s) => getLocationName(s) },
     { key: 'college',  label: 'College',    width: '14%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'mentor',   label: 'Mentor',     width: '13%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'status',   label: 'Status',     width: '10%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
@@ -241,12 +327,32 @@ const Sessions = () => {
         <PageHeader title="Attendance Sessions">
           {/* Not gated on locations existing — exam sessions don't need one. */}
           <button className="btn btn-primary" onClick={() => setShowModal(true)}>Create Session</button>
+          <button className="btn btn-secondary" onClick={() => setShowUploadModal(true)}>
+            <FileSpreadsheet size={15} style={{ marginRight: 6, verticalAlign: -2 }} />
+            Upload Excel
+          </button>
         </PageHeader>
         <SessionFilters locations={locations} onFilterChange={handleFilterChange} />
       </div>
 
       {locations.length === 0 && (
         <div className="card"><p>No locations found. <Link to="/locations">Create one</Link> if you need a self check-in (normal) session — exam sessions don't require a location.</p></div>
+      )}
+
+      {selectedIds.size > 0 && (
+        <div className="row mb-4" style={{ justifyContent: 'flex-start', gap: 12 }}>
+          <span style={{ fontSize: '0.85rem', color: 'var(--color-muted)' }}>
+            <strong>{selectedIds.size}</strong> session{selectedIds.size === 1 ? '' : 's'} selected
+          </span>
+          <Button variant="secondary" size="sm" onClick={handleBulkExport} disabled={bulkExporting}>
+            <Download size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+            {bulkExporting ? 'Exporting…' : `Export Selected (${selectedIds.size})`}
+          </Button>
+          <Button variant="delete" size="sm" onClick={() => { setBulkDeleteModal(true); setBulkDeletePassword(''); }}>
+            {`Delete Selected (${selectedIds.size})`}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setSelectedIds(new Set())}>Clear</Button>
+        </div>
       )}
 
       {loading ? <SkeletonRows /> : sessions.length === 0 ? (
@@ -256,6 +362,14 @@ const Sessions = () => {
           <DataTable columns={columns} rows={sortedSessions} rowKey={(s) => s._id} />
         </div>
       ) : null}
+
+      <ExcelSessionUploadModal
+        open={showUploadModal}
+        onClose={() => setShowUploadModal(false)}
+        mentors={mentors}
+        onMentorCreated={(m) => setMentors((prev) => [...prev, m])}
+        onSessionsCreated={fetchData}
+      />
 
       <Modal open={showModal} onClose={() => setShowModal(false)} title="Create Attendance Session">
         <form onSubmit={handleCreateSubmit}>
@@ -460,6 +574,25 @@ const Sessions = () => {
         <div className="form-group">
           <label>Confirm with Admin Password</label>
           <input type="password" value={deletePassword} onChange={(e) => setDeletePassword(e.target.value)} placeholder="Enter your admin password" autoFocus required />
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={bulkDeleteModal}
+        onClose={() => { setBulkDeleteModal(false); setBulkDeletePassword(''); }}
+        onSubmit={handleBulkDelete}
+        title="Delete Selected Sessions"
+        confirmLabel="Confirm Delete"
+        loading={bulkDeleting}
+        message={
+          <span style={{ color: 'var(--color-danger)' }}>
+            You are about to permanently delete <strong>{selectedIds.size}</strong> session{selectedIds.size === 1 ? '' : 's'} and all of their attendance records and photos. This cannot be undone.
+          </span>
+        }
+      >
+        <div className="form-group">
+          <label>Confirm with Admin Password</label>
+          <input type="password" value={bulkDeletePassword} onChange={(e) => setBulkDeletePassword(e.target.value)} placeholder="Enter your admin password" autoFocus required />
         </div>
       </ConfirmDialog>
 
