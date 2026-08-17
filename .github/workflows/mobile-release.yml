@@ -34,6 +34,11 @@ on:
 
 permissions:
   contents: read
+  # A reusable workflow's jobs can never request broader permissions than
+  # the caller grants. The `ci:` job below calls ci.yml, whose `changes`
+  # job needs pull-requests: read for dorny/paths-filter — without this,
+  # GitHub refuses to start any job in this run (startup_failure).
+  pull-requests: read
 
 jobs:
   ci:
