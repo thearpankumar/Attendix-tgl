@@ -391,6 +391,11 @@ describe('Sessions', () => {
     expect(screen.getByText('Loc 29')).toBeInTheDocument();
     expect(screen.queryByText('Loc 34')).not.toBeInTheDocument();
 
+    // The sentinel mounts (and registers its IntersectionObserver) in an
+    // effect that fires after the page-1 rows have already painted, so wait
+    // for the instance itself rather than assuming it exists as soon as the
+    // text does — otherwise this is flaky under CI's slower scheduling.
+    await waitFor(() => expect(globalThis.__intersectionObserverInstances.length).toBeGreaterThan(0));
     const [observer] = globalThis.__intersectionObserverInstances.slice(-1);
     observer.callback([{ isIntersecting: true }]);
 
