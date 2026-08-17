@@ -292,9 +292,10 @@ fn enrollment_has_no_roster_gate() {
     );
 }
 
-/// Absence is only meaningful against a roster. With no batch attached the
-/// stats must report zero rather than inventing absentees, and must say so via
-/// `has_roster` so the UI can tell "nobody absent" from "not tracked".
+/// Absence is only meaningful against a roster (regular batch or Excel
+/// batch — see `controllers::roster_source`). With no roster attached the
+/// stats must report zero rather than inventing absentees, and must say so
+/// via `has_roster` so the UI can tell "nobody absent" from "not tracked".
 #[test]
 fn session_stats_expose_presence_and_absence() {
     let source = include_str!("../../src/controllers/admin/sessions.rs");
@@ -314,7 +315,7 @@ fn session_stats_expose_presence_and_absence() {
     }
 
     assert!(
-        source.contains("None => (0, 0)"),
-        "a session with no batch must report no roster and no absentees"
+        source.contains("if roster.is_empty()") && source.contains("has_roster: !roster.is_empty()"),
+        "a session with no roster (no batch or excel batch attached) must report no roster and no absentees"
     );
 }

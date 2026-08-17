@@ -29,6 +29,25 @@ pub struct BatchResponse {
     pub created_at: String,
 }
 
+/// The Batches list view is a tagged union of manually-created batches and
+/// Excel-upload-generated ones — see migration 0003. `kind` distinguishes
+/// them so the frontend can tag/deep-link session-batches instead of
+/// treating them like a regular selectable batch.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedBatchResponse {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub student_count: i64,
+    pub created_at: chrono::DateTime<Utc>,
+    /// "manual" | "session"
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub linked_session_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BatchCreateResponse {
     pub message: String,
@@ -136,24 +155,62 @@ pub async fn get_batches(
         sqlx::query_as("SELECT batch_id, COUNT(*) FROM students GROUP BY batch_id")
             .fetch_all(&state.db)
             .await?;
-    let count_for = |batch_id: Uuid| -> usize {
+    let count_for = |batch_id: Uuid| -> i64 {
         counts
             .iter()
             .find(|(id, _)| *id == batch_id)
-            .map(|(_, c)| *c as usize)
+            .map(|(_, c)| *c)
             .unwrap_or(0)
     };
 
-    let response: Vec<BatchResponse> = batches
+    let mut response: Vec<UnifiedBatchResponse> = batches
         .into_iter()
-        .map(|batch| BatchResponse {
+        .map(|batch| UnifiedBatchResponse {
             id: batch.id.to_string(),
             student_count: count_for(batch.id),
             name: batch.name,
             description: batch.description,
-            created_at: batch.created_at.to_rfc3339(),
+            created_at: batch.created_at,
+            kind: "manual",
+            linked_session_id: None,
         })
         .collect();
+
+    // Excel-generated batches are always created alongside exactly one
+    // session (see admin::excel_sessions::commit), so the join can never
+    // find a dangling excel_batches row — no separate existence check needed
+    // the way the manual-batch path handles a possibly-unset session.batch_id.
+    #[derive(sqlx::FromRow)]
+    struct ExcelBatchRow {
+        id: Uuid,
+        name: String,
+        description: Option<String>,
+        created_at: chrono::DateTime<Utc>,
+        student_count: i64,
+        session_id: Uuid,
+    }
+    let excel_rows: Vec<ExcelBatchRow> = sqlx::query_as(
+        "SELECT eb.id, eb.name, eb.description, eb.created_at, s.id AS session_id, \
+                (SELECT COUNT(*) FROM excel_batch_students WHERE excel_batch_id = eb.id) AS student_count \
+         FROM excel_batches eb \
+         JOIN sessions s ON s.excel_batch_id = eb.id \
+         WHERE eb.created_by = $1",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    response.extend(excel_rows.into_iter().map(|r| UnifiedBatchResponse {
+        id: r.id.to_string(),
+        name: r.name,
+        description: r.description,
+        student_count: r.student_count,
+        created_at: r.created_at,
+        kind: "session",
+        linked_session_id: Some(r.session_id.to_string()),
+    }));
+
+    response.sort_by_key(|b| std::cmp::Reverse(b.created_at));
 
     Ok(Json(response))
 }
@@ -325,14 +382,20 @@ fn format_cell(cell: &calamine::Data) -> Option<String> {
     }
 }
 
-fn normalize_header(s: &str) -> String {
+pub(crate) fn normalize_header(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect()
 }
 
-fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
+/// Opens `data` as a spreadsheet (Xlsx → Xls → Ods, in that order) or, if
+/// none of those parse, falls back to treating it as raw comma-separated
+/// text. Shared by `parse_excel` (batch/student roster import) and the
+/// Excel-session dry-run parser (`admin::excel_sessions`), which both need
+/// the same "just open whatever the admin uploaded" behavior but apply
+/// different column-alias logic on top of the resulting rows.
+pub(crate) fn read_raw_rows(data: &[u8]) -> Result<Vec<Vec<String>>> {
     let cursor = Cursor::new(data);
     let mut raw_rows: Vec<Vec<String>> = Vec::new();
 
@@ -382,6 +445,12 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
             "Failed to open file. Unsupported or corrupted spreadsheet/CSV format.".to_string(),
         ));
     }
+
+    Ok(raw_rows)
+}
+
+fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
+    let raw_rows = read_raw_rows(data)?;
 
     let mut students = Vec::new();
     let mut errors = Vec::new();

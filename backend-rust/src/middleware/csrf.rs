@@ -63,6 +63,22 @@ fn extract_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+/// True when a request authenticates with only `Authorization: Bearer ...`
+/// and carries no `admin_token` cookie at all — the case that exempts a
+/// mutating request from CSRF validation (see `csrf_middleware`'s doc
+/// comment for the full rationale). Takes raw header values instead of an
+/// `axum::http::HeaderMap` so it's trivially unit-testable without spinning
+/// up an `AppState`/full request.
+fn is_cookieless_bearer_request(auth_header: Option<&str>, cookie_header: Option<&str>) -> bool {
+    let has_bearer = auth_header
+        .map(|v| v.starts_with("Bearer "))
+        .unwrap_or(false);
+    let has_auth_cookie = cookie_header
+        .and_then(|h| extract_cookie(h, crate::middleware::AUTH_COOKIE_NAME))
+        .is_some();
+    has_bearer && !has_auth_cookie
+}
+
 /// CSRF protection middleware for admin routes.
 ///
 /// # GET / safe methods
@@ -74,6 +90,11 @@ fn extract_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
 /// Validates that the `x-csrf-token` header matches the `csrf_token` cookie
 /// AND that the token carries a valid HMAC signature. Rejects with 403 if
 /// either check fails.
+///
+/// # Bearer-token requests (no cookie)
+/// A request authenticated with only `Authorization: Bearer <token>` and no
+/// `admin_token` cookie (e.g. the Expo mentor app) skips this check
+/// entirely — see the bypass block below for why that's safe.
 ///
 /// `SameSite=Strict` on the auth cookie already prevents cross-site requests
 /// from carrying the session, so this adds defence-in-depth against any edge
@@ -144,6 +165,32 @@ pub async fn csrf_middleware(
         return Ok(response);
     }
 
+    // Native clients (the Expo mentor app) authenticate with only an
+    // Authorization: Bearer header and never carry the admin_token cookie —
+    // there's no cookie jar involved at all. CSRF exploits a browser's
+    // *automatic* attachment of ambient cookie credentials to a forged
+    // cross-site request; a request that instead relies on a header the
+    // attacking page has to set explicitly (and couldn't, without first
+    // clearing this API's strict CORS origin allowlist — which native
+    // callers aren't subject to in the first place, since they're not
+    // browsers) isn't a CSRF vector. This runs after auth_middleware in the
+    // layer stack (see routes/admin.rs), so the JWT is already validated by
+    // this point — this check only classifies transport, it doesn't
+    // authenticate anything. Any request that *also* carries the cookie
+    // still falls through to the full double-submit check below, so this
+    // can never widen into a bypass for cookie-based (browser) clients.
+    let auth_header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let cookie_header_str = request
+        .headers()
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok());
+    if is_cookieless_bearer_request(auth_header, cookie_header_str) {
+        return Ok(next.run(request).await);
+    }
+
     // For mutating methods: validate the double-submit token
     let cookie_header = request
         .headers()
@@ -204,5 +251,41 @@ mod tests {
     fn wrong_secret_fails() {
         let token = generate_csrf_token(SECRET);
         assert!(!verify_csrf_token(&token, &token, "different-secret"));
+    }
+
+    #[test]
+    fn bearer_without_cookie_is_exempt() {
+        assert!(is_cookieless_bearer_request(
+            Some("Bearer abc.def.ghi"),
+            None
+        ));
+    }
+
+    #[test]
+    fn bearer_with_unrelated_cookie_is_exempt() {
+        // A cookie header that doesn't contain admin_token (e.g. some other
+        // site's cookie riding along) must not defeat the exemption.
+        assert!(is_cookieless_bearer_request(
+            Some("Bearer abc.def.ghi"),
+            Some("some_other_cookie=value")
+        ));
+    }
+
+    // Regression guard: a request that carries the admin_token cookie must
+    // never be exempted, even if it also happens to send a Bearer header —
+    // this is what keeps the exemption from ever widening into a bypass for
+    // cookie-based (browser) clients.
+    #[test]
+    fn bearer_with_admin_token_cookie_is_not_exempt() {
+        assert!(!is_cookieless_bearer_request(
+            Some("Bearer abc.def.ghi"),
+            Some("admin_token=some-jwt; other=1")
+        ));
+    }
+
+    #[test]
+    fn no_bearer_header_is_not_exempt() {
+        assert!(!is_cookieless_bearer_request(None, None));
+        assert!(!is_cookieless_bearer_request(Some("Basic xyz"), None));
     }
 }

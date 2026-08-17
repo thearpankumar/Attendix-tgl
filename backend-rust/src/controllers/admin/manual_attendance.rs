@@ -19,13 +19,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    controllers::find_session_for_admin,
+    controllers::{
+        fetch_roster_name, fetch_roster_students, find_roster_student, find_session_for_admin,
+        resolve_roster_source,
+    },
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{
-        record_audit_event, Attendance, AttendanceSource, AttendanceStatus, Batch, Location,
-        Student,
-    },
+    models::{record_audit_event, Attendance, AttendanceSource, AttendanceStatus, Location},
 };
 
 #[derive(Debug, Serialize)]
@@ -99,27 +99,23 @@ pub async fn get_session_roster(
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
-        sqlx::query_as("SELECT * FROM batches WHERE id = $1")
-            .bind(batch_id)
-            .fetch_optional(&state.db)
-            .await?
-    } else {
-        None
-    };
+    let source = resolve_roster_source(&session);
+    let batch_name = fetch_roster_name(&state.db, &source).await?;
 
     let session_info = RosterSessionInfo {
         id: session.id.to_string(),
         college_name: session.college_name.clone(),
         starts_at: session.starts_at,
         expires_at: session.expires_at,
-        batch_name: batch.as_ref().map(|b| b.name.clone()),
+        batch_name,
         description: session.description.clone(),
     };
 
-    // Legacy sessions created before batches were mandatory have no roster to
-    // show — mirrors get_session_absent's existing `None => vec![]` fallback.
-    let Some(batch_id) = session.batch_id else {
+    // Legacy sessions created before batches were mandatory (or a normal
+    // session with no batch attached) have no roster to show — mirrors
+    // get_session_absent's existing `None => vec![]` fallback.
+    let students = fetch_roster_students(&state.db, &source).await?;
+    if students.is_empty() {
         return Ok(Json(RosterResponse {
             session: session_info,
             students: vec![],
@@ -131,13 +127,7 @@ pub async fn get_session_roster(
                 unmarked: 0,
             },
         }));
-    };
-
-    let students: Vec<Student> =
-        sqlx::query_as("SELECT * FROM students WHERE batch_id = $1 ORDER BY position")
-            .bind(batch_id)
-            .fetch_all(&state.db)
-            .await?;
+    }
 
     let attendances: Vec<Attendance> =
         sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1")
@@ -243,24 +233,23 @@ pub async fn mark_attendance_manual(
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    let batch_id = session
-        .batch_id
-        .ok_or_else(|| AppError::BadRequest("This session has no batch attached".to_string()))?;
+    let source = resolve_roster_source(&session);
+    if matches!(source, crate::controllers::RosterSource::None) {
+        return Err(AppError::BadRequest(
+            "This session has no batch attached".to_string(),
+        ));
+    }
 
     let roll_upper = payload.roll_number.trim().to_uppercase();
     if roll_upper.is_empty() {
         return Err(AppError::BadRequest("rollNumber is required".to_string()));
     }
 
-    let student: Student =
-        sqlx::query_as("SELECT * FROM students WHERE batch_id = $1 AND upper(roll_number) = $2")
-            .bind(batch_id)
-            .bind(&roll_upper)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound("Student not found in this session's roster".to_string())
-            })?;
+    let student = find_roster_student(&state.db, &source, &roll_upper)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound("Student not found in this session's roster".to_string())
+        })?;
 
     let mut tx = state.db.begin().await?;
 

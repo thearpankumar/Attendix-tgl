@@ -104,6 +104,18 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(crate::controllers::export_session_attendance),
         )
         .route(
+            "/sessions/export-bulk",
+            post(crate::controllers::export_bulk_attendance),
+        )
+        .route(
+            "/sessions/delete-bulk",
+            post(crate::controllers::bulk_delete_sessions),
+        )
+        .route(
+            "/sessions/{id}/mentors",
+            patch(crate::controllers::update_session_mentors),
+        )
+        .route(
             "/sessions/{id}/absent",
             get(crate::controllers::get_session_absent),
         )
@@ -193,6 +205,14 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/sessions/{id}/attendance/manual/{rollNumber}",
             axum::routing::delete(crate::controllers::undo_manual_mark),
+        )
+        .route(
+            "/excel-sessions/parse",
+            post(crate::controllers::parse_excel_sessions),
+        )
+        .route(
+            "/excel-sessions/commit",
+            post(crate::controllers::commit_excel_sessions),
         )
         // Middleware execution order (innermost applied last, runs first):
         // 1. admin_rate_limit  — outermost, applied first, limits traffic

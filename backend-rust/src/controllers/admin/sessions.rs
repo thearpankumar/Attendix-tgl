@@ -9,9 +9,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
+    controllers::{fetch_roster_students, resolve_roster_source},
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{Attendance, Batch, Session, Student},
+    models::{Attendance, Session},
     utils::generate_qr_token,
 };
 
@@ -104,34 +105,29 @@ pub async fn get_session_stats(
     .fetch_one(&state.db)
     .await?;
 
-    // Absence is computed against the batch roster when one is attached.
+    // Absence is computed against the roster (regular batch or excel batch,
+    // whichever this session was created against) when one is attached.
     // Matching is on upper(roll_number) because attendance stores the roll
     // number upper-cased while the roster keeps whatever the import supplied.
-    let (roster_size, absent_count) = match session.batch_id {
-        Some(batch_id) => {
-            let roster_size: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM students WHERE batch_id = $1")
-                    .bind(batch_id)
-                    .fetch_one(&state.db)
-                    .await?;
-
-            let absent_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM students st \
-                 WHERE st.batch_id = $1 \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM attendances a \
-                       WHERE a.session_id = $2 \
-                         AND upper(a.roll_number) = upper(st.roll_number) \
-                   )",
-            )
-            .bind(batch_id)
-            .bind(session_id)
-            .fetch_one(&state.db)
-            .await?;
-
-            (roster_size, absent_count)
-        }
-        None => (0, 0),
+    let roster_source = resolve_roster_source(&session);
+    let roster = fetch_roster_students(&state.db, &roster_source).await?;
+    let roster_size = roster.len() as i64;
+    let absent_count = if roster.is_empty() {
+        0
+    } else {
+        let present_rolls: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+            "SELECT roll_number FROM attendances WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_all(&state.db)
+        .await?
+        .into_iter()
+        .map(|r| r.to_uppercase())
+        .collect();
+        roster
+            .iter()
+            .filter(|s| !present_rolls.contains(&s.roll_number.to_uppercase()))
+            .count() as i64
     };
 
     Ok(Json(SessionStatsResponse {
@@ -140,7 +136,7 @@ pub async fn get_session_stats(
         unverified_attendance: total_attendance - verified_attendance,
         roster_size,
         absent_count,
-        has_roster: session.batch_id.is_some(),
+        has_roster: !roster.is_empty(),
         session: SessionStatus {
             is_active: session.is_active,
             expires_at: session.expires_at,
@@ -235,22 +231,11 @@ pub async fn get_session_absent(
 
     let session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    let batch_id = match session.batch_id {
-        Some(id) => id,
-        None => return Ok(Json::<Vec<AbsentStudent>>(vec![])),
-    };
-
-    let _batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = $1")
-        .bind(batch_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
-
-    let students: Vec<Student> =
-        sqlx::query_as("SELECT * FROM students WHERE batch_id = $1 ORDER BY position")
-            .bind(batch_id)
-            .fetch_all(&state.db)
-            .await?;
+    let source = resolve_roster_source(&session);
+    let students = fetch_roster_students(&state.db, &source).await?;
+    if students.is_empty() {
+        return Ok(Json::<Vec<AbsentStudent>>(vec![]));
+    }
 
     // Get present roll numbers
     let present_roll_numbers: Vec<String> = sqlx::query_scalar(

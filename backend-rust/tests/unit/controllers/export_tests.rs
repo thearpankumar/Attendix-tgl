@@ -312,6 +312,7 @@ mod export_session_ownership_tests {
             id: Uuid::new_v4(),
             location_id: Some(Uuid::new_v4()),
             batch_id: Some(Uuid::new_v4()),
+            excel_batch_id: None,
             token_hash: "test_hash".to_string(),
             token_prefix: "test".to_string(),
             description: None,

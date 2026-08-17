@@ -9,6 +9,11 @@ pub struct Session {
     pub id: Uuid,
     pub location_id: Option<Uuid>,
     pub batch_id: Option<Uuid>,
+    /// Set only for sessions created via the Excel-upload bulk creation flow
+    /// (migration 0003) — mutually exclusive with `batch_id` (enforced by a
+    /// DB check constraint). Tells roster/export code which table to
+    /// resolve students from; see `controllers::roster_source`.
+    pub excel_batch_id: Option<Uuid>,
     pub token_hash: String,
     pub token_prefix: String,
     pub description: Option<String>,
