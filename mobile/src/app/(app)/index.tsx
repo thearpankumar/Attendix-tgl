@@ -1,7 +1,7 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as ScreenCapture from 'expo-screen-capture';
 import { Activity, CalendarClock, ClipboardX, Clock, GraduationCap, MapPin, PieChart, Users } from 'lucide-react-native';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 
@@ -21,8 +21,19 @@ import { Session } from '../../api/types';
 import { formatClock, formatSlot, timeUntil } from '../../utils/formatTime';
 import { greetingWord } from '../../utils/greeting';
 
+// Calendar-day comparison (local time), not a millisecond/24h-window
+// comparison — a session starting at 11pm today and one starting at 1am
+// tomorrow are ~2 hours apart but must land in different buckets, while a
+// session 20+ hours from now that's still "today" (started this calendar
+// day) must not get pushed into "Upcoming".
+const isToday = (iso: string) => {
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+};
+
 export default function Dashboard() {
-  const { colors, font } = useTheme();
+  const { colors, font, radii } = useTheme();
   const { admin } = useAuth();
   const router = useRouter();
   const { data, isLoading, isError, isFetching, refetch } = useDashboard();
@@ -41,33 +52,84 @@ export default function Dashboard() {
   }, [isError]);
 
   const displayName = admin?.fullName || admin?.username || '';
+  const [sessionsTab, setSessionsTab] = useState<'today' | 'upcoming'>('today');
 
-  const { sessions, rosterMap, openSessions, liveSessions, upcomingSessions, closedSessions, scheduled, rosterTotals } = useMemo(() => {
+  const {
+    sessions,
+    rosterMap,
+    openSessions,
+    liveSessions,
+    upcomingSessions,
+    closedSessions,
+    todaySessions,
+    upcomingDaySessions,
+    scheduled,
+    rosterTotals,
+    liveRosterTotals,
+  } = useMemo(() => {
     const sessions = data?.sessions ?? [];
     const rosterMap = data?.rosterMap ?? {};
     const open = sessions.filter((s) => sessionState(s) !== 'closed');
     const live = open.filter((s) => sessionState(s) === 'live');
     const upcoming = open.filter((s) => sessionState(s) === 'upcoming');
     const closed = sessions.filter((s) => sessionState(s) === 'closed');
-    const scheduledList = open
+
+    // "Today" = currently live, or scheduled to start later today. "Upcoming"
+    // = scheduled for a future calendar day. A live session is always today
+    // by definition (it's happening right now), regardless of when it started.
+    const today = open.filter((s) => sessionState(s) === 'live' || (s.startsAt && isToday(s.startsAt)));
+    const upcomingDay = open.filter((s) => sessionState(s) === 'upcoming' && s.startsAt && !isToday(s.startsAt));
+
+    const scheduledList = today
       .filter((s) => s.startsAt)
       .sort((a, b) => new Date(a.startsAt!).getTime() - new Date(b.startsAt!).getTime());
+
+    // "Students" is a headcount across everything on your plate (today +
+    // upcoming), so it stays scoped to open sessions. "Attendance" is
+    // different: it's meant to answer "how is marking going right now" —
+    // rolling in sessions that haven't started yet (where marked is 0, or
+    // occasionally a handful of stray marks from before a session was
+    // rescheduled) can make a tiny, unrepresentative sample of marks look
+    // like "100%" even though thousands of students are simply unmarked.
+    // Scoping the present/marked ratio to only currently-live sessions means
+    // "no live sessions" correctly shows "—" instead of a misleading percentage.
     const totals = open.reduce(
       (acc, s) => {
         const r = rosterMap[s._id];
+        if (r) acc.total += r.total;
+        return acc;
+      },
+      { total: 0 }
+    );
+    const liveTotals = live.reduce(
+      (acc, s) => {
+        const r = rosterMap[s._id];
         if (r) {
-          acc.total += r.total;
           acc.present += r.present;
           acc.marked += r.marked;
         }
         return acc;
       },
-      { total: 0, present: 0, marked: 0 }
+      { present: 0, marked: 0 }
     );
-    return { sessions, rosterMap, openSessions: open, liveSessions: live, upcomingSessions: upcoming, closedSessions: closed, scheduled: scheduledList, rosterTotals: totals };
+
+    return {
+      sessions,
+      rosterMap,
+      openSessions: open,
+      liveSessions: live,
+      upcomingSessions: upcoming,
+      closedSessions: closed,
+      todaySessions: today,
+      upcomingDaySessions: upcomingDay,
+      scheduled: scheduledList,
+      rosterTotals: totals,
+      liveRosterTotals: liveTotals,
+    };
   }, [data]);
 
-  const attendancePct = rosterTotals.marked === 0 ? null : Math.round((rosterTotals.present / rosterTotals.marked) * 100);
+  const visibleSessions = sessionsTab === 'today' ? todaySessions : upcomingDaySessions;
+  const attendancePct = liveRosterTotals.marked === 0 ? null : Math.round((liveRosterTotals.present / liveRosterTotals.marked) * 100);
 
   const timelineEntries: TimelineEntry[] = scheduled.map((s) => {
     const state = sessionState(s);
@@ -108,33 +170,56 @@ export default function Dashboard() {
           </View>
 
           {openSessions.length > 0 && (
-            <Panel header="Your Sessions Today">
-              {openSessions.map((s) => {
-                const state = sessionState(s);
-                const roster = rosterMap[s._id];
-                return (
-                  <Pressable
-                    key={s._id}
-                    style={[styles.sessionRow, { borderBottomColor: colors.border }]}
-                    onPress={() => router.push(`/sessions/${s._id}`)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.sessionTitle, { color: colors.text, fontFamily: font.bold }]}>
-                        {s.batchName || s.collegeName || 'Session'}
-                      </Text>
-                      <Text style={[styles.sessionSub, { color: colors.muted }]}>
-                        {[s.collegeName, s.locationName].filter(Boolean).join(' · ') || 'No location'}
-                      </Text>
-                    </View>
-                    <View style={styles.sessionMeta}>
-                      <Badge label={state === 'live' ? 'LIVE' : s.startsAt ? timeUntil(s.startsAt) : 'Upcoming'} tone={state === 'live' ? 'success' : 'warning'} />
-                      <Text style={[styles.sessionCount, { color: colors.muted }]}>
-                        {roster ? `${roster.marked}/${roster.total}` : `${s.attendanceCount}`} Marked
-                      </Text>
-                    </View>
-                  </Pressable>
-                );
-              })}
+            <Panel header="Your Sessions">
+              <View style={[styles.tabRow, { backgroundColor: colors.bgSubtle, borderRadius: radii.md }]}>
+                <TabButton
+                  label={`Today${todaySessions.length > 0 ? ` (${todaySessions.length})` : ''}`}
+                  active={sessionsTab === 'today'}
+                  onPress={() => setSessionsTab('today')}
+                />
+                <TabButton
+                  label={`Upcoming${upcomingDaySessions.length > 0 ? ` (${upcomingDaySessions.length})` : ''}`}
+                  active={sessionsTab === 'upcoming'}
+                  onPress={() => setSessionsTab('upcoming')}
+                />
+              </View>
+
+              {visibleSessions.length === 0 ? (
+                <View style={styles.tabEmpty}>
+                  <Text style={{ color: colors.muted, fontSize: 13 }}>
+                    {sessionsTab === 'today' ? 'No sessions today.' : 'No upcoming sessions scheduled.'}
+                  </Text>
+                </View>
+              ) : (
+                visibleSessions.map((s) => {
+                  const state = sessionState(s);
+                  const roster = rosterMap[s._id];
+                  const slot = sessionsTab === 'upcoming' ? formatSlot(s.startsAt) : null;
+                  return (
+                    <Pressable
+                      key={s._id}
+                      style={[styles.sessionRow, { borderBottomColor: colors.border }]}
+                      onPress={() => router.push(`/sessions/${s._id}`)}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.sessionTitle, { color: colors.text, fontFamily: font.bold }]}>
+                          {s.batchName || s.collegeName || 'Session'}
+                        </Text>
+                        <Text style={[styles.sessionSub, { color: colors.muted }]}>
+                          {[s.collegeName, s.locationName].filter(Boolean).join(' · ') || 'No location'}
+                          {slot ? ` · ${slot}` : ''}
+                        </Text>
+                      </View>
+                      <View style={styles.sessionMeta}>
+                        <Badge label={state === 'live' ? 'LIVE' : s.startsAt ? timeUntil(s.startsAt) : 'Upcoming'} tone={state === 'live' ? 'success' : 'warning'} />
+                        <Text style={[styles.sessionCount, { color: colors.muted }]}>
+                          {roster ? `${roster.marked}/${roster.total}` : `${s.attendanceCount}`} Marked
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
             </Panel>
           )}
 
@@ -144,13 +229,13 @@ export default function Dashboard() {
             </Panel>
           )}
 
-          {rosterTotals.marked > 0 && attendancePct !== null && (
+          {liveRosterTotals.marked > 0 && attendancePct !== null && (
             <Panel header="Attendance Overview">
               <View style={styles.donutWrap}>
                 <DonutChart percent={attendancePct} />
                 <View style={styles.legend}>
-                  <LegendRow color={colors.success} label="Present" value={rosterTotals.present} textColor={colors.text} />
-                  <LegendRow color={colors.danger} label="Absent" value={rosterTotals.marked - rosterTotals.present} textColor={colors.text} />
+                  <LegendRow color={colors.success} label="Present" value={liveRosterTotals.present} textColor={colors.text} />
+                  <LegendRow color={colors.danger} label="Absent" value={liveRosterTotals.marked - liveRosterTotals.present} textColor={colors.text} />
                 </View>
               </View>
             </Panel>
@@ -169,6 +254,18 @@ export default function Dashboard() {
     </Screen>
   );
 }
+
+const TabButton = ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) => {
+  const { colors, radii, shadows, font } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.tabBtn, { borderRadius: radii.md - 4 }, active && { backgroundColor: colors.surface, ...shadows.card }]}
+    >
+      <Text style={{ color: active ? colors.primary : colors.muted, fontSize: 13, fontFamily: font.bold }}>{label}</Text>
+    </Pressable>
+  );
+};
 
 const LegendRow = ({ color, label, value, textColor }: { color: string; label: string; value: number; textColor: string }) => (
   <View style={styles.legendRow}>
@@ -217,6 +314,9 @@ const styles = StyleSheet.create({
   greeting: { fontSize: 22 },
   subGreeting: { fontSize: 13, marginTop: 4 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 16 },
+  tabRow: { flexDirection: 'row', gap: 6, margin: 14, marginBottom: 4, padding: 4 },
+  tabBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9 },
+  tabEmpty: { paddingVertical: 28, paddingHorizontal: 20, alignItems: 'center' },
   sessionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: 14, borderBottomWidth: 1 },
   sessionTitle: { fontSize: 14 },
   sessionSub: { fontSize: 12, marginTop: 2 },

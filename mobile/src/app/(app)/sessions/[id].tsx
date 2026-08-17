@@ -1,7 +1,7 @@
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as ScreenCapture from 'expo-screen-capture';
-import { Check, Clock, Layers, List as ListIcon, MapPin, PartyPopper, RotateCcw, Search, X } from 'lucide-react-native';
-import React, { useCallback, useMemo, useState } from 'react';
+import { Check, Clock, Hourglass, Layers, List as ListIcon, MapPin, PartyPopper, RotateCcw, Search, X } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 
@@ -20,6 +20,14 @@ import { useMarkAttendance, useRoster, useUndoAttendance } from '../../../hooks/
 import { useTheme } from '../../../theme/ThemeProvider';
 import { formatDateTime } from '../../../utils/formatTime';
 
+const countdownLabel = (iso: string, now: number) => {
+  const diffMin = Math.round((new Date(iso).getTime() - now) / 60000);
+  if (diffMin <= 0) return 'Starting now';
+  const h = Math.floor(diffMin / 60);
+  const m = diffMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+
 type ViewMode = 'stack' | 'list';
 
 export default function SessionDetail() {
@@ -31,6 +39,15 @@ export default function SessionDetail() {
   const undoMutation = useUndoAttendance(sessionId);
   const [viewMode, setViewMode] = useState<ViewMode>('stack');
   const [searchQuery, setSearchQuery] = useState('');
+  const [now, setNow] = useState(() => Date.now());
+
+  // Ticks so a mentor who opens this screen before the session starts sees
+  // the countdown live-update and gets the marking UI automatically once the
+  // start time passes, with no manual refresh needed.
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -82,6 +99,10 @@ export default function SessionDetail() {
   const top = unmarked[0];
   const progressPct = summary.total === 0 ? 0 : Math.round((summary.marked / summary.total) * 100);
   const pending = markMutation.isPending;
+  // A session with no startsAt (a normal self-check-in session, marked
+  // manually only as a fallback) has always been markable — the gate only
+  // applies to sessions explicitly scheduled for the future.
+  const hasStarted = !session.startsAt || new Date(session.startsAt).getTime() <= now;
 
   return (
     <Screen mode="back">
@@ -115,7 +136,24 @@ export default function SessionDetail() {
         <ProgressBar percent={progressPct} />
       </Card>
 
-      {summary.total === 0 ? (
+      {!hasStarted ? (
+        <Card style={{ marginTop: 20, paddingVertical: 40, paddingHorizontal: 24 }}>
+          <View style={styles.startsSoonContent}>
+            <View style={[styles.startsSoonIcon, { backgroundColor: colors.warningBg }]}>
+              <Hourglass size={26} color={colors.warningTxt} />
+            </View>
+            <Text style={[styles.startsSoonTitle, { color: colors.text, fontFamily: font.bold }]}>
+              This session hasn&apos;t started yet
+            </Text>
+            <View style={[styles.startsSoonPill, { backgroundColor: colors.warningBg, borderRadius: radii.pill }]}>
+              <Text style={{ color: colors.warningTxt, fontSize: 15, fontFamily: font.extrabold }}>{countdownLabel(session.startsAt!, now)}</Text>
+            </View>
+            <Text style={[styles.startsSoonHint, { color: colors.muted }]}>
+              Attendance marking opens automatically once it begins.
+            </Text>
+          </View>
+        </Card>
+      ) : summary.total === 0 ? (
         <EmptyState title="This session has no roster attached." />
       ) : (
         <>
@@ -255,6 +293,11 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 16 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   progressHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  startsSoonContent: { alignItems: 'center' },
+  startsSoonIcon: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  startsSoonTitle: { fontSize: 16, marginBottom: 4, textAlign: 'center' },
+  startsSoonPill: { paddingVertical: 6, paddingHorizontal: 16, marginTop: 4 },
+  startsSoonHint: { fontSize: 12.5, textAlign: 'center', marginTop: 10 },
   toggle: { flexDirection: 'row', gap: 6, marginVertical: 16, padding: 4 },
   toggleBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9 },
   swipeHint: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 4 },
