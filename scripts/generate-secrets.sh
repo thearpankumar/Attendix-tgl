@@ -236,6 +236,12 @@ run_check() {
         warn "GRAFANA_ADMIN_USER is still 'admin' — a named account is harder to guess"
     fi
 
+    # Informational only — mobile/.env holds no secrets, so its absence never
+    # makes the overall check unhealthy.
+    if [ ! -f "${SCRIPT_DIR}/mobile/.env" ] && [ -f "${SCRIPT_DIR}/mobile/.env.example" ]; then
+        warn "mobile/.env not set up yet — run this script (any mode) or 'cp mobile/.env.example mobile/.env'"
+    fi
+
     if [ "$unhealthy" -ne 0 ]; then
         printf '\n'
         fail "One or more secrets are unsafe. Fix with: scripts/generate-secrets.sh"
@@ -290,6 +296,25 @@ backup_env_file() {
     cp "$ENV_FILE" "$backup"
     chmod 600 "$backup"
     warn "Previous .env backed up to $(basename "$backup") (contains old secrets — delete when done)"
+}
+
+# mobile/.env holds no secrets (just EXPO_PUBLIC_API_BASE_URL, and even that's
+# optional — app.config.ts falls back to the production URL baked into
+# app.json). Unlike the root .env, there's nothing here that needs a real
+# value generated, so this is a plain copy-if-missing, run unconditionally
+# (not gated by --rotate/--check the way TOKEN_SECRETS/PASSWORD_SECRETS are).
+ensure_mobile_env() {
+    local mobile_example="${SCRIPT_DIR}/mobile/.env.example"
+    local mobile_env="${SCRIPT_DIR}/mobile/.env"
+
+    [ -f "$mobile_example" ] || return 0
+
+    if [ -f "$mobile_env" ]; then
+        ok "mobile/.env already exists, leaving alone"
+    else
+        cp "$mobile_example" "$mobile_env"
+        ok "mobile/.env created from mobile/.env.example (see it for iOS Simulator / Android Emulator / physical device URLs)"
+    fi
 }
 
 run_generate() {
@@ -349,6 +374,8 @@ run_generate() {
     # .env holds live credentials; it should not be world- or group-readable.
     chmod 600 "$ENV_FILE"
     ok "Permissions on .env set to 600"
+
+    ensure_mobile_env
 
     printf '\n'
     info "${generated} generated, ${skipped} left alone."

@@ -1,17 +1,23 @@
-.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-backend build-backend deps-backend dev-backend lint-backend restart-backend clean-orphan-containers
+.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile mobile-start mobile-web mobile-android mobile-ios test-backend build-backend deps-backend dev-backend lint-backend restart-backend clean-orphan-containers
 
 # Run all checks and builds
-all: test-admin build-admin test-home build-home test-student build-student test-backend build-backend
+all: test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile test-backend build-backend
 
 help:
 	@echo "Available commands:"
-	@echo "  all            - Run tests and builds for all frontend apps and backend"
+	@echo "  all            - Run tests and builds for all frontend apps, mobile app, and backend"
 	@echo "  test-admin     - Run lint, typecheck, and tests for Admin frontend"
 	@echo "  build-admin    - Build Admin frontend"
 	@echo "  test-home      - Run lint and typecheck for Home frontend"
 	@echo "  build-home     - Build Home frontend"
 	@echo "  test-student   - Run lint, typecheck, and tests for Student frontend"
 	@echo "  build-student  - Build Student frontend"
+	@echo "  test-mobile    - Run lint, typecheck, and tests for the mobile (Expo) app"
+	@echo "  build-mobile   - Verify the mobile app's Metro/JS bundle builds (no native build on Linux — see mobile-android/mobile-ios)"
+	@echo "  mobile-start   - Start the Expo dev server (scan the QR with Expo Go/dev client, or press 'w' for web)"
+	@echo "  mobile-web     - Open the mobile app's UI directly in a browser on this PC (no phone/emulator needed)"
+	@echo "  mobile-android - Build and run the mobile app on a connected Android device/emulator"
+	@echo "  mobile-ios     - Trigger an EAS cloud build for iOS (Linux can't build/run iOS locally — needs Xcode)"
 	@echo "  deps-backend   - Fetch/build Rust backend dependencies"
 	@echo "  test-backend   - Run tests for the Rust backend (--all-features, matches CI)"
 	@echo "  lint-backend   - Run clippy and fmt --check for the Rust backend (matches CI)"
@@ -60,6 +66,59 @@ build-student:
 	@echo "   Building Student App        "
 	@echo "==============================="
 	cd frontend/student && npm run build
+
+test-mobile:
+	@echo "==============================="
+	@echo "   Running Mobile Tests        "
+	@echo "==============================="
+	cd mobile && npm run lint
+	cd mobile && npm run typecheck
+	cd mobile && npm run test
+
+build-mobile:
+	@echo "==============================="
+	@echo "   Building Mobile App (JS)    "
+	@echo "==============================="
+	@echo "No native build on Linux without Xcode/an Android SDK — this only"
+	@echo "verifies the Metro/JS bundle (imports, JSX, expo-router routes)."
+	@echo "For a real device build see: make mobile-android / make mobile-ios"
+	cd mobile && npx expo export --platform all --output-dir /tmp/mobile-build-check
+
+mobile-start:
+	@echo "==============================="
+	@echo "   Starting Mobile Dev Server  "
+	@echo "==============================="
+	-adb reverse tcp:8080 tcp:80
+	cd mobile && REACT_NATIVE_PACKAGER_HOSTNAME=localhost npx expo start
+
+mobile-web:
+	@echo "==============================="
+	@echo "   Mobile App: Web Preview     "
+	@echo "==============================="
+	@echo "Quick UI check on this PC, no phone/emulator needed. Biometric"
+	@echo "unlock is unavailable on web (falls back to a plain login, no"
+	@echo "Face ID/fingerprint prompt) — this is for eyeballing screens/theme,"
+	@echo "not for testing the real auth flow (use mobile-android for that)."
+	cd mobile && npx expo start --web
+
+mobile-android:
+	@echo "==============================="
+	@echo "   Running Mobile App: Android "
+	@echo "==============================="
+	@echo "Setting up adb reverse tcp:8080 tcp:80 (phone's localhost:8080 -> this"
+	@echo "PC's localhost:80, matching mobile/.env) — harmless no-op if no device"
+	@echo "is connected yet; re-run 'make mobile-android' after connecting one."
+	-adb reverse tcp:8080 tcp:80
+	cd mobile && REACT_NATIVE_PACKAGER_HOSTNAME=localhost npx expo run:android
+
+mobile-ios:
+	@echo "==============================="
+	@echo "   Building Mobile App: iOS    "
+	@echo "==============================="
+	@echo "Linux can't build/run iOS locally (needs Xcode) — this triggers an"
+	@echo "EAS cloud build instead. First run needs 'npx eas login' and, for"
+	@echo "device installs, 'eas credentials -p ios' once (see mobile/README.md)."
+	cd mobile && npx eas build --platform ios --profile development
 
 deps-backend:
 	@echo "==============================="

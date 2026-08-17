@@ -1,0 +1,142 @@
+name: Mobile Release
+
+# Builds the mentor app via EAS Build (cloud) and publishes a tagged GitHub
+# Release with the resulting artifacts + auto-generated release notes.
+#
+# Required repo/environment secrets:
+#   EXPO_TOKEN  — Expo access token (https://expo.dev/accounts/[account]/settings/access-tokens),
+#                 scoped to the account that owns this project on EAS.
+#
+# One-time local setup this workflow depends on (cannot be automated from
+# CI — needs a human with the actual Apple/Google accounts):
+#   - Android: none required. EAS auto-generates and manages a signing
+#     keystore on first build if one doesn't exist yet.
+#   - iOS: run `eas credentials -p ios` locally at least once and let EAS
+#     manage (or import) your Apple Distribution certificate + provisioning
+#     profile. Without this, the iOS build in this workflow will fail
+#     waiting on a credentials prompt that non-interactive CI can't answer.
+#     `eas.json`'s production profile currently leaves iOS distribution at
+#     its default ("store"), so the resulting .ipa is downloadable from EAS
+#     regardless, but installing it on a device still requires either an App
+#     Store/TestFlight submission or switching the profile to `internal`
+#     distribution with registered ad-hoc device UDIDs.
+#
+# iOS is DISABLED below (matrix only builds android) — needs an Apple
+# Developer Program membership ($99/yr, no free tier works for any iOS
+# distribution) which isn't set up yet. Once `eas credentials -p ios`
+# succeeds locally, add "ios" back to the matrix.platform list.
+on:
+  push:
+    branches: [production]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI Pipeline
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: EAS Build (${{ matrix.platform }})
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [android]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Setup Expo & EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `--wait --json` blocks until the build finishes and prints the full
+      # build record (including `artifacts.buildUrl`, a presigned direct
+      # download link) as JSON — no separate polling step needed.
+      - name: Build on EAS
+        id: eas-build
+        run: |
+          eas build --platform ${{ matrix.platform }} --profile production --non-interactive --wait --json > eas-build-result.json
+          cat eas-build-result.json
+          BUILD_URL=$(jq -r '.[0].artifacts.buildUrl // empty' eas-build-result.json)
+          if [ -z "$BUILD_URL" ]; then
+            echo "::error::EAS build did not return an artifact URL — see eas-build-result.json above for the actual build status/error."
+            exit 1
+          fi
+          echo "build_url=$BUILD_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifact
+        run: |
+          EXT="apk"
+          if [ "${{ matrix.platform }}" = "ios" ]; then EXT="ipa"; fi
+          curl -fL -o "attendix-mentor-${{ matrix.platform }}.$EXT" "${{ steps.eas-build.outputs.build_url }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-build-${{ matrix.platform }}
+          path: mobile/attendix-mentor-${{ matrix.platform }}.*
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Compute release tag
+        id: version
+        run: |
+          VERSION=$(node -p "require('./mobile/app.json').expo.version")
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "tag=mobile-v${VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mobile-build-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Attendix Mentor ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            Automated mobile release built from `${{ github.sha }}` via EAS Build.
+
+            - **Android** — install the attached `.apk` directly.
+            - **iOS** — not built yet (no Apple Developer Program membership set up). See this workflow's header comment for what's needed to enable it.

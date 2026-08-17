@@ -1,0 +1,60 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.keystore
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+
+# macOS
+.DS_Store
+*.pem
+
+# env files — root .gitignore also covers .env/.env.bak.* repo-wide; kept
+# here too so this directory's ignores are self-documenting on their own.
+.env
+.env.bak.*
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# test coverage (jest --coverage / npm run test:coverage)
+coverage/
+
+# EAS Build local artifacts — `eas build --json > *.json`, downloaded
+# APK/IPA (see .github/workflows/mobile-release.yml), or `--local` builds.
+*.apk
+*.aab
+*.ipa
+eas-build-result.json
+*-build-result.json
+
+example
+
+# generated native folders
+/ios
+/android

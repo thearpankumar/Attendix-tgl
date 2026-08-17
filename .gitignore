@@ -97,6 +97,19 @@ uploads/
 public/wasm/
 public/models/blaze_face_short_range.tflite
 
+# Mobile (mobile/ — Expo/React Native). mobile/.gitignore covers this
+# directory's own build/cache noise (.expo/, coverage/, etc.); these are
+# repo-wide safety nets so signing material and build artifacts can never
+# land in a commit even if something outside mobile/ ever produces one.
+*.jks
+*.keystore
+*.mobileprovision
+*.apk
+*.aab
+*.ipa
+/mobile/android
+/mobile/ios
+
 # Rust / Cargo
 /target/
 **/target/
