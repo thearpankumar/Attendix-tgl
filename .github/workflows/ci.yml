@@ -13,6 +13,32 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # required by dorny/paths-filter to list PR files via the API
+    outputs:
+      mobile: ${{ steps.filter.outputs.mobile }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # For pull_request events this compares against the PR's base branch via
+      # the GitHub API (no git history needed); `base` is ignored in that case.
+      # For push events (this workflow only pushes to master, a long-lived
+      # branch) it compares against the commit before the push.
+      - name: Filter changed paths
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            mobile:
+              - 'mobile/**'
+
   backend-rust-test:
     name: Backend Rust Tests
     runs-on: ubuntu-latest
@@ -173,6 +199,8 @@ jobs:
 
   mobile-test:
     name: Mobile Tests
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -338,17 +366,21 @@ jobs:
   ci-status:
     name: CI Status Check
     runs-on: ubuntu-latest
-    needs: [backend-rust-test, frontend-admin-test, frontend-mentor-test, frontend-student-test, mobile-test, frontend-home-test, security-audit]
+    needs: [changes, backend-rust-test, frontend-admin-test, frontend-mentor-test, frontend-student-test, mobile-test, frontend-home-test, security-audit]
     if: always()
 
     steps:
       - name: Check all jobs passed
         run: |
-          if [ "${{ needs.backend-rust-test.result }}" != "success" ] || \
+          # mobile-test is intentionally skipped (not failed) when mobile/**
+          # didn't change (see the `changes` job) - only backend-rust-test,
+          # frontend-mentor-test etc. are always required.
+          if [ "${{ needs.changes.result }}" != "success" ] || \
+             [ "${{ needs.backend-rust-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-admin-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-mentor-test.result }}" != "success" ] || \
              [ "${{ needs.frontend-student-test.result }}" != "success" ] || \
-             [ "${{ needs.mobile-test.result }}" != "success" ] || \
+             { [ "${{ needs.mobile-test.result }}" != "success" ] && [ "${{ needs.mobile-test.result }}" != "skipped" ]; } || \
              [ "${{ needs.frontend-home-test.result }}" != "success" ] || \
              [ "${{ needs.security-audit.result }}" != "success" ]; then
             echo "::error::One or more CI jobs failed"
