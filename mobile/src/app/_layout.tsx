@@ -63,9 +63,16 @@ function RootNavigator({ fontsLoaded }: { fontsLoaded: boolean }) {
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
+      {/* (app) declared first so it's the fallback screen when this group
+          becomes active with no resolvable current route (e.g. right after
+          a biometric unlock from the completely separate `locked` group) —
+          expo-router's Stack.Protected falls back to "the anchor route...
+          or the first available screen in the stack" in that case, and an
+          already-enrolled user unlocking successfully must land on the
+          dashboard, not back on the enrollment screen. */}
       <Stack.Protected guard={!!admin && !locked}>
-        <Stack.Screen name="enroll-biometric" />
         <Stack.Screen name="(app)" />
+        <Stack.Screen name="enroll-biometric" />
       </Stack.Protected>
       <Stack.Protected guard={!!admin && locked}>
         <Stack.Screen name="unlock" />

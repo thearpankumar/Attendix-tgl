@@ -1,6 +1,6 @@
 use axum::{
     extract::{ConnectInfo, Json, State},
-    http::{header::SET_COOKIE, StatusCode},
+    http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::IntoResponse,
     Extension,
 };
@@ -12,7 +12,7 @@ use crate::{
     middleware::{
         blacklist_token, clear_auth_cookie, generate_token, make_auth_cookie, parse_expiry,
         validators::{validate_request, AdminLoginRequest, AdminRegisterRequest},
-        AuthenticatedAdmin, Claims,
+        AuthenticatedAdmin, Claims, SKIP_AUTH_COOKIE_HEADER,
     },
     models::{Admin, AdminLogin, AdminRegistration},
 };
@@ -190,6 +190,7 @@ pub async fn login(
     // would 500 in any test/context that doesn't go through
     // into_make_service_with_connect_info.
     connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    headers: HeaderMap,
     Json(payload): Json<AdminLogin>,
 ) -> Result<impl IntoResponse> {
     let client_ip = connect_info
@@ -291,7 +292,9 @@ pub async fn login(
     }
 
     let max_age = parse_expiry(&state.config.jwt_expire)?;
-    let cookie = make_auth_cookie(&token, max_age, state.config.is_production());
+    let skip_cookie = headers.contains_key(SKIP_AUTH_COOKIE_HEADER);
+    let cookie =
+        (!skip_cookie).then(|| make_auth_cookie(&token, max_age, state.config.is_production()));
 
     let body = Json(LoginResponse {
         token: token.clone(),
@@ -307,8 +310,10 @@ pub async fn login(
     });
 
     let mut response = body.into_response();
-    if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert(SET_COOKIE, val);
+    if let Some(cookie) = cookie {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
+            response.headers_mut().insert(SET_COOKIE, val);
+        }
     }
     Ok(response)
 }

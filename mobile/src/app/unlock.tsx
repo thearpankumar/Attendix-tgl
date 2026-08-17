@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter } from 'expo-router';
 import { Fingerprint } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -23,6 +24,7 @@ export default function Unlock() {
   const { colors, radii, font } = useTheme();
   const { admin, login } = useAuth();
   const biometricLock = useBiometricLock();
+  const router = useRouter();
   const [usePassword, setUsePassword] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState('');
@@ -35,11 +37,23 @@ export default function Unlock() {
     defaultValues: { username: admin?.username ?? '', password: '' },
   });
 
+  // Navigating explicitly rather than just flipping `locked` to false and
+  // letting Stack.Protected's guard re-evaluation pick a screen on its own:
+  // with no current route valid in the newly-unlocked group (we're coming
+  // from `unlock`, a completely different protected group), expo-router
+  // falls back to "the anchor route... or the first available screen in the
+  // stack" — which, since enroll-biometric is declared before (app) in
+  // _layout.tsx, was landing back on the enrollment screen even for an
+  // already-enrolled user who just unlocked successfully.
   const attemptUnlock = async () => {
     setError('');
     const success = await biometricLock.unlock();
     setAttempted(true);
-    if (!success) setError(`${label} unlock failed or was cancelled.`);
+    if (success) {
+      router.replace('/');
+    } else {
+      setError(`${label} unlock failed or was cancelled.`);
+    }
   };
 
   useEffect(() => {
@@ -63,6 +77,7 @@ export default function Unlock() {
       return;
     }
     biometricLock.unlockWithoutBiometric();
+    router.replace('/');
   };
 
   return (

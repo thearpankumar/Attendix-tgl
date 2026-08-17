@@ -18,24 +18,22 @@ if (__DEV__ && !apiBaseUrl.startsWith('https://') && !apiBaseUrl.includes('local
 export const api = axios.create({
   baseURL: apiBaseUrl,
   timeout: 15000,
+  // Tells POST /admin/login (shared with the web frontends) to skip setting
+  // its HttpOnly admin_token cookie for this client entirely — see
+  // backend-rust/src/middleware/auth.rs's SKIP_AUTH_COOKIE_HEADER doc
+  // comment for why: relying on this app to reliably scrub that cookie
+  // client-side (below) turned out to be racy on Android in practice, so
+  // the real fix is having the server never set it here in the first place.
+  headers: { 'X-Attendix-No-Cookie': '1' },
 });
 
-// No cookie jar needed: the app authenticates with a plain Authorization
+// Defense-in-depth only now that the server skips Set-Cookie for this
+// client (see the header above): an install that already picked up a
+// stray admin_token cookie from before that server change shipped would
+// otherwise keep failing until this runs once. No cookie jar is needed
+// for anything else — the app authenticates with a plain Authorization
 // header only, and the backend's CSRF middleware exempts cookie-less
 // Bearer-authenticated requests (see backend-rust/src/middleware/csrf.rs).
-//
-// The catch: `POST /admin/login` (shared with the web frontends) always
-// sets an HttpOnly `admin_token` cookie in its response, and on Android,
-// React Native's networking layer sits on OkHttp, which — unlike a typical
-// server-side HTTP client — has a *persistent* CookieJar that silently
-// stores any Set-Cookie it sees and replays it on later requests to the
-// same origin, exactly like a browser would. So after logging in, this
-// app's own writes end up carrying that admin_token cookie alongside the
-// explicit Bearer header, which defeats the cookie-less exemption above and
-// 403s with "CSRF token missing" (this app never does the CSRF
-// cookie/header dance). Clearing cookies on module load (in case a stray
-// cookie survived from before this fix) and after every response keeps the
-// app's actual behavior matching its "no cookies at all" design.
 //
 // `require`d lazily, only on native platforms: the package's own module
 // throws at *import* time (before any of our own guards run) on any
@@ -51,16 +49,35 @@ export const api = axios.create({
 // every route module that (transitively) imports this file — the actual
 // cause behind expo-router's unrelated-looking "missing default export"
 // warnings for every single route.
-function clearStrayCookies() {
+//
+// `clearAll()` resolving is NOT enough on Android: it clears the in-memory
+// CookieManager, but OkHttp's `ForwardingCookieHandler` reads from the
+// underlying persistent store, which `clearAll()` alone doesn't guarantee
+// has synced yet — the next request can still race ahead and pick up the
+// stale cookie even after `clearAll()`'s promise resolves. `flush()`
+// (Android-only) forces that sync before we consider clearing done.
+async function clearStrayCookies(): Promise<void> {
   if (Platform.OS === 'ios' || Platform.OS === 'android') {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- must stay a runtime require, see comment above.
     const CookieManager = require('@react-native-cookies/cookies').default;
-    CookieManager?.clearAll().catch(() => {});
+    await CookieManager?.clearAll().catch(() => {});
+    if (Platform.OS === 'android') {
+      await CookieManager?.flush?.().catch(() => {});
+    }
   }
 }
 clearStrayCookies();
 
+// Clearing was previously only done fire-and-forget in the *response*
+// interceptor below, which raced the very next request: `clearAll()` is an
+// async bridge call to native code, so a request fired immediately after
+// login (e.g. the roster fetch, then the first present/absent mark) could
+// go out before that promise settled, still carrying the stray admin_token
+// cookie — which is exactly what tripped "CSRF token missing" on the first
+// POST after login in production. Awaiting it here, before every outgoing
+// request, guarantees the cookie jar is empty at send time, every time.
 api.interceptors.request.use(async (config) => {
+  await clearStrayCookies();
   const token = await getToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

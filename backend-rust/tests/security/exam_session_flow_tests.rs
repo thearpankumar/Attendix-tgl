@@ -944,3 +944,81 @@ async fn exam_session_supports_multiple_mentors_and_no_location() {
         "an unassigned mentor must not see this session"
     );
 }
+
+/// The Expo mentor app sends `X-Attendix-No-Cookie` on every request so
+/// `login` never sets the HttpOnly `admin_token` cookie for it — Android's
+/// native cookie jar picking that cookie up on a later request (even
+/// briefly, before the app's own client-side clear finished) was enough to
+/// defeat the CSRF middleware's cookie-less-Bearer exemption and 403 the
+/// very next POST (see mobile/src/api/client.ts). Web frontends never send
+/// this header, so their login flow (and the cookie-based CSRF dance) must
+/// be completely unaffected.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn login_skips_auth_cookie_only_when_mobile_header_present() {
+    let (app, db) = create_test_app().await;
+    let username = unique("no-cookie-admin");
+    seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "pw-123456",
+        "admin",
+    )
+    .await;
+
+    // Default (web) behaviour: no header -> cookie is set, same as always.
+    let web_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(
+                        &serde_json::json!({ "username": username, "password": "pw-123456" }),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(web_response.status(), StatusCode::OK);
+    assert!(
+        extract_cookie(web_response.headers(), "admin_token").is_some(),
+        "a login with no mobile header must still get the admin_token cookie"
+    );
+
+    // Mobile behaviour: header present -> no cookie, but login still succeeds
+    // and still returns the Bearer token in the JSON body.
+    let mobile_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/login")
+                .header("content-type", "application/json")
+                .header("x-attendix-no-cookie", "1")
+                .body(Body::from(
+                    serde_json::to_vec(
+                        &serde_json::json!({ "username": username, "password": "pw-123456" }),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mobile_response.status(), StatusCode::OK);
+    assert!(
+        extract_cookie(mobile_response.headers(), "admin_token").is_none(),
+        "a login with the mobile header must not get the admin_token cookie"
+    );
+    let body = json_body(mobile_response).await;
+    assert!(
+        body["token"].as_str().is_some_and(|t| !t.is_empty()),
+        "the Bearer token must still come back in the body"
+    );
+}

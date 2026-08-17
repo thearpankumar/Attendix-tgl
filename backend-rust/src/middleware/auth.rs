@@ -12,6 +12,23 @@ const BLACKLIST_PREFIX: &str = "jwt_blacklist:";
 /// Cookie name used to store the admin auth token (HttpOnly).
 pub const AUTH_COOKIE_NAME: &str = "admin_token";
 
+/// Sent by the Expo mentor app on every request (see mobile/src/api/client.ts)
+/// to tell `login`/`register` to skip `Set-Cookie` entirely, rather than
+/// setting it and relying on the app to reliably scrub it client-side.
+///
+/// That client-side approach (clearing Android's native cookie jar after
+/// every response) turned out to be racy in practice — the OkHttp cookie
+/// jar's sync timing back to the JS layer wasn't reliable enough to
+/// guarantee the very next request went out clean, which is what actually
+/// matters for the CSRF check on a POST fired right after login. Not
+/// setting the cookie for this client at all removes the race at its
+/// source instead of chasing it downstream.
+///
+/// Spoofing this header can only ever *skip* a cookie being set — it can't
+/// grant, widen, or bypass anything else — so trusting it unauthenticated
+/// here is safe.
+pub const SKIP_AUTH_COOKIE_HEADER: &str = "x-attendix-no-cookie";
+
 /// Cookie path scoped to admin API routes only.
 const AUTH_COOKIE_PATH: &str = "/api";
 
