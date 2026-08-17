@@ -11,6 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     constants::*,
+    controllers::session_records::{
+        query_session_records, session_record_stats_for, SessionRecordQueryParams,
+    },
     error::{AppError, Result},
     middleware::{
         validators::{validate_request, SessionCreateRequest},
@@ -59,6 +62,11 @@ pub struct SessionResponse {
     pub batch_id: Option<String>,
     #[serde(rename = "batchName")]
     pub batch_name: Option<String>,
+    /// Excel-upload (mentor) sessions only — lets the frontend correlate a
+    /// session back to its 1:1 "session batch" entry in `GET /batches`
+    /// (`batchId` above is manual-batch-only) for filter cascading.
+    #[serde(rename = "excelBatchId")]
+    pub excel_batch_id: Option<String>,
     pub description: Option<String>,
     #[serde(rename = "isActive")]
     pub is_active: bool,
@@ -80,6 +88,21 @@ pub struct SessionResponse {
     pub college_name: Option<String>,
     #[serde(rename = "startsAt")]
     pub starts_at: Option<DateTime<Utc>>,
+    /// Excel-upload (mentor) sessions only — `None` for GPS/manual-batch
+    /// sessions, which have no track concept.
+    pub track: Option<String>,
+    #[serde(rename = "sessionTimeRaw")]
+    pub session_time_raw: Option<String>,
+    /// `"not_started" | "partial" | "complete" | "no_roster"` — see
+    /// `SessionRecordStats::marking_status`.
+    #[serde(rename = "markingStatus")]
+    pub marking_status: String,
+    #[serde(rename = "rosterSize")]
+    pub roster_size: Option<i64>,
+    #[serde(rename = "markedCount")]
+    pub marked_count: Option<i64>,
+    #[serde(rename = "attendancePercent")]
+    pub attendance_percent: Option<f64>,
 }
 
 /// Fetches the mentors assigned to a session (id + display name), ordered by
@@ -428,6 +451,7 @@ pub async fn create_session(
             location_id: session.location_id.map(|id| id.to_string()),
             location_name: location.as_ref().map(|l| l.name.clone()),
             batch_id: session.batch_id.map(|b| b.to_string()),
+            excel_batch_id: session.excel_batch_id.map(|b| b.to_string()),
             batch_name: None,
             description: session.description,
             is_active: true,
@@ -440,97 +464,64 @@ pub async fn create_session(
             assigned_admin_names,
             college_name: session.college_name,
             starts_at: session.starts_at,
+            // `create_session` never sets `excel_batch_id` (only the
+            // Excel-upload commit flow does), so there's no track/time-slot
+            // to report; a freshly created session also has no attendance
+            // yet, so marking status is trivially known without a query.
+            track: None,
+            session_time_raw: None,
+            marking_status: if batch_id.is_some() {
+                "not_started"
+            } else {
+                "no_roster"
+            }
+            .to_string(),
+            roster_size: None,
+            marked_count: None,
+            attendance_percent: None,
         }),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetSessionsQuery {
-    #[serde(alias = "location_id")]
-    pub location_id: Option<String>,
-    pub date: Option<String>,
 }
 
 pub async fn get_sessions(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
-    Query(query): Query<GetSessionsQuery>,
+    Query(query): Query<SessionRecordQueryParams>,
 ) -> Result<impl IntoResponse> {
-    let location_filter = query
-        .location_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .and_then(|s| Uuid::parse_str(s).ok());
+    // Infinite-scroll paging: a client-supplied `limit` is clamped to
+    // SESSIONS_LIST_PAGE_SIZE (the Sessions page's scroll-triggered fetches
+    // pass a much smaller one per request); omitting it keeps the original
+    // unpaginated behavior for every other caller (e.g. dashboards) that
+    // just wants "everything, capped generously".
+    let limit = query
+        .limit
+        .map(|l| l.clamp(1, SESSIONS_LIST_PAGE_SIZE))
+        .unwrap_or(SESSIONS_LIST_PAGE_SIZE);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let filters = query.into_filters();
 
-    let (start_utc, end_utc) = if let Some(ref date_str) = query.date {
-        let trimmed = date_str.trim();
-        if trimmed.is_empty() {
-            (None, None)
-        } else if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-            let start = naive_date
-                .and_hms_opt(0, 0, 0)
-                .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
-            let end = naive_date
-                .and_hms_opt(23, 59, 59)
-                .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
-            (start, end)
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
+    // `query_session_records` is also the filter-matching engine for
+    // /stats-overview and /export-filtered — using it here too guarantees
+    // "what's shown in the list" and "what those two endpoints count/export"
+    // never drift apart. Records already carry track/class/time-slot/roster
+    // progress, so the per-session loop below only needs to fill in the
+    // fields that live on `sessions`/`batches`/`short_links` directly.
+    let records = query_session_records(&state.db, &auth, &filters, limit, offset).await?;
 
-    // Super-admins see everything they created; mentors only ever see
-    // sessions a super-admin has assigned them to (via session_admins).
-    let sessions: Vec<Session> = sqlx::query_as(
-        "SELECT * FROM sessions \
-         WHERE (($1 = 'super_admin' AND created_by = $2) \
-                OR ($1 <> 'super_admin' AND EXISTS ( \
-                      SELECT 1 FROM session_admins sa WHERE sa.session_id = sessions.id AND sa.admin_id = $2 \
-                ))) \
-           AND ($3::uuid IS NULL OR location_id = $3) \
-           AND ($4::timestamptz IS NULL OR created_at >= $4) \
-           AND ($5::timestamptz IS NULL OR created_at <= $5) \
-         ORDER BY created_at DESC \
-         LIMIT $6",
-    )
-    .bind(&auth.role)
-    .bind(auth.id)
-    .bind(location_filter)
-    .bind(start_utc)
-    .bind(end_utc)
-    .bind(DASHBOARD_PAGE_SIZE)
-    .fetch_all(&state.db)
-    .await?;
+    let mut sessions_list = Vec::with_capacity(records.len());
 
-    let mut sessions_list = Vec::with_capacity(sessions.len());
-
-    for session in sessions {
-        let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-            .bind(session.location_id)
+    for record in &records {
+        let Some(session): Option<Session> = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
+            .bind(record.id)
             .fetch_optional(&state.db)
-            .await?;
+            .await?
+        else {
+            continue;
+        };
 
         let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
             sqlx::query_as("SELECT * FROM batches WHERE id = $1")
                 .bind(batch_id)
-                .fetch_optional(&state.db)
-                .await?
-        } else {
-            None
-        };
-
-        // Excel-based (mentor) sessions have neither a `locations` row nor a
-        // `batches` row — the "class" column from the roster upload IS the
-        // location, so surface it as `locationName` instead of leaving the
-        // UI to show "Unknown".
-        let excel_class_label: Option<String> = if let Some(excel_batch_id) = session.excel_batch_id
-        {
-            sqlx::query_scalar("SELECT class_label FROM excel_batches WHERE id = $1")
-                .bind(excel_batch_id)
                 .fetch_optional(&state.db)
                 .await?
         } else {
@@ -556,8 +547,14 @@ pub async fn get_sessions(
             id: session.id.to_string(),
             token: String::new(),
             location_id: session.location_id.map(|id| id.to_string()),
-            location_name: location.map(|l| l.name).or(excel_class_label),
+            // `record.class_label` is already `COALESCE(excel_batches.class_label, locations.name)` —
+            // Excel-based (mentor) sessions have neither a `locations` row
+            // nor a `batches` row, so the "class" column from the roster
+            // upload IS the location; this surfaces it as `locationName`
+            // instead of leaving the UI to show "Unknown".
+            location_name: record.class_label.clone(),
             batch_id: session.batch_id.map(|b| b.to_string()),
+            excel_batch_id: session.excel_batch_id.map(|b| b.to_string()),
             batch_name: batch.map(|b| b.name),
             description: session.description,
             is_active: session.is_active,
@@ -570,6 +567,12 @@ pub async fn get_sessions(
             assigned_admin_names,
             college_name: session.college_name,
             starts_at: session.starts_at,
+            track: record.track.clone(),
+            session_time_raw: record.session_time_raw.clone(),
+            marking_status: record.marking_status().to_string(),
+            roster_size: (record.roster_size > 0).then_some(record.roster_size),
+            marked_count: (record.roster_size > 0).then_some(record.marked_count),
+            attendance_percent: record.attendance_percent(),
         });
     }
 
@@ -586,11 +589,6 @@ pub async fn get_session(
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    let location: Option<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?;
-
     let batch: Option<Batch> = if let Some(batch_id) = session.batch_id {
         sqlx::query_as("SELECT * FROM batches WHERE id = $1")
             .bind(batch_id)
@@ -600,14 +598,7 @@ pub async fn get_session(
         None
     };
 
-    let excel_class_label: Option<String> = if let Some(excel_batch_id) = session.excel_batch_id {
-        sqlx::query_scalar("SELECT class_label FROM excel_batches WHERE id = $1")
-            .bind(excel_batch_id)
-            .fetch_optional(&state.db)
-            .await?
-    } else {
-        None
-    };
+    let record = session_record_stats_for(&state.db, &session).await?;
 
     let attendance_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
@@ -628,8 +619,14 @@ pub async fn get_session(
         id: session.id.to_string(),
         token: String::new(),
         location_id: session.location_id.map(|id| id.to_string()),
-        location_name: location.map(|l| l.name).or(excel_class_label),
+        // Excel-based (mentor) sessions have neither a `locations` row nor a
+        // `batches` row — the "class" column from the roster upload IS the
+        // location, so `record.class_label` (already
+        // `COALESCE(excel_batches.class_label, locations.name)`) surfaces it
+        // as `locationName` instead of leaving the UI to show "Unknown".
+        location_name: record.class_label.clone(),
         batch_id: session.batch_id.map(|b| b.to_string()),
+        excel_batch_id: session.excel_batch_id.map(|b| b.to_string()),
         batch_name: batch.map(|b| b.name),
         description: session.description,
         is_active: session.is_active,
@@ -642,6 +639,12 @@ pub async fn get_session(
         assigned_admin_names,
         college_name: session.college_name,
         starts_at: session.starts_at,
+        track: record.track.clone(),
+        session_time_raw: record.session_time_raw.clone(),
+        marking_status: record.marking_status().to_string(),
+        roster_size: (record.roster_size > 0).then_some(record.roster_size),
+        marked_count: (record.roster_size > 0).then_some(record.marked_count),
+        attendance_percent: record.attendance_percent(),
     }))
 }
 
@@ -1384,15 +1387,35 @@ pub async fn export_bulk_attendance(
         ));
     }
 
+    let session_ids: Vec<Uuid> = payload
+        .session_ids
+        .iter()
+        .filter_map(|raw_id| Uuid::parse_str(raw_id).ok())
+        .collect();
+
+    build_sessions_workbook_response(&state, &auth, &session_ids).await
+}
+
+/// Shape returned by `build_sessions_workbook_response` — a concrete type
+/// (rather than `impl IntoResponse`) so it can be `.await`ed from more than
+/// one handler: `export_bulk_attendance` (explicit ids from a checkbox
+/// selection) and `export_sessions_filtered` (ids resolved server-side from
+/// a filter combination).
+type XlsxAttachment = (StatusCode, [(header::HeaderName, String); 2], Vec<u8>);
+
+/// Builds a single workbook containing one worksheet per session (skipping
+/// any id not owned by the caller), auto-detecting GPS vs mentor format per
+/// session exactly as the single-session export does.
+pub(crate) async fn build_sessions_workbook_response(
+    state: &Arc<crate::AppState>,
+    auth: &AuthenticatedAdmin,
+    session_ids: &[Uuid],
+) -> Result<XlsxAttachment> {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let mut used_sheet_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut included = 0usize;
 
-    for raw_id in &payload.session_ids {
-        let Ok(session_id) = Uuid::parse_str(raw_id) else {
-            continue;
-        };
-
+    for &session_id in session_ids {
         let Some(session): Option<Session> =
             sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
                 .bind(session_id)
@@ -1404,7 +1427,7 @@ pub async fn export_bulk_attendance(
         };
 
         let sheet_name = unique_sheet_name(
-            &sheet_label_for(&state, &session).await?,
+            &sheet_label_for(state, &session).await?,
             &mut used_sheet_names,
         );
         let worksheet = workbook.add_worksheet();

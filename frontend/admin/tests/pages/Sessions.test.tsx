@@ -4,6 +4,11 @@ import Sessions from '../../src/pages/Sessions';
 import axios from 'axios';
 import { MemoryRouter } from 'react-router';
 
+const EMPTY_OVERVIEW = {
+  totalRecords: 0, filteredRecords: 0, present: 0, absent: 0, attendancePercent: 0,
+  topSession: null, bottomSession: null,
+};
+
 // Shared mock factory — always returns correct shape for all GET endpoints
 const makeMockGet = ({
   sessions = [] as object[],
@@ -11,8 +16,10 @@ const makeMockGet = ({
   shortLinks = [] as object[],
   batches = [] as object[],
   mentors = [BATCH_MENTOR] as object[],
+  overview = EMPTY_OVERVIEW as object,
 } = {}) =>
   (url: string) => {
+    if (url.includes('/stats-overview')) return Promise.resolve({ data: overview });
     if (url.includes('/sessions')) return Promise.resolve({ data: sessions });
     if (url.includes('/locations')) return Promise.resolve({ data: locations });
     if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortLinks } });
@@ -308,6 +315,88 @@ describe('Sessions', () => {
     await waitFor(() => {
       expect(axios.delete).toHaveBeenCalledWith('/api/admin/sessions/1', { data: { password: 'password123' } });
     });
+  });
+
+  // ─── Global stats + filters ─────────────────────────────────────────────
+
+  it('renders the global stat cards from the stats-overview endpoint', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({
+      sessions: [ACTIVE_SESSION],
+      overview: {
+        totalRecords: 20, filteredRecords: 12, present: 8, absent: 4, attendancePercent: 66.7,
+        topSession: { id: '1', label: 'DSA — Room 3 — 4-6 PM', attendancePercent: 98 },
+        bottomSession: { id: '2', label: 'Cyber — Room 7 — 2-4 PM', attendancePercent: 34 },
+      },
+    }));
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('20')).toBeInTheDocument()); // total records
+    expect(screen.getByText('12')).toBeInTheDocument(); // filtered records
+    expect(screen.getByText('8')).toBeInTheDocument(); // present
+    expect(screen.getByText('4')).toBeInTheDocument(); // absent
+    expect(screen.getByText('67%')).toBeInTheDocument(); // rounded attendance %
+    expect(screen.getByText(/Best attendance: DSA — Room 3 — 4-6 PM — 98%/i)).toBeInTheDocument();
+    expect(screen.getByText(/Needs attention: Cyber — Room 7 — 2-4 PM — 34%/i)).toBeInTheDocument();
+  });
+
+  it('exports everything matching the active filters via "Export Filtered"', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({
+      sessions: [ACTIVE_SESSION],
+      overview: { ...EMPTY_OVERVIEW, filteredRecords: 3 },
+    }));
+    (axios.post as any).mockResolvedValue({
+      data: new Blob(['fake-xlsx']),
+      headers: { 'content-disposition': 'attachment; filename="Attendance_Export_Filtered.xlsx"' },
+    });
+
+    renderComponent();
+    const exportButton = await screen.findByRole('button', { name: /Export Filtered \(3\)/i });
+    fireEvent.click(exportButton);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/admin/sessions/export-filtered',
+        expect.objectContaining({ batchIds: [], tracks: [], timeSlots: [] }),
+        expect.objectContaining({ responseType: 'blob' })
+      );
+    });
+  });
+
+  it('loads and appends the next page of sessions when the scroll sentinel intersects', async () => {
+    const makeSession = (i: number) => ({
+      _id: `s${i}`, locationName: `Loc ${i}`, isActive: true,
+      expiresAt: new Date(Date.now() + 10000).toISOString(),
+      createdAt: new Date().toISOString(), attendanceCount: 0,
+    });
+    const page1 = Array.from({ length: 30 }, (_, i) => makeSession(i));
+    const page2 = Array.from({ length: 5 }, (_, i) => makeSession(30 + i));
+
+    (axios.get as any).mockImplementation((url: string, config?: { params?: { limit?: number; offset?: number } }) => {
+      if (url.includes('/stats-overview')) return Promise.resolve({ data: EMPTY_OVERVIEW });
+      if (url.includes('/sessions')) {
+        const params = config?.params;
+        // The unfiltered "all sessions" fetch (for filter-option derivation)
+        // never passes `limit` — only the paginated display fetch does. Kept
+        // empty here so its location names don't also show up as "All
+        // Classes" dropdown options and collide with the table's own text.
+        if (params?.limit === undefined) return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: params.offset === 0 ? page1 : page2 });
+      }
+      if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortLinks: [] } });
+      return Promise.resolve({ data: [] });
+    });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('Loc 0')).toBeInTheDocument());
+    expect(screen.getByText('Loc 29')).toBeInTheDocument();
+    expect(screen.queryByText('Loc 34')).not.toBeInTheDocument();
+
+    const [observer] = globalThis.__intersectionObserverInstances.slice(-1);
+    observer.callback([{ isIntersecting: true }]);
+
+    await waitFor(() => expect(screen.getByText('Loc 34')).toBeInTheDocument());
+    // Page-1 rows must still be there — appended, not replaced.
+    expect(screen.getByText('Loc 0')).toBeInTheDocument();
   });
 
   it('deletes multiple selected sessions via the bulk-delete confirmation', async () => {

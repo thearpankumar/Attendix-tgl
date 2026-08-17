@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import axios from 'axios';
@@ -81,13 +81,76 @@ describe('Mentor Dashboard', () => {
     renderDashboard();
 
     await waitFor(() => {
-      expect(screen.getByText('Your Sessions Today')).toBeInTheDocument();
+      expect(screen.getByText('Your Sessions')).toBeInTheDocument();
       expect(screen.getByText('Active Sessions')).toBeInTheDocument();
-      expect(screen.getByText('Upcoming')).toBeInTheDocument();
+      // "Upcoming" appears both as the stat-card label and (sans count, since
+      // sess3 starts later today rather than a future day) the tab button.
+      expect(screen.getAllByText('Upcoming').length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText('Students')).toBeInTheDocument();
       expect(screen.getByText('Attendance')).toBeInTheDocument();
       // 45 (sess1) + 10 (sess3) = 55 total students across open sessions
       expect(screen.getByText('55')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show a session starting tomorrow under "Today" — it belongs in the Upcoming tab', async () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    const tomorrowSession = {
+      ...LIVE_SESSION, _id: 'sess-tomorrow', batchName: 'SRM IST', collegeName: 'SRM IST',
+      startsAt: tomorrow.toISOString(),
+      expiresAt: new Date(tomorrow.getTime() + 3_600_000).toISOString(),
+    };
+    mockGet([tomorrowSession]);
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Your Sessions')).toBeInTheDocument());
+
+    // Defaults to the "Today" tab — tomorrow's session must not appear here.
+    expect(screen.queryByText('SRM IST')).not.toBeInTheDocument();
+    expect(screen.getByText(/no sessions today/i)).toBeInTheDocument();
+
+    // Switching to "Upcoming" reveals it.
+    fireEvent.click(screen.getByRole('button', { name: /^Upcoming/ }));
+    await waitFor(() => expect(screen.getAllByText('SRM IST').length).toBeGreaterThan(0));
+  });
+
+  it('does not show a misleading 100% Attendance when every session is upcoming, even if one has stray leftover marks', async () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const upcomingWithStrayMarks = {
+      ...LIVE_SESSION, _id: 'sess-upcoming-marked', batchName: 'SRM IST',
+      startsAt: tomorrow.toISOString(),
+      expiresAt: new Date(tomorrow.getTime() + 3_600_000).toISOString(),
+    };
+    // One stray manual mark from before this session got rescheduled —
+    // 1 present out of 9, nowhere near "100%".
+    mockGet([upcomingWithStrayMarks], {
+      'sess-upcoming-marked': { total: 9, marked: 1, present: 1, absent: 0, unmarked: 8 },
+    });
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Your Sessions')).toBeInTheDocument());
+
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+    expect(screen.queryByText('Attendance Overview')).not.toBeInTheDocument();
+  });
+
+  it('keeps a live session and one starting later today under the "Today" tab', async () => {
+    const laterToday = new Date(Date.now() + 3_600_000);
+    const todaySession = {
+      ...LIVE_SESSION, _id: 'sess-later-today', batchName: 'CS303',
+      startsAt: laterToday.toISOString(),
+      expiresAt: new Date(laterToday.getTime() + 3_600_000).toISOString(),
+    };
+    mockGet([LIVE_SESSION, todaySession]);
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('CS101').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('CS303').length).toBeGreaterThan(0);
     });
   });
 

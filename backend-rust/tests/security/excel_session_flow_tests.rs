@@ -333,6 +333,12 @@ fn read_xlsx_sheet(bytes: &[u8], sheet_index: usize) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Query-string values (track/class/time-slot names) can contain spaces,
+/// which must be percent-encoded to survive as a single URI segment.
+fn enc(s: &str) -> String {
+    s.replace(' ', "%20")
+}
+
 fn sheet_count(bytes: &[u8]) -> usize {
     let wb = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(bytes.to_vec()))
         .expect("export must be a valid xlsx file");
@@ -394,7 +400,7 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
             &app,
             "/api/admin/excel-sessions/parse",
             &[
-                ("sessionDate", "2026-08-20"),
+                ("sessionDate", "2020-01-01"),
                 ("collegeName", "Test College"),
             ],
             "file",
@@ -438,7 +444,7 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
             "track": g["track"],
             "classLabel": g["classLabel"],
             "sessionTimeRaw": g["sessionTimeRaw"],
-            "startsAt": format!("2026-08-20T{}:00Z", g["startTime"].as_str().unwrap()),
+            "startsAt": format!("2020-01-01T{}:00Z", g["startTime"].as_str().unwrap()),
             "durationMinutes": g["durationMinutes"],
             "collegeName": "Test College",
             "description": format!("{} — {}", g["track"], g["classLabel"]),
@@ -449,7 +455,7 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
     };
     let commit_payload = serde_json::json!({
         "sourceFilename": "roster.csv",
-        "sessionDate": "2026-08-20",
+        "sessionDate": "2020-01-01",
         "groups": [build_commit_group(dsa_group), build_commit_group(cyber_group)],
     });
     let (status, commit_result) = super_client
@@ -548,6 +554,144 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
         status,
         StatusCode::OK,
         "manual mark should succeed: {mark_body:?}"
+    );
+
+    // ── Track/class/time-slot/marking-status filters on the sessions list —
+    //    the "download by track/class/time-slot without missing any"
+    //    workflow. At this point DSA has 1/2 marked present (partial,
+    //    50%) and Cybersecurity has 0/1 marked (not_started, 0%). ──
+    let (status, filtered) = super_client
+        .get(&app, "/api/admin/sessions?tracks=DSA")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered = filtered.as_array().unwrap();
+    assert_eq!(
+        filtered.len(),
+        1,
+        "tracks=DSA should match only the DSA session"
+    );
+    assert_eq!(filtered[0]["_id"], dsa_session_id);
+    assert_eq!(filtered[0]["track"], "DSA");
+    assert_eq!(filtered[0]["markingStatus"], "partial");
+    assert_eq!(filtered[0]["rosterSize"], 2);
+    assert_eq!(filtered[0]["markedCount"], 1);
+    assert_eq!(filtered[0]["attendancePercent"], 50.0);
+
+    let (status, filtered) = super_client
+        .get(&app, "/api/admin/sessions?classLabels=LH%202")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered = filtered.as_array().unwrap();
+    assert_eq!(
+        filtered.len(),
+        1,
+        "classLabels=LH 2 should match only the Cybersecurity session"
+    );
+    assert_eq!(filtered[0]["_id"], cyber_session_id);
+    assert_eq!(filtered[0]["markingStatus"], "not_started");
+
+    // classLabels is multi-select: comma-separated values must match either.
+    let (status, filtered) = super_client
+        .get(&app, "/api/admin/sessions?classLabels=CLS%201,LH%202")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered_ids: std::collections::HashSet<String> = filtered
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        filtered_ids,
+        std::collections::HashSet::from([dsa_session_id.clone(), cyber_session_id.clone()]),
+        "classLabels=CLS 1,LH 2 should match both sessions"
+    );
+
+    let dsa_time_enc = enc(dsa_group["sessionTimeRaw"].as_str().unwrap());
+    let (status, filtered) = super_client
+        .get(
+            &app,
+            &format!("/api/admin/sessions?timeSlots={dsa_time_enc}"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered = filtered.as_array().unwrap();
+    assert_eq!(
+        filtered.len(),
+        1,
+        "the DSA time slot should match only the DSA session"
+    );
+    assert_eq!(filtered[0]["_id"], dsa_session_id);
+
+    let (status, filtered) = super_client
+        .get(&app, "/api/admin/sessions?markingStatus=complete")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        filtered.as_array().unwrap().is_empty(),
+        "neither session is fully marked yet"
+    );
+
+    let (status, filtered) = super_client
+        .get(&app, "/api/admin/sessions?markingStatus=partial")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered = filtered.as_array().unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["_id"], dsa_session_id);
+
+    let (status, filtered) = super_client
+        .get(&app, &format!("/api/admin/sessions?search={roll1}"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered = filtered.as_array().unwrap();
+    assert_eq!(
+        filtered.len(),
+        1,
+        "searching a roll number should find only the session whose roster contains it"
+    );
+    assert_eq!(filtered[0]["_id"], dsa_session_id);
+
+    // ── Global stats overview: totals ignore filters, everything else
+    //    reflects the currently active ones ──
+    let (status, overview) = super_client
+        .get(&app, "/api/admin/sessions/stats-overview")
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "stats-overview should succeed: {overview:?}"
+    );
+    assert_eq!(overview["totalRecords"], 2);
+    assert_eq!(overview["filteredRecords"], 2);
+    assert_eq!(overview["present"], 1);
+    assert_eq!(overview["absent"], 2);
+    assert_eq!(overview["topSession"]["id"], dsa_session_id);
+    assert_eq!(overview["bottomSession"]["id"], cyber_session_id);
+
+    let (status, overview_dsa) = super_client
+        .get(&app, "/api/admin/sessions/stats-overview?tracks=DSA")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(overview_dsa["totalRecords"], 2, "totals stay unfiltered");
+    assert_eq!(overview_dsa["filteredRecords"], 1);
+    assert_eq!(overview_dsa["present"], 1);
+    assert_eq!(overview_dsa["absent"], 1);
+
+    // ── Export-filtered: exports exactly what the filter matches, without
+    //    the caller needing to know session ids up front ──
+    let (status, filtered_bytes) = super_client
+        .mutate_bytes(
+            &app,
+            "/api/admin/sessions/export-filtered",
+            serde_json::json!({ "tracks": ["DSA"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        sheet_count(&filtered_bytes),
+        1,
+        "export-filtered(tracks=DSA) must contain exactly the DSA session"
     );
 
     // ── Mentor-format export: columns + content match the confirmed
@@ -727,4 +871,164 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
             .all(|s| s["_id"] != dsa_session_id && s["_id"] != cyber_session_id),
         "both sessions must be gone after bulk delete"
     );
+}
+
+/// Infinite-scroll paging on `GET /batches` and `GET /sessions`: fetching in
+/// small pages must return every row exactly once with no gaps/duplicates
+/// across pages, respect `limit`, and — critically for every caller that
+/// hasn't been updated to paginate (e.g. the Sessions page's batch-picker
+/// dropdowns) — omitting `limit` entirely must still return everything.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn list_endpoints_support_scroll_paging_without_gaps_or_duplicates() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("paging-super");
+    seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    // ── Batches: create 5 manual batches, then page through them 2 at a time ──
+    let batch_names: Vec<String> = (0..5).map(|i| unique(&format!("batch-{i}"))).collect();
+    for name in &batch_names {
+        let (status, _) = super_client
+            .post_multipart_csv(
+                &app,
+                "/api/admin/batches",
+                &[("name", name.as_str()), ("description", "paging test")],
+                "file",
+                "roster.csv",
+                b"name,roll_number\nStudent A,R1\n",
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "seed batch {name} must be created"
+        );
+    }
+
+    let (status, unpaginated) = super_client.get(&app, "/api/admin/batches").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        unpaginated.as_array().unwrap().len(),
+        5,
+        "omitting limit/offset must still return every batch"
+    );
+
+    let mut seen_batch_ids = std::collections::HashSet::new();
+    let mut offset = 0;
+    loop {
+        let (status, page) = super_client
+            .get(&app, &format!("/api/admin/batches?limit=2&offset={offset}"))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let page = page.as_array().unwrap().clone();
+        assert!(
+            page.len() <= 2,
+            "a page must never exceed the requested limit"
+        );
+        if page.is_empty() {
+            break;
+        }
+        for row in &page {
+            let id = row["_id"].as_str().unwrap().to_string();
+            assert!(
+                seen_batch_ids.insert(id),
+                "the same batch must never appear on two different pages"
+            );
+        }
+        offset += page.len();
+    }
+    assert_eq!(
+        seen_batch_ids.len(),
+        5,
+        "paging through with limit=2 must eventually surface every batch exactly once"
+    );
+
+    // ── Sessions: create 5 normal (GPS) sessions, then page through them ──
+    let (status, location_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/locations",
+            serde_json::json!({
+                "name": unique("paging-location"),
+                "latitude": 12.9,
+                "longitude": 77.6,
+                "radiusMeters": 100,
+            }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "seed location: {location_body:?}"
+    );
+    let location_id = location_body["_id"].as_str().unwrap().to_string();
+
+    let mut seeded_session_ids = std::collections::HashSet::new();
+    for _ in 0..5 {
+        let (status, session_body) = super_client
+            .mutate(
+                &app,
+                "POST",
+                "/api/admin/sessions",
+                serde_json::json!({
+                    "locationId": location_id,
+                    "durationMinutes": 30,
+                    "shortlinkMode": "none",
+                }),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "seed session: {session_body:?}"
+        );
+        seeded_session_ids.insert(session_body["_id"].as_str().unwrap().to_string());
+    }
+
+    let (status, unpaginated) = super_client.get(&app, "/api/admin/sessions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        unpaginated.as_array().unwrap().len(),
+        5,
+        "omitting limit/offset must still return every session"
+    );
+
+    let mut seen_session_ids = std::collections::HashSet::new();
+    let mut offset = 0;
+    loop {
+        let (status, page) = super_client
+            .get(
+                &app,
+                &format!("/api/admin/sessions?limit=2&offset={offset}"),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let page = page.as_array().unwrap().clone();
+        assert!(
+            page.len() <= 2,
+            "a page must never exceed the requested limit"
+        );
+        if page.is_empty() {
+            break;
+        }
+        for row in &page {
+            let id = row["_id"].as_str().unwrap().to_string();
+            assert!(
+                seen_session_ids.insert(id),
+                "the same session must never appear on two different pages"
+            );
+        }
+        offset += page.len();
+    }
+    assert_eq!(seen_session_ids, seeded_session_ids);
 }

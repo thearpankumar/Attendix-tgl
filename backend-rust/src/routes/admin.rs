@@ -112,6 +112,14 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(crate::controllers::bulk_delete_sessions),
         )
         .route(
+            "/sessions/stats-overview",
+            get(crate::controllers::get_sessions_stats_overview),
+        )
+        .route(
+            "/sessions/export-filtered",
+            post(crate::controllers::export_sessions_filtered),
+        )
+        .route(
             "/sessions/{id}/mentors",
             patch(crate::controllers::update_session_mentors),
         )

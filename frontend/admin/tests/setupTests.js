@@ -1,5 +1,26 @@
 import '@testing-library/jest-dom';
-import { vi } from 'vitest';
+import { vi, beforeEach } from 'vitest';
+
+// jsdom has no IntersectionObserver. This fake records every instance on
+// globalThis so infinite-scroll tests can grab the latest one and fire its
+// callback manually (`observer.callback([{ isIntersecting: true }])`) to
+// simulate the sentinel scrolling into view.
+globalThis.__intersectionObserverInstances = [];
+class IntersectionObserverMock {
+  constructor(callback, options) {
+    this.callback = callback;
+    this.options = options;
+    globalThis.__intersectionObserverInstances.push(this);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.IntersectionObserver = IntersectionObserverMock;
+
+beforeEach(() => {
+  globalThis.__intersectionObserverInstances = [];
+});
 
 vi.mock('framer-motion', () => {
   const React = require('react');

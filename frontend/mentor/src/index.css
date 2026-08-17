@@ -314,6 +314,39 @@ button, input { font-family: inherit; }
   color: var(--color-muted);
 }
 
+/* ── "Session starts soon" gate (SessionDetail, pre-start) ────── */
+
+.starts-soon-card {
+  padding: 40px 24px;
+}
+.starts-soon-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-txt);
+}
+.starts-soon-countdown {
+  display: inline-block;
+  margin: 0;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-txt);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 380px) {
+  .starts-soon-card { padding: 32px 16px; }
+  .starts-soon-icon { width: 48px; height: 48px; }
+}
+
 /* ── Progress ───────────────────────────────────────────── */
 
 .progress-track {

@@ -7,6 +7,9 @@ import { toast } from 'react-toastify';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Badge from '../components/ui/Badge';
+import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
+
+const PAGE_SIZE = 30;
 
 interface Batch {
   _id: string;
@@ -34,6 +37,9 @@ const Batches = () => {
   const navigate = useNavigate();
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const offsetRef = useRef(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   
@@ -53,14 +59,39 @@ const Batches = () => {
     fetchBatches();
   }, []);
 
+  // Resets back to the first page — used on mount and after any mutation
+  // (create/delete), since the set of batches (and their order) may have
+  // changed underneath whatever the user had scrolled to.
   const fetchBatches = async () => {
+    setLoading(true);
     try {
-      const { data } = await axios.get('/api/admin/batches');
+      const { data } = await axios.get<Batch[]>('/api/admin/batches', { params: { limit: PAGE_SIZE, offset: 0 } });
       setBatches(data);
+      offsetRef.current = data.length;
+      setHasMore(data.length === PAGE_SIZE);
     } catch (_err) {
       toast.error('Failed to load batches');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Scroll-triggered: fetches and appends the next page without disturbing
+  // what's already loaded.
+  const fetchMoreBatches = async () => {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const { data } = await axios.get<Batch[]>('/api/admin/batches', {
+        params: { limit: PAGE_SIZE, offset: offsetRef.current },
+      });
+      setBatches((prev) => [...prev, ...data]);
+      offsetRef.current += data.length;
+      setHasMore(data.length === PAGE_SIZE);
+    } catch (_err) {
+      toast.error('Failed to load more batches');
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -270,7 +301,15 @@ const Batches = () => {
             </button>
           </div>
         ) : (
-          <DataTable rows={batches} columns={columns} rowKey={(b) => b._id} />
+          <>
+            <DataTable rows={batches} columns={columns} rowKey={(b) => b._id} />
+            {hasMore && (
+              <>
+                <InfiniteScrollSentinel onIntersect={fetchMoreBatches} disabled={loadingMore} />
+                {loadingMore && <div className="load-more-indicator">Loading more…</div>}
+              </>
+            )}
+          </>
         )}
       </div>
 

@@ -4,7 +4,7 @@ import { useParams } from 'react-router';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { PanInfo } from 'framer-motion';
-import { Check, X, Loader2, MapPin, Clock, PartyPopper, RotateCcw, Layers, List as ListIcon, Search } from 'lucide-react';
+import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search } from 'lucide-react';
 
 interface RosterStudent {
   studentId: string;
@@ -32,6 +32,14 @@ interface RosterResponse {
 
 const initials = (name: string) => name.split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join('') || '?';
 
+const timeUntil = (iso: string, now: number) => {
+  const diffMin = Math.round((new Date(iso).getTime() - now) / 60000);
+  if (diffMin <= 0) return 'Starting now';
+  const h = Math.floor(diffMin / 60);
+  const m = diffMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+
 const SWIPE_THRESHOLD = 90;
 
 type ViewMode = 'stack' | 'list';
@@ -44,7 +52,16 @@ const SessionDetail = () => {
   const [pending, setPending] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('stack');
   const [searchQuery, setSearchQuery] = useState('');
+  const [now, setNow] = useState(() => Date.now());
   const fetchedOnce = useRef(false);
+
+  // Ticks so a mentor who opens this page before the session starts sees the
+  // countdown live-update and gets the marking UI automatically once the
+  // start time passes, with no manual refresh needed.
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchRoster = useCallback(async () => {
     if (!id) return;
@@ -140,6 +157,10 @@ const SessionDetail = () => {
   const { session, summary } = data;
   const top = unmarked[0];
   const progressPct = summary.total === 0 ? 0 : Math.round((summary.marked / summary.total) * 100);
+  // A session with no startsAt (a normal self-check-in session, marked
+  // manually only as a fallback) has always been markable — the gate only
+  // applies to sessions explicitly scheduled for the future.
+  const hasStarted = !session.startsAt || new Date(session.startsAt).getTime() <= now;
 
   return (
     <div className="fade-in">
@@ -165,7 +186,16 @@ const SessionDetail = () => {
         <div className="progress-track"><div className="progress-fill" style={{ width: `${progressPct}%` }} /></div>
       </div>
 
-      {summary.total === 0 ? (
+      {!hasStarted ? (
+        <div className="card empty-state starts-soon-card" style={{ marginTop: 20 }}>
+          <div className="starts-soon-icon"><Hourglass size={26} /></div>
+          <p style={{ fontWeight: 700, fontSize: 16, margin: '2px 0 4px' }}>This session hasn&apos;t started yet</p>
+          <p className="starts-soon-countdown">{timeUntil(session.startsAt!, now)}</p>
+          <p style={{ fontSize: 12.5, color: 'var(--color-muted)', margin: '10px 0 0' }}>
+            Attendance marking opens automatically once it begins.
+          </p>
+        </div>
+      ) : summary.total === 0 ? (
         <div className="card empty-state" style={{ marginTop: 20 }}>
           <p>This session has no roster attached.</p>
         </div>

@@ -50,6 +50,17 @@ const timeUntil = (iso: string) => {
   return h > 0 ? `Starts in ${h}h ${m}m` : `Starts in ${m}m`;
 };
 
+// Calendar-day comparison (local time), not a millisecond/24h-window
+// comparison — a session starting at 11pm today and one starting at 1am
+// tomorrow are ~2 hours apart but must land in different buckets, while a
+// session 20+ hours from now that's still "today" (started this calendar
+// day) must not get pushed into "Upcoming".
+const isToday = (iso: string) => {
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+};
+
 const greetingWord = () => {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
@@ -64,6 +75,7 @@ const Dashboard = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [rosterMap, setRosterMap] = useState<Record<string, RosterSummary>>({});
   const [loading, setLoading] = useState(true);
+  const [sessionsTab, setSessionsTab] = useState<'today' | 'upcoming'>('today');
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -105,19 +117,44 @@ const Dashboard = () => {
   const liveSessions = openSessions.filter((s) => sessionState(s) === 'live');
   const upcomingSessions = openSessions.filter((s) => sessionState(s) === 'upcoming');
   const closedSessions = sessions.filter((s) => sessionState(s) === 'closed');
-  const scheduled = openSessions
+
+  // "Today" = currently live, or scheduled to start later today. "Upcoming"
+  // = scheduled for a future calendar day. A live session is always today
+  // by definition (it's happening right now), regardless of when it started.
+  const todaySessions = openSessions.filter((s) => sessionState(s) === 'live' || (s.startsAt && isToday(s.startsAt)));
+  const upcomingDaySessions = openSessions.filter((s) => sessionState(s) === 'upcoming' && s.startsAt && !isToday(s.startsAt));
+  const visibleSessions = sessionsTab === 'today' ? todaySessions : upcomingDaySessions;
+
+  const scheduled = todaySessions
     .filter((s) => s.startsAt)
     .sort((a, b) => new Date(a.startsAt!).getTime() - new Date(b.startsAt!).getTime());
 
+  // "Students" is a headcount across everything on your plate (today +
+  // upcoming), so it stays scoped to openSessions. "Attendance" is different:
+  // it's meant to answer "how is marking going right now" — rolling in
+  // sessions that haven't started yet (where marked is 0, or occasionally a
+  // handful of stray marks from before this session was rescheduled) can
+  // make a tiny, unrepresentative sample of marks look like "100%" even
+  // though thousands of students are simply unmarked. Scoping the
+  // present/marked ratio to only currently-live sessions means "no live
+  // sessions" correctly shows "—" instead of a misleading percentage.
   const rosterTotals = openSessions.reduce(
     (acc, s) => {
       const r = rosterMap[s._id];
-      if (r) { acc.total += r.total; acc.present += r.present; acc.marked += r.marked; }
+      if (r) { acc.total += r.total; }
       return acc;
     },
-    { total: 0, present: 0, marked: 0 }
+    { total: 0 }
   );
-  const attendancePct = rosterTotals.marked === 0 ? null : Math.round((rosterTotals.present / rosterTotals.marked) * 100);
+  const liveRosterTotals = liveSessions.reduce(
+    (acc, s) => {
+      const r = rosterMap[s._id];
+      if (r) { acc.present += r.present; acc.marked += r.marked; }
+      return acc;
+    },
+    { present: 0, marked: 0 }
+  );
+  const attendancePct = liveRosterTotals.marked === 0 ? null : Math.round((liveRosterTotals.present / liveRosterTotals.marked) * 100);
 
   return (
     <div className="fade-in">
@@ -145,31 +182,49 @@ const Dashboard = () => {
 
           {openSessions.length > 0 && (
             <div className="panel">
-              <div className="panel-header">Your Sessions Today</div>
-              <div>
-                {openSessions.map((s) => {
-                  const state = sessionState(s);
-                  const roster = rosterMap[s._id];
-                  return (
-                    <div key={s._id} className="session-row" onClick={() => navigate(`/sessions/${s._id}`)}>
-                      <div>
-                        <div className="session-row-title">{s.batchName || s.collegeName || 'Session'}</div>
-                        <div className="session-row-sub">
-                          {[s.collegeName, s.locationName].filter(Boolean).join(' · ') || 'No location'}
+              <div className="panel-header">Your Sessions</div>
+              <div className="view-toggle" style={{ margin: '12px 16px 4px' }}>
+                <button type="button" className={sessionsTab === 'today' ? 'active' : ''} onClick={() => setSessionsTab('today')}>
+                  Today{todaySessions.length > 0 ? ` (${todaySessions.length})` : ''}
+                </button>
+                <button type="button" className={sessionsTab === 'upcoming' ? 'active' : ''} onClick={() => setSessionsTab('upcoming')}>
+                  Upcoming{upcomingDaySessions.length > 0 ? ` (${upcomingDaySessions.length})` : ''}
+                </button>
+              </div>
+              {visibleSessions.length === 0 ? (
+                <div className="empty-state" style={{ padding: '28px 20px' }}>
+                  <p style={{ fontSize: 13 }}>
+                    {sessionsTab === 'today' ? 'No sessions today.' : 'No upcoming sessions scheduled.'}
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  {visibleSessions.map((s) => {
+                    const state = sessionState(s);
+                    const roster = rosterMap[s._id];
+                    const slot = sessionsTab === 'upcoming' ? formatSlot(s) : null;
+                    return (
+                      <div key={s._id} className="session-row" onClick={() => navigate(`/sessions/${s._id}`)}>
+                        <div>
+                          <div className="session-row-title">{s.batchName || s.collegeName || 'Session'}</div>
+                          <div className="session-row-sub">
+                            {[s.collegeName, s.locationName].filter(Boolean).join(' · ') || 'No location'}
+                            {slot ? ` · ${slot}` : ''}
+                          </div>
+                        </div>
+                        <div className="session-row-meta">
+                          <span className={`badge ${state === 'live' ? 'badge-success' : 'badge-warning'}`}>
+                            {state === 'live' ? 'LIVE' : (s.startsAt ? timeUntil(s.startsAt) : 'Upcoming')}
+                          </span>
+                          <span className="session-row-count">
+                            {roster ? `${roster.marked}/${roster.total}` : `${s.attendanceCount}`} Marked
+                          </span>
                         </div>
                       </div>
-                      <div className="session-row-meta">
-                        <span className={`badge ${state === 'live' ? 'badge-success' : 'badge-warning'}`}>
-                          {state === 'live' ? 'LIVE' : (s.startsAt ? timeUntil(s.startsAt) : 'Upcoming')}
-                        </span>
-                        <span className="session-row-count">
-                          {roster ? `${roster.marked}/${roster.total}` : `${s.attendanceCount}`} Marked
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -198,7 +253,7 @@ const Dashboard = () => {
             </div>
           )}
 
-          {rosterTotals.marked > 0 && (
+          {liveRosterTotals.marked > 0 && (
             <div className="panel">
               <div className="panel-header">Attendance Overview</div>
               <div className="donut-wrap">
@@ -212,8 +267,8 @@ const Dashboard = () => {
                   </div>
                 </div>
                 <div className="donut-legend">
-                  <div><span className="legend-dot present" /> Present <strong>{rosterTotals.present}</strong></div>
-                  <div><span className="legend-dot absent" /> Absent <strong>{rosterTotals.marked - rosterTotals.present}</strong></div>
+                  <div><span className="legend-dot present" /> Present <strong>{liveRosterTotals.present}</strong></div>
+                  <div><span className="legend-dot absent" /> Absent <strong>{liveRosterTotals.marked - liveRosterTotals.present}</strong></div>
                 </div>
               </div>
             </div>

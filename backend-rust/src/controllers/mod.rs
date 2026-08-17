@@ -6,6 +6,7 @@ mod location;
 mod public_webauthn;
 mod roster_source;
 mod session;
+mod session_records;
 mod short_link;
 mod webauthn;
 
@@ -17,6 +18,7 @@ pub use batch::*;
 pub use location::*;
 pub use roster_source::*;
 pub use session::*;
+pub use session_records::*;
 pub use short_link::*;
 pub use webauthn::*;
 

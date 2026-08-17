@@ -35,6 +35,23 @@ pub const GPS_ACCURACY_SUSPICIOUS_THRESHOLD: f64 = 100.0;
 pub const DASHBOARD_PAGE_SIZE: i64 = 50;
 pub const RECENT_ACTIVITY_LIMIT: i64 = 5;
 
+// The admin Sessions list used to share DASHBOARD_PAGE_SIZE (50), which
+// silently dropped sessions past that count with no indication anything was
+// missing. This is a much higher, dedicated cap; `/sessions/stats-overview`
+// and `/sessions/export-filtered` scan with no cap at all, so a colleague
+// filtering/exporting is never limited by what happened to load on screen.
+// Also doubles as the default `limit` (and the ceiling any client-supplied
+// `limit` is clamped to) for `GET /sessions` — the Sessions page's
+// infinite-scroll fetches explicitly pass a much smaller `limit` per request.
+pub const SESSIONS_LIST_PAGE_SIZE: i64 = 500;
+
+// Ceiling any client-supplied `limit` on `GET /batches` is clamped to.
+// Unlike Sessions, `GET /batches` has no default page size — omitting
+// `limit` entirely still returns everything (existing callers, e.g. the
+// Sessions page's batch-picker dropdowns, rely on that) — this only bounds
+// requests that opt into pagination (the Batches page's infinite scroll).
+pub const BATCHES_LIST_MAX_PAGE_SIZE: i64 = 200;
+
 // Device verification confidence adjustment
 pub const DEVICE_CONFIDENCE_PENALTY: f64 = 0.15;
 

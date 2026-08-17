@@ -233,6 +233,18 @@ pub async fn mark_attendance_manual(
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
+    // Mirrors the mentor frontend's own "starts soon" gate — enforced here
+    // too since that's only a UI convenience, not something a direct API
+    // call is bound by. A session with no `starts_at` (normal self-check-in)
+    // has always been markable immediately.
+    if let Some(starts_at) = session.starts_at {
+        if starts_at > Utc::now() {
+            return Err(AppError::BadRequest(
+                "This session hasn't started yet".to_string(),
+            ));
+        }
+    }
+
     let source = resolve_roster_source(&session);
     if matches!(source, crate::controllers::RosterSource::None) {
         return Err(AppError::BadRequest(

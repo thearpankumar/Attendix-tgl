@@ -622,6 +622,93 @@ async fn manual_attendance_mark_then_undo_roundtrip() {
     );
 }
 
+/// A session scheduled for the future must reject manual marking outright —
+/// the mentor frontend has its own "starts soon" gate, but that's a UI
+/// convenience only, so the API must enforce this independently of any
+/// client.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn manual_attendance_rejects_marking_before_session_starts() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("exam-super");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    let mentor_username = unique("exam-mentor");
+    let (_status, mentor_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/users",
+            serde_json::json!({
+                "username": mentor_username,
+                "email": format!("{}@example.com", mentor_username),
+                "password": "mentor-password-123",
+                "role": "admin",
+            }),
+        )
+        .await;
+    let mentor_id = mentor_body["_id"].as_str().unwrap().to_string();
+
+    let roll_number = "FUTURE001";
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, roll_number).await;
+
+    let future_starts_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    let (status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "collegeName": "XYZ College",
+                "startsAt": future_starts_at,
+                "durationMinutes": 60,
+            }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "exam session creation should succeed: {session_body:?}"
+    );
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+
+    let (status, mark_body) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "present" }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "marking a not-yet-started session must be rejected: {mark_body:?}"
+    );
+
+    let (_, roster) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/roster"))
+        .await;
+    assert_eq!(
+        roster["summary"]["unmarked"], 1,
+        "the rejected mark must not have taken effect"
+    );
+}
+
 /// A student who self-submitted attendance for a roll number must never
 /// have their forensic data silently overwritten by a mentor's manual mark
 /// — the endpoint must 409 instead.

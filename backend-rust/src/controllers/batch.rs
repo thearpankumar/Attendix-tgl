@@ -1,17 +1,18 @@
 use axum::{
-    extract::{Json, Multipart, Path, State},
+    extract::{Json, Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Extension,
 };
 use calamine::{open_workbook_from_rs, Ods, Reader, Xls, Xlsx};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
+    constants::BATCHES_LIST_MAX_PAGE_SIZE,
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
     models::{Batch, BatchCreate, Student, StudentInput},
@@ -140,9 +141,22 @@ pub async fn create_batch(
     ))
 }
 
+/// `limit`/`offset` are both optional and both-or-nothing in practice: the
+/// Batches page's infinite scroll passes both to fetch one page at a time;
+/// every other caller (e.g. the Sessions page's batch-picker dropdowns,
+/// which need the complete list) omits them and gets everything, exactly as
+/// before pagination existed — this keeps the endpoint's default behavior
+/// unchanged for callers that were never updated to paginate.
+#[derive(Debug, Deserialize)]
+pub struct GetBatchesQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 pub async fn get_batches(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
+    Query(query): Query<GetBatchesQuery>,
 ) -> Result<impl IntoResponse> {
     let batches = sqlx::query_as::<_, Batch>(
         "SELECT * FROM batches WHERE created_by = $1 ORDER BY created_at DESC",
@@ -211,6 +225,18 @@ pub async fn get_batches(
     }));
 
     response.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+
+    // Both source queries above are still unfiltered/unlimited (they always
+    // have been — the manual/excel split makes DB-level LIMIT/OFFSET
+    // unreliable without a combined SQL UNION, since global order can only
+    // be determined after both sides are merged) — pagination is applied
+    // in-memory to the already fully-sorted combined list, purely to shrink
+    // the JSON response for callers that opt in via `limit`.
+    if let Some(limit) = query.limit {
+        let limit = limit.clamp(1, BATCHES_LIST_MAX_PAGE_SIZE) as usize;
+        let offset = query.offset.unwrap_or(0).max(0) as usize;
+        response = response.into_iter().skip(offset).take(limit).collect();
+    }
 
     Ok(Json(response))
 }

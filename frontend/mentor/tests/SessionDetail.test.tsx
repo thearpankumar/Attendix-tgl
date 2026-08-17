@@ -28,11 +28,36 @@ const renderSessionDetail = () => render(
   </MemoryRouter>
 );
 
+const ROSTER_NOT_STARTED = {
+  session: {
+    _id: 'sess1',
+    collegeName: 'XYZ College',
+    batchName: 'CS101',
+    startsAt: new Date(Date.now() + 3_600_000).toISOString(),
+    expiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+  },
+  students: [
+    { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
+  ],
+  summary: { total: 1, marked: 0, present: 0, absent: 0, unmarked: 1 },
+};
+
 describe('Mentor SessionDetail (roster + manual marking)', () => {
   beforeEach(() => {
     vi.mocked(axios.get).mockReset();
     vi.mocked(axios.post).mockReset();
     vi.mocked(axios.delete).mockReset();
+  });
+
+  it('shows a "starts soon" state instead of the marking UI for a session that has not started', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: ROSTER_NOT_STARTED });
+    renderSessionDetail();
+
+    await waitFor(() => expect(screen.getByText(/hasn't started yet/i)).toBeInTheDocument());
+
+    expect(screen.queryByText('Asha Rao')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /present/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /absent/i })).not.toBeInTheDocument();
   });
 
   it('shows the unmarked student and progress summary', async () => {

@@ -17,7 +17,14 @@ import { SkeletonRows } from '../components/ui/Skeleton';
 import SessionFilters from '../components/ui/SessionFilters';
 import MultiSelect from '../components/ui/MultiSelect';
 import ExcelSessionUploadModal from '../components/sessions/ExcelSessionUploadModal';
+import SessionStatsOverview from '../components/sessions/SessionStatsOverview';
+import type { SessionRecordsOverview } from '../components/sessions/SessionStatsOverview';
+import SessionRecordFilters, { emptyRecordFilters } from '../components/sessions/SessionRecordFilters';
+import type { SessionRecordFiltersState } from '../components/sessions/SessionRecordFilters';
+import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
 import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadBlob';
+
+const PAGE_SIZE = 30;
 
 interface Location { _id: string; name: string; radiusMeters: number; }
 interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; }
@@ -36,6 +43,14 @@ interface Session {
   assignedAdminNames?: string[];
   collegeName?: string;
   startsAt?: string;
+  track?: string;
+  sessionTimeRaw?: string;
+  markingStatus?: 'not_started' | 'partial' | 'complete' | 'no_roster';
+  rosterSize?: number;
+  markedCount?: number;
+  attendancePercent?: number;
+  batchId?: string;
+  excelBatchId?: string;
 }
 
 const getLocationName = (s: Session) => {
@@ -51,6 +66,26 @@ const getInitialFilters = () => {
   } catch {
     return { locationId: '', date: '' };
   }
+};
+
+const getInitialRecordFilters = (): SessionRecordFiltersState => {
+  try {
+    const saved = sessionStorage.getItem('sessionRecordFilters');
+    return saved ? { ...emptyRecordFilters, ...JSON.parse(saved) } : emptyRecordFilters;
+  } catch {
+    return emptyRecordFilters;
+  }
+};
+
+const buildRecordFilterQueryParams = (filters: SessionRecordFiltersState): Record<string, string> => {
+  const params: Record<string, string> = {};
+  if (filters.batchIds.length) params.batchIds = filters.batchIds.join(',');
+  if (filters.classLabels.length) params.classLabels = filters.classLabels.join(',');
+  if (filters.tracks.length) params.tracks = filters.tracks.join(',');
+  if (filters.timeSlots.length) params.timeSlots = filters.timeSlots.join(',');
+  if (filters.markingStatus) params.markingStatus = filters.markingStatus;
+  if (filters.search.trim()) params.search = filters.search.trim();
+  return params;
 };
 
 
@@ -88,47 +123,140 @@ const Sessions = () => {
   const [bulkDeleteModal, setBulkDeleteModal] = useState(false);
   const [bulkDeletePassword, setBulkDeletePassword] = useState('');
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [recordFilters, setRecordFilters] = useState<SessionRecordFiltersState>(getInitialRecordFilters());
+  const [allSessions, setAllSessions] = useState<Session[]>([]);
+  const [allBatches, setAllBatches] = useState<Batch[]>([]);
+  const [overview, setOverview] = useState<SessionRecordsOverview | null>(null);
+  const [exportingFiltered, setExportingFiltered] = useState(false);
+  const [sessionsHasMore, setSessionsHasMore] = useState(true);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  const sessionsOffsetRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const filtersRef = useRef<{ locationId: string; date: string }>(getInitialFilters());
+  const recordFiltersRef = useRef<SessionRecordFiltersState>(recordFilters);
+  recordFiltersRef.current = recordFilters;
 
-  const fetchData = useCallback(async () => {
+  const buildFilteredParams = () => {
+    const filters = filtersRef.current;
+    const baseParams: Record<string, string> = {};
+    if (filters.locationId) baseParams.locationId = filters.locationId;
+    if (filters.date) baseParams.date = filters.date;
+    const recordParams = buildRecordFilterQueryParams(recordFiltersRef.current);
+    return { baseParams, filteredParams: { ...baseParams, ...recordParams } };
+  };
+
+  // Fetches the current filtered window from the top. `reset=true` (mount,
+  // filter changes) always starts back at one page; `reset=false` (the 60s
+  // poll) re-fetches however many rows are already loaded instead, so a
+  // background refresh doesn't visibly collapse a list the user has scrolled
+  // further into.
+  const fetchData = useCallback(async (reset = true) => {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     try {
-      const filters = filtersRef.current;
-      const params: Record<string, string> = {};
-      if (filters.locationId) params.locationId = filters.locationId;
-      if (filters.date) params.date = filters.date;
+      const { baseParams, filteredParams } = buildFilteredParams();
+      const sessionsLimit = reset ? PAGE_SIZE : Math.max(PAGE_SIZE, sessionsOffsetRef.current);
 
-      const [sessionsRes, locationsRes, shortLinksRes, batchesRes, mentorsRes] = await Promise.all([
-        axios.get<Session[]>('/api/admin/sessions', { params, signal: abortRef.current.signal }),
-        axios.get<Location[]>('/api/admin/locations', { signal: abortRef.current.signal }),
-        axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { signal: abortRef.current.signal }),
-        axios.get<Batch[]>('/api/admin/batches', { signal: abortRef.current.signal }),
-        axios.get<Mentor[]>('/api/admin/users', { signal: abortRef.current.signal }),
-      ]);
+      const [sessionsRes, allSessionsRes, locationsRes, shortLinksRes, batchesRes, mentorsRes, overviewRes] =
+        await Promise.all([
+          axios.get<Session[]>('/api/admin/sessions', {
+            params: { ...filteredParams, limit: sessionsLimit, offset: 0 },
+            signal: abortRef.current.signal,
+          }),
+          // Unfiltered — feeds the record-filter bar's cascading class/track/
+          // time-slot option lists, which must reflect everything available,
+          // not just what the currently active filters already narrowed to.
+          axios.get<Session[]>('/api/admin/sessions', { params: baseParams, signal: abortRef.current.signal }),
+          axios.get<Location[]>('/api/admin/locations', { signal: abortRef.current.signal }),
+          axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { signal: abortRef.current.signal }),
+          axios.get<Batch[]>('/api/admin/batches', { signal: abortRef.current.signal }),
+          axios.get<Mentor[]>('/api/admin/users', { signal: abortRef.current.signal }),
+          axios.get<SessionRecordsOverview>('/api/admin/sessions/stats-overview', {
+            params: filteredParams,
+            signal: abortRef.current.signal,
+          }),
+        ]);
       setSessions(sessionsRes.data);
+      sessionsOffsetRef.current = sessionsRes.data.length;
+      setSessionsHasMore(sessionsRes.data.length === sessionsLimit);
+      setAllSessions(allSessionsRes.data);
       setLocations(locationsRes.data);
       setActiveShortLinks((shortLinksRes.data.shortLinks ?? []).filter((l) => l.isActive || !l.sessionId));
       // Session-batches (Excel-upload bulk creation) are 1:1 with the
       // session that generated them — they don't belong in the manual
       // "pick a batch" dropdown below.
       setBatches(batchesRes.data.filter((b) => b.type !== 'session'));
+      setAllBatches(batchesRes.data);
       setMentors(mentorsRes.data.filter((m) => m.role === 'admin' && m.isActive));
+      setOverview(overviewRes.data);
     } catch (error) {
       if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch data');
     } finally { setLoading(false); }
   }, []);
 
+  // Scroll-triggered: fetches and appends the next page of sessions without
+  // touching anything else (locations/batches/mentors/overview stay as-is).
+  const fetchMoreSessions = async () => {
+    if (!sessionsHasMore || loadingMoreSessions) return;
+    setLoadingMoreSessions(true);
+    try {
+      const { filteredParams } = buildFilteredParams();
+      const res = await axios.get<Session[]>('/api/admin/sessions', {
+        params: { ...filteredParams, limit: PAGE_SIZE, offset: sessionsOffsetRef.current },
+      });
+      setSessions((prev) => [...prev, ...res.data]);
+      sessionsOffsetRef.current += res.data.length;
+      setSessionsHasMore(res.data.length === PAGE_SIZE);
+    } catch {
+      toast.error('Failed to load more sessions');
+    } finally {
+      setLoadingMoreSessions(false);
+    }
+  };
+
+  const handleRecordFiltersChange = (next: SessionRecordFiltersState) => {
+    setRecordFilters(next);
+    try { sessionStorage.setItem('sessionRecordFilters', JSON.stringify(next)); } catch { /* ignore */ }
+    recordFiltersRef.current = next;
+    fetchData(true);
+  };
+
+  const handleExportFiltered = async () => {
+    setExportingFiltered(true);
+    try {
+      const filters = filtersRef.current;
+      const body = {
+        locationId: filters.locationId || undefined,
+        date: filters.date || undefined,
+        batchIds: recordFilters.batchIds,
+        classLabels: recordFilters.classLabels,
+        tracks: recordFilters.tracks,
+        timeSlots: recordFilters.timeSlots,
+        markingStatus: recordFilters.markingStatus || undefined,
+        search: recordFilters.search.trim() || undefined,
+      };
+      const res = await axios.post('/api/admin/sessions/export-filtered', body, { responseType: 'blob' });
+      const filename = filenameFromContentDisposition(res.headers['content-disposition'], 'Attendance_Export_Filtered.xlsx');
+      downloadBlob(new Blob([res.data]), filename);
+      toast.success(`Exported ${overview?.filteredRecords ?? 0} matching session${overview?.filteredRecords === 1 ? '' : 's'}`);
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to export filtered sessions');
+    } finally {
+      setExportingFiltered(false);
+    }
+  };
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 60000);
+    fetchData(true);
+    // A background refresh, not a reset — see fetchData's `reset` param.
+    const interval = setInterval(() => fetchData(false), 60000);
     return () => { clearInterval(interval); abortRef.current?.abort(); };
   }, [fetchData]);
 
   const handleFilterChange = useCallback((newFilters: { locationId: string; date: string }) => {
     filtersRef.current = newFilters;
-    fetchData();
+    fetchData(true);
   }, [fetchData]);
 
   const isExpired = (session: Session) => new Date(session.expiresAt) < new Date();
@@ -306,13 +434,18 @@ const Sessions = () => {
         aria-label={`Select session ${s._id}`}
       />
     )},
-    { key: 'location', label: 'Location',   width: '14%', render: (s) => getLocationName(s) },
-    { key: 'college',  label: 'College',    width: '14%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
-    { key: 'mentor',   label: 'Mentor',     width: '13%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
-    { key: 'status',   label: 'Status',     width: '10%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
-    { key: 'starts',   label: 'Starts At',  width: '14%', render: (s) => s.startsAt ? new Date(s.startsAt).toLocaleString() : '—' },
-    { key: 'students', label: 'Students',   width: '9%', align: 'center', render: (s) => s.attendanceCount },
-    { key: 'actions',  label: 'Actions',    width: '25%', render: (s) => (
+    { key: 'location', label: 'Location',   width: '12%', render: (s) => getLocationName(s) },
+    { key: 'college',  label: 'College',    width: '12%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
+    { key: 'mentor',   label: 'Mentor',     width: '11%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
+    { key: 'status',   label: 'Status',     width: '8%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
+    { key: 'starts',   label: 'Starts At',  width: '12%', render: (s) => s.startsAt ? new Date(s.startsAt).toLocaleString() : '—' },
+    { key: 'students', label: 'Students',   width: '7%', align: 'center', render: (s) => s.attendanceCount },
+    { key: 'attendance', label: 'Attendance %', width: '9%', align: 'center', render: (s) => {
+      if (s.attendancePercent == null) return <span style={{ color: 'var(--color-muted)' }}>—</span>;
+      if (s.markingStatus === 'not_started') return <Badge tone="warning">Not started</Badge>;
+      return <span>{Math.round(s.attendancePercent)}%{s.markingStatus === 'partial' ? ' (partial)' : ''}</span>;
+    }},
+    { key: 'actions',  label: 'Actions',    width: '20%', render: (s) => (
       <div className="actions-cell">
         <Link to={`/sessions/${s._id}`} className="btn btn-secondary btn-small">View</Link>
         {s.isActive && !isExpired(s) && <Button variant="danger" size="sm" onClick={() => setDeactivateId(s._id)}>Deactivate</Button>}
@@ -339,6 +472,18 @@ const Sessions = () => {
         <div className="card"><p>No locations found. <Link to="/locations">Create one</Link> if you need a self check-in (normal) session — exam sessions don't require a location.</p></div>
       )}
 
+      <SessionStatsOverview overview={overview} />
+
+      <SessionRecordFilters
+        allSessions={allSessions}
+        batches={allBatches}
+        filters={recordFilters}
+        onChange={handleRecordFiltersChange}
+        onExportFiltered={handleExportFiltered}
+        exporting={exportingFiltered}
+        exportCount={overview?.filteredRecords ?? 0}
+      />
+
       {selectedIds.size > 0 && (
         <div className="row mb-4" style={{ justifyContent: 'flex-start', gap: 12 }}>
           <span style={{ fontSize: '0.85rem', color: 'var(--color-muted)' }}>
@@ -360,6 +505,12 @@ const Sessions = () => {
       ) : sessions.length > 0 ? (
         <div className="card card-table">
           <DataTable columns={columns} rows={sortedSessions} rowKey={(s) => s._id} />
+          {sessionsHasMore && (
+            <>
+              <InfiniteScrollSentinel onIntersect={fetchMoreSessions} disabled={loadingMoreSessions} />
+              {loadingMoreSessions && <div className="load-more-indicator">Loading more…</div>}
+            </>
+          )}
         </div>
       ) : null}
 
