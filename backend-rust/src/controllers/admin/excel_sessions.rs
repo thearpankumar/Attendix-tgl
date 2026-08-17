@@ -855,18 +855,21 @@ mod excel_sessions_tests {
 
     #[test]
     fn test_group_rows_against_master_template_sample() {
+        // Synthetic fixture (fabricated names/emails/reg numbers) shaped like
+        // a real master-template export: 12 rows across 3 distinct
+        // (track, class, session_time) groups (4 + 3 + 5 rows), so the test
+        // exercises the same grouping/mentor-union code path as production
+        // data without committing real student PII to git history.
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../samplefiles/ATT MASTER-TEMPLATE-08-06-2026 - AN.csv");
+            .join("../samplefiles/sample-excel-roster-fake.csv");
         let data = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("failed to read sample file at {:?}: {}", path, e));
 
         let raw_rows = crate::controllers::batch::read_raw_rows(&data).unwrap();
         let outcome = group_rows(&raw_rows).unwrap();
 
-        // Confirmed against the sample file directly: 3174 data rows,
-        // 35 distinct (track, class, session_time) groups, no parse errors.
-        assert_eq!(outcome.total_rows, 3174);
-        assert_eq!(outcome.groups.len(), 35);
+        assert_eq!(outcome.total_rows, 12);
+        assert_eq!(outcome.groups.len(), 3);
         assert!(
             outcome.parse_errors.is_empty(),
             "unexpected parse errors: {:?}",
@@ -874,6 +877,14 @@ mod excel_sessions_tests {
         );
 
         let total_students: usize = outcome.groups.iter().map(|g| g.students.len()).sum();
-        assert_eq!(total_students, 3174);
+        assert_eq!(total_students, 12);
+
+        let group_sizes: std::collections::HashSet<usize> =
+            outcome.groups.iter().map(|g| g.students.len()).collect();
+        assert_eq!(group_sizes, std::collections::HashSet::from([4, 3, 5]));
+
+        // Every mentor-carrying group's assigned_mentor column was identical
+        // across its rows, so none should be flagged as a conflict.
+        assert!(outcome.groups.iter().all(|g| !g.conflict));
     }
 }

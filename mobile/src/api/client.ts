@@ -1,6 +1,5 @@
 import axios, { AxiosError } from 'axios';
 import Constants from 'expo-constants';
-import CookieManager from '@react-native-cookies/cookies';
 import { Platform } from 'react-native';
 import Toast from 'react-native-toast-message';
 
@@ -37,8 +36,16 @@ export const api = axios.create({
 // cookie/header dance). Clearing cookies on module load (in case a stray
 // cookie survived from before this fix) and after every response keeps the
 // app's actual behavior matching its "no cookies at all" design.
+//
+// `require`d lazily, only on native platforms: the package's own module
+// throws at *import* time (before any of our own guards run) on any
+// platform other than ios/android — which crashes `expo export --platform
+// web` (used by web preview and the CI build check) if this were a static
+// top-level import.
 function clearStrayCookies() {
-  if (Platform.OS !== 'web') {
+  if (Platform.OS === 'ios' || Platform.OS === 'android') {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- must stay a runtime require, see comment above.
+    const CookieManager = require('@react-native-cookies/cookies').default;
     CookieManager.clearAll().catch(() => {});
   }
 }

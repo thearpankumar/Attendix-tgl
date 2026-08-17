@@ -1,0 +1,13 @@
+student_name,registration_number,email,track,class,session_time,round,status,marked_by,marked_at,assigned_mentor
+Test Student One,FAKE0001,student1@example.test,Data Structures & Algorithms,CLS 101,9:00 AM - 11:00 AM,NA,,,,mentor.a@example.test
+Test Student Two,FAKE0002,student2@example.test,Data Structures & Algorithms,CLS 101,9:00 AM - 11:00 AM,NA,,,,mentor.a@example.test
+Test Student Three,FAKE0003,student3@example.test,Data Structures & Algorithms,CLS 101,9:00 AM - 11:00 AM,Java,,,,mentor.a@example.test
+Test Student Four,FAKE0004,student4@example.test,Data Structures & Algorithms,CLS 101,9:00 AM - 11:00 AM,NA,,,,mentor.a@example.test
+Test Student Five,FAKE0005,student5@example.test,Data Structures & Algorithms,CLS 101,11:00 AM - 1:00 PM,NA,,,,
+Test Student Six,FAKE0006,student6@example.test,Data Structures & Algorithms,CLS 101,11:00 AM - 1:00 PM,NA,,,,
+Test Student Seven,FAKE0007,student7@example.test,Data Structures & Algorithms,CLS 101,11:00 AM - 1:00 PM,Python,,,,
+Test Student Eight,FAKE0008,student8@example.test,Web Development,CLS 202,2:00 PM - 4:00 PM,NA,,,,mentor.c@example.test
+Test Student Nine,FAKE0009,student9@example.test,Web Development,CLS 202,2:00 PM - 4:00 PM,NA,,,,mentor.c@example.test
+Test Student Ten,FAKE0010,student10@example.test,Web Development,CLS 202,2:00 PM - 4:00 PM,NA,,,,mentor.c@example.test
+Test Student Eleven,FAKE0011,student11@example.test,Web Development,CLS 202,2:00 PM - 4:00 PM,JavaScript,,,,mentor.c@example.test
+Test Student Twelve,FAKE0012,student12@example.test,Web Development,CLS 202,2:00 PM - 4:00 PM,NA,,,,mentor.c@example.test
