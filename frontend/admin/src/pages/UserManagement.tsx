@@ -39,6 +39,7 @@ const UserManagement = () => {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [statusTab, setStatusTab] = useState<'active' | 'deactivated'>('active');
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -113,8 +114,8 @@ const UserManagement = () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await axios.delete(`/api/admin/users/${deleteTarget._id}`);
-      toast.success('Account deleted');
+      const res = await axios.delete<{ deleted: boolean; deactivated: boolean; message?: string }>(`/api/admin/users/${deleteTarget._id}`);
+      toast.success(res.data.deleted ? 'Account deleted' : (res.data.message || 'Account deactivated instead of deleted'));
       setDeleteTarget(null);
       fetchUsers();
     } catch (error) {
@@ -124,6 +125,10 @@ const UserManagement = () => {
       setDeleting(false);
     }
   };
+
+  const activeUsers = users.filter((u) => u.isActive);
+  const deactivatedUsers = users.filter((u) => !u.isActive);
+  const visibleUsers = statusTab === 'active' ? activeUsers : deactivatedUsers;
 
   const columns: Column<AdminUser>[] = [
     { key: 'name', label: 'Name', width: '20%', align: 'left', render: (u) => u.fullName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
@@ -171,9 +176,34 @@ const UserManagement = () => {
       {loading ? <SkeletonRows /> : users.length === 0 ? (
         <EmptyState icon={UserCog} title="No admin/mentor accounts yet" message="Create the first mentor account so they can log into the attendance-marking app." />
       ) : (
-        <div className="card card-table">
-          <DataTable columns={columns} rows={users} rowKey={(u) => u._id} />
-        </div>
+        <>
+          <div className="row" style={{ padding: 'var(--space-4) var(--space-6) 0' }}>
+            <div className="status-tabs">
+              {(['active', 'deactivated'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  className={`status-tab tab-${tab}${statusTab === tab ? ' active' : ''}`}
+                  onClick={() => setStatusTab(tab)}
+                >
+                  {tab === 'active' ? 'Active Accounts' : 'Deactivated Accounts'}
+                  <span className="tab-count">{tab === 'active' ? activeUsers.length : deactivatedUsers.length}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {visibleUsers.length === 0 ? (
+            <EmptyState
+              icon={UserCog}
+              title={statusTab === 'active' ? 'No active accounts' : 'No deactivated accounts'}
+              message={statusTab === 'active' ? 'Every account is currently deactivated.' : 'Deactivated accounts show up here — their username stays reserved and their historical records stay attributed to them.'}
+            />
+          ) : (
+            <div className="card card-table">
+              <DataTable columns={columns} rows={visibleUsers} rowKey={(u) => u._id} />
+            </div>
+          )}
+        </>
       )}
 
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editing ? 'Edit Account' : 'Create Account'}>
@@ -231,7 +261,7 @@ const UserManagement = () => {
         message={
           <>
             Permanently delete <strong>{deleteTarget?.fullName || deleteTarget?.username}</strong>&apos;s account?
-            {' '}If they still own locations, batches, or sessions, this will be rejected until those are reassigned.
+            {' '}If they still own locations, batches, sessions, or have any activity history, the account will be deactivated instead of deleted so that history stays attributed to them.
           </>
         }
       />

@@ -280,24 +280,55 @@ pub async fn delete_admin_user(
         ));
     }
 
-    let result = sqlx::query("DELETE FROM admins WHERE id = $1 AND username <> $2")
+    let delete_result = sqlx::query("DELETE FROM admins WHERE id = $1 AND username <> $2")
         .bind(target_id)
         .bind(crate::constants::CANARY_ADMIN_USERNAME)
         .execute(&state.db)
+        .await;
+
+    let blocked_by_owned_data = matches!(
+        &delete_result,
+        Err(sqlx::Error::Database(db_err)) if db_err.is_foreign_key_violation()
+    );
+
+    if blocked_by_owned_data {
+        // Every FK into admins(id) (sessions/batches/locations/short_links/
+        // audit log/etc.) is intentionally left without an ON DELETE action,
+        // so history keeps pointing at a real, named account instead of
+        // going blank. Deactivating gets the same practical outcome as a
+        // delete - is_active is checked on every authenticated request (see
+        // middleware::auth), so the account is locked out immediately -
+        // without destroying that attribution.
+        let deactivated = sqlx::query("UPDATE admins SET is_active = false WHERE id = $1")
+            .bind(target_id)
+            .execute(&state.db)
+            .await?;
+
+        if deactivated.rows_affected() == 0 {
+            return Err(AppError::NotFound("Admin not found".to_string()));
+        }
+
+        if let Err(e) = record_audit_event(
+            &state.db,
+            Some(auth.id),
+            "admin_user_deactivated",
+            serde_json::json!({ "target_admin_id": target_id, "reason": "owned_data_prevents_deletion" }),
+            None,
+        )
         .await
-        .map_err(|e| {
-            // Foreign-key violation: this admin still owns locations/batches/
-            // sessions/short_links (created_by has no ON DELETE behavior).
-            // Surface a clear, actionable message instead of a raw DB error.
-            if let sqlx::Error::Database(db_err) = &e {
-                if db_err.is_foreign_key_violation() {
-                    return AppError::BadRequest(
-                        "This admin still owns locations, batches, or sessions and cannot be deleted. Reassign or remove those first.".to_string(),
-                    );
-                }
-            }
-            AppError::from(e)
-        })?;
+        {
+            tracing::error!(error = %e, "Failed to record audit log entry for admin_user_deactivated");
+        }
+
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "deleted": false,
+            "deactivated": true,
+            "message": "This admin has owned records or activity history (sessions, batches, locations, or audit log) and can't be permanently deleted, so the account was deactivated instead. It can no longer log in or take any action."
+        })));
+    }
+
+    let result = delete_result?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Admin not found".to_string()));
@@ -315,5 +346,9 @@ pub async fn delete_admin_user(
         tracing::error!(error = %e, "Failed to record audit log entry for admin_user_deleted");
     }
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "deleted": true,
+        "deactivated": false
+    })))
 }
