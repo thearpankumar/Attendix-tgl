@@ -299,7 +299,14 @@ pub async fn create_session(
 
     let token = Session::generate_token();
     let duration_minutes = payload.duration_minutes.unwrap_or(30) as i64;
-    let expires_at = Utc::now() + chrono::Duration::minutes(duration_minutes);
+    // For an exam session, the window is anchored to the scheduled start
+    // time, not to whenever this request happens to run — otherwise a
+    // session created ahead of time (or with any admin/network delay) would
+    // silently eat into the exam's actual duration, closing well before the
+    // scheduled end. A normal self-check-in session has no starts_at, so it
+    // opens immediately as before.
+    let expires_at =
+        starts_at.unwrap_or_else(Utc::now) + chrono::Duration::minutes(duration_minutes);
 
     let session: Session = sqlx::query_as(
         "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, college_name, starts_at, is_active, expires_at, rotation_count, totp_secret, created_at) \

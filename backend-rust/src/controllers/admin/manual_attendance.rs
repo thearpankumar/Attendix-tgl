@@ -38,6 +38,11 @@ pub struct RosterSessionInfo {
     pub expires_at: DateTime<Utc>,
     pub batch_name: Option<String>,
     pub description: Option<String>,
+    /// Super-admin configurable (Settings page) — how many minutes before
+    /// `starts_at` the mobile app should let a mentor start marking. Sent
+    /// per-response instead of baked into the client so it stays correct
+    /// without an app release when a super-admin changes the setting.
+    pub manual_mark_early_window_minutes: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +103,7 @@ pub async fn get_session_roster(
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
+    let sys_config = state.get_system_config().await;
 
     let source = resolve_roster_source(&session);
     let batch_name = fetch_roster_name(&state.db, &source).await?;
@@ -109,6 +115,9 @@ pub async fn get_session_roster(
         expires_at: session.expires_at,
         batch_name,
         description: session.description.clone(),
+        manual_mark_early_window_minutes: sys_config
+            .session_config
+            .manual_mark_early_window_minutes,
     };
 
     // Legacy sessions created before batches were mandatory (or a normal
@@ -232,17 +241,29 @@ pub async fn mark_attendance_manual(
     };
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
+    let sys_config = state.get_system_config().await;
 
     // Mirrors the mentor frontend's own "starts soon" gate — enforced here
     // too since that's only a UI convenience, not something a direct API
     // call is bound by. A session with no `starts_at` (normal self-check-in)
-    // has always been markable immediately.
+    // has always been markable immediately. A mentor may start marking
+    // session_config.manual_mark_early_window_minutes (Settings page,
+    // super-admin configurable) before the scheduled start, but never after
+    // the session's scheduled end (`expires_at`, anchored to starts_at +
+    // duration).
     if let Some(starts_at) = session.starts_at {
-        if starts_at > Utc::now() {
+        let marking_opens_at = starts_at
+            - chrono::Duration::minutes(sys_config.session_config.manual_mark_early_window_minutes);
+        if marking_opens_at > Utc::now() {
             return Err(AppError::BadRequest(
                 "This session hasn't started yet".to_string(),
             ));
         }
+    }
+    if session.is_expired() {
+        return Err(AppError::BadRequest(
+            "This session's attendance window has closed".to_string(),
+        ));
     }
 
     let source = resolve_roster_source(&session);

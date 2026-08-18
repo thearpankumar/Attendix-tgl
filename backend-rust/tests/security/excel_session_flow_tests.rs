@@ -465,7 +465,11 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
             "track": g["track"],
             "classLabel": g["classLabel"],
             "sessionTimeRaw": g["sessionTimeRaw"],
-            "startsAt": format!("2020-01-01T{}:00Z", g["startTime"].as_str().unwrap()),
+            // A fixed past date/time would leave expires_at (starts_at +
+            // duration) in the past too now that it's anchored to starts_at
+            // rather than commit time, so use "a few minutes ago" instead —
+            // still started, but nowhere near its (2hr) duration's end.
+            "startsAt": (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
             "durationMinutes": g["durationMinutes"],
             "collegeName": "Test College",
             "description": format!("{} — {}", g["track"], g["classLabel"]),

@@ -617,7 +617,11 @@ async fn commit_one_group(
     }
 
     let token = Session::generate_token();
-    let expires_at = Utc::now() + chrono::Duration::minutes(group.duration_minutes as i64);
+    // Anchored to the scheduled start time (parsed from session_time_raw),
+    // not to whenever this batch happens to get committed — otherwise
+    // committing even a few minutes after the parsed start time would eat
+    // into the exam's actual duration, closing before the scheduled end.
+    let expires_at = starts_at + chrono::Duration::minutes(group.duration_minutes as i64);
 
     let session_id: Uuid = sqlx::query_scalar(
         "INSERT INTO sessions ( \

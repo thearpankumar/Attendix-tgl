@@ -719,7 +719,7 @@ async fn manual_attendance_mark_then_undo_roundtrip() {
                 "batchId": batch_id.to_string(),
                 "assignedAdminIds": [mentor_id],
                 "collegeName": "XYZ College",
-                "startsAt": "2026-08-14T09:00:00Z",
+                "startsAt": (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
                 "durationMinutes": 60,
             }),
         )
@@ -919,7 +919,7 @@ async fn manual_attendance_conflicts_with_self_submitted_row() {
                 "batchId": batch_id.to_string(),
                 "assignedAdminIds": [mentor_id],
                 "collegeName": "XYZ College",
-                "startsAt": "2026-08-14T09:00:00Z",
+                "startsAt": (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
                 "durationMinutes": 60,
             }),
         )

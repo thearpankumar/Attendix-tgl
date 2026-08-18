@@ -101,8 +101,15 @@ export default function SessionDetail() {
   const pending = markMutation.isPending;
   // A session with no startsAt (a normal self-check-in session, marked
   // manually only as a fallback) has always been markable — the gate only
-  // applies to sessions explicitly scheduled for the future.
-  const hasStarted = !session.startsAt || new Date(session.startsAt).getTime() <= now;
+  // applies to sessions explicitly scheduled for the future. Marking opens
+  // manualMarkEarlyWindowMinutes (super-admin configurable, Settings page)
+  // before the scheduled start so a mentor can be ready right as the exam
+  // begins. Comes from the roster response rather than a hardcoded value so
+  // it stays correct without an app release when the setting changes.
+  const hasStarted =
+    !session.startsAt ||
+    new Date(session.startsAt).getTime() - session.manualMarkEarlyWindowMinutes * 60000 <= now;
+  const hasEnded = new Date(session.expiresAt).getTime() <= now;
 
   return (
     <Screen mode="back">
@@ -150,6 +157,20 @@ export default function SessionDetail() {
             </View>
             <Text style={[styles.startsSoonHint, { color: colors.muted }]}>
               Attendance marking opens automatically once it begins.
+            </Text>
+          </View>
+        </Card>
+      ) : hasEnded ? (
+        <Card style={{ marginTop: 20, paddingVertical: 40, paddingHorizontal: 24 }}>
+          <View style={styles.startsSoonContent}>
+            <View style={[styles.startsSoonIcon, { backgroundColor: colors.dangerBg }]}>
+              <Hourglass size={26} color={colors.dangerTxt} />
+            </View>
+            <Text style={[styles.startsSoonTitle, { color: colors.text, fontFamily: font.bold }]}>
+              This session has ended
+            </Text>
+            <Text style={[styles.startsSoonHint, { color: colors.muted }]}>
+              Attendance marking closed when the scheduled session time ended.
             </Text>
           </View>
         </Card>

@@ -402,15 +402,26 @@ impl Default for PhotoVerificationConfig {
 pub struct SessionConfig {
     #[serde(default = "default_session_expire")]
     pub expire_minutes: u64,
+    /// How long before an exam session's scheduled start a mentor may begin
+    /// manually marking attendance.
+    #[serde(default = "default_manual_mark_early_window")]
+    pub manual_mark_early_window_minutes: i64,
 }
 
 fn default_session_expire() -> u64 {
     60
 }
 
+fn default_manual_mark_early_window() -> i64 {
+    30
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
-        Self { expire_minutes: 60 }
+        Self {
+            expire_minutes: 60,
+            manual_mark_early_window_minutes: 30,
+        }
     }
 }
 

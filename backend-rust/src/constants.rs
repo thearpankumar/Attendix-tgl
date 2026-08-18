@@ -86,9 +86,6 @@ pub const RISK_THRESHOLD_MEDIUM: i64 = 75;
 pub const HEALTH_THRESHOLD_GOOD: i64 = 85;
 pub const HEALTH_THRESHOLD_MEDIUM: i64 = 50;
 
-// WebAuthn grace period (minutes)
-pub const WEBAUTHN_GRACE_PERIOD_MINUTES: i64 = 15;
-
 // ========== Severity Enum for GPS Anomalies and Emulator Flags ==========
 use serde::{Deserialize, Serialize};
 use std::fmt;

@@ -62,6 +62,9 @@ export interface RosterResponse {
     expiresAt: string;
     batchName?: string;
     description?: string;
+    // Super-admin configurable (Settings page) — how many minutes before
+    // startsAt a mentor may begin manually marking attendance.
+    manualMarkEarlyWindowMinutes: number;
   };
   students: RosterStudent[];
   summary: RosterSummary;
