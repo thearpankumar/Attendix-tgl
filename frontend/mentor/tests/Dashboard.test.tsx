@@ -41,12 +41,13 @@ describe('Mentor Dashboard', () => {
     </MemoryRouter>
   );
 
-  it('greets the mentor by name and shows the assigned session as a card', async () => {
+  it('shows a time-of-day greeting (no name — the Topbar already shows who is logged in) and the assigned session as a card', async () => {
     mockGet([LIVE_SESSION]);
     renderDashboard();
 
     await waitFor(() => {
-      expect(screen.getByText(/Dr\. Sarah/)).toBeInTheDocument();
+      expect(screen.getByText(/^Good (morning|afternoon|evening) 👋$/)).toBeInTheDocument();
+      expect(screen.queryByText(/Dr\. Sarah/)).not.toBeInTheDocument();
       expect(screen.getByText('XYZ Engineering College · Room 101')).toBeInTheDocument();
       expect(screen.getAllByText('CS101').length).toBeGreaterThan(0);
       expect(screen.getByText('LIVE')).toBeInTheDocument();

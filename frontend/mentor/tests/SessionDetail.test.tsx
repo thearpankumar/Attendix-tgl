@@ -5,7 +5,7 @@ import axios from 'axios';
 import SessionDetail from '../src/pages/SessionDetail';
 
 const ROSTER_ONE_UNMARKED = {
-  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date().toISOString() },
+  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
   ],
@@ -13,7 +13,7 @@ const ROSTER_ONE_UNMARKED = {
 };
 
 const ROSTER_ALL_MARKED = {
-  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date().toISOString() },
+  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'present', source: 'manual', markedAt: new Date().toISOString() },
   ],
@@ -35,6 +35,7 @@ const ROSTER_NOT_STARTED = {
     batchName: 'CS101',
     startsAt: new Date(Date.now() + 3_600_000).toISOString(),
     expiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+    manualMarkEarlyWindowMinutes: 30,
   },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
@@ -132,7 +133,7 @@ describe('Mentor SessionDetail (roster + manual marking)', () => {
   // ─── List view ────────────────────────────────────────────────────────
 
   const ROSTER_MIXED = {
-    session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date().toISOString() },
+    session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
     students: [
       { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
       { studentId: 's2', rollNumber: '21CS002', name: 'Bilal Khan', status: 'present', source: 'manual', markedAt: new Date().toISOString() },

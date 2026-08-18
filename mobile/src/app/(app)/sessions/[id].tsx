@@ -256,7 +256,7 @@ export default function SessionDetail() {
                 </View>
               )}
 
-              <Text style={[styles.hint, { color: colors.muted }]}>Swipe left for present, right for absent — any student, any time.</Text>
+              <Text style={[styles.hint, { color: colors.muted }]}>Pull the green arrow for present, the red arrow for absent — any student, any time.</Text>
             </>
           )}
         </>

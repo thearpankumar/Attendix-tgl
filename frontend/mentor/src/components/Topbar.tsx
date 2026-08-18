@@ -7,6 +7,8 @@ const Topbar = () => {
   const location = useLocation();
   const isSubPage = location.pathname !== '/';
 
+  const displayName = admin?.fullName || admin?.username || '';
+
   return (
     <header className="topbar">
       {isSubPage ? (
@@ -16,15 +18,19 @@ const Topbar = () => {
         </Link>
       ) : (
         <div className="topbar-brand">
-          <ClipboardCheck size={20} color="var(--color-primary)" />
-          <span>Attendix</span>
+          {/* Sized to span both lines, so it sits between "Attendix" and
+              the username below it rather than only lining up with the
+              top line — a long name used to crowd "Attendix" on one line. */}
+          <ClipboardCheck size={34} color="var(--color-primary)" />
+          <div className="topbar-brand-col">
+            <span>Attendix</span>
+            {displayName && <span className="topbar-username">{displayName}</span>}
+          </div>
         </div>
       )}
       <div className="topbar-actions">
-        {admin && (
-          <span style={{ fontSize: 13, color: 'var(--color-muted)', marginRight: 4 }}>
-            {admin.fullName || admin.username}
-          </span>
+        {isSubPage && displayName && (
+          <span style={{ fontSize: 13, color: 'var(--color-muted)', marginRight: 4 }}>{displayName}</span>
         )}
         <Link to="/settings" className="icon-btn" aria-label="Settings"><SettingsIcon size={16} /></Link>
         <button className="icon-btn" onClick={logout} aria-label="Log out"><LogOut size={16} /></button>

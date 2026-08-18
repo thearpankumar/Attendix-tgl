@@ -1,4 +1,4 @@
-import { greetingWord } from './greeting';
+import { greetingPeriod, greetingWord } from './greeting';
 
 describe('greetingWord', () => {
   afterEach(() => {
@@ -37,5 +37,34 @@ describe('greetingWord', () => {
   it('says good evening late at night', () => {
     atHour(23);
     expect(greetingWord()).toBe('Good evening');
+  });
+});
+
+describe('greetingPeriod', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const atHour = (hour: number) => {
+    jest.useFakeTimers().setSystemTime(new Date(2026, 0, 1, hour, 0, 0));
+  };
+
+  it('is morning before noon', () => {
+    atHour(9);
+    expect(greetingPeriod()).toBe('morning');
+  });
+
+  it('is afternoon from noon up to 16:59', () => {
+    atHour(12);
+    expect(greetingPeriod()).toBe('afternoon');
+    atHour(16);
+    expect(greetingPeriod()).toBe('afternoon');
+  });
+
+  it('is night from 17:00 onward', () => {
+    atHour(17);
+    expect(greetingPeriod()).toBe('night');
+    atHour(23);
+    expect(greetingPeriod()).toBe('night');
   });
 });

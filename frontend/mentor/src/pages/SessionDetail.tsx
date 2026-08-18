@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import type { ReactNode } from 'react';
 import axios from 'axios';
 import { useParams } from 'react-router';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { PanInfo } from 'framer-motion';
-import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search } from 'lucide-react';
+import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface RosterStudent {
   studentId: string;
@@ -25,6 +26,9 @@ interface RosterResponse {
     expiresAt: string;
     batchName?: string;
     description?: string;
+    // Super-admin configurable (Settings page) — how many minutes before
+    // startsAt a mentor may begin manually marking attendance.
+    manualMarkEarlyWindowMinutes: number;
   };
   students: RosterStudent[];
   summary: { total: number; marked: number; present: number; absent: number; unmarked: number };
@@ -159,8 +163,14 @@ const SessionDetail = () => {
   const progressPct = summary.total === 0 ? 0 : Math.round((summary.marked / summary.total) * 100);
   // A session with no startsAt (a normal self-check-in session, marked
   // manually only as a fallback) has always been markable — the gate only
-  // applies to sessions explicitly scheduled for the future.
-  const hasStarted = !session.startsAt || new Date(session.startsAt).getTime() <= now;
+  // applies to sessions explicitly scheduled for the future. Marking opens
+  // manualMarkEarlyWindowMinutes (super-admin configurable, Settings page)
+  // before the scheduled start so a mentor can be ready right as the exam
+  // begins, and closes for good once the session's scheduled end passes.
+  const hasStarted =
+    !session.startsAt ||
+    new Date(session.startsAt).getTime() - session.manualMarkEarlyWindowMinutes * 60000 <= now;
+  const hasEnded = new Date(session.expiresAt).getTime() <= now;
 
   return (
     <div className="fade-in">
@@ -193,6 +203,14 @@ const SessionDetail = () => {
           <p className="starts-soon-countdown">{timeUntil(session.startsAt!, now)}</p>
           <p style={{ fontSize: 12.5, color: 'var(--color-muted)', margin: '10px 0 0' }}>
             Attendance marking opens automatically once it begins.
+          </p>
+        </div>
+      ) : hasEnded ? (
+        <div className="card empty-state starts-soon-card" style={{ marginTop: 20 }}>
+          <div className="starts-soon-icon starts-soon-icon-danger"><Hourglass size={26} /></div>
+          <p style={{ fontWeight: 700, fontSize: 16, margin: '2px 0 4px' }}>This session has ended</p>
+          <p style={{ fontSize: 12.5, color: 'var(--color-muted)', margin: '10px 0 0' }}>
+            Attendance marking closed when the scheduled session time ended.
           </p>
         </div>
       ) : summary.total === 0 ? (
@@ -314,7 +332,7 @@ const SessionDetail = () => {
               )}
 
               <p style={{ fontSize: 12, color: 'var(--color-muted)', textAlign: 'center', margin: '12px 0 4px' }}>
-                Swipe left for present, right for absent — any student, any time.
+                Pull the green arrow for present, the red arrow for absent — any student, any time.
               </p>
             </>
           )}
@@ -323,6 +341,49 @@ const SessionDetail = () => {
     </div>
   );
 };
+
+const PULL_THRESHOLD = 32;
+
+// A small drag handle pinned to one edge of the row instead of the whole
+// row being draggable, like it used to be. Confining the drag gesture to
+// this ~34px handle — rather than the name/avatar area — means touching
+// the row to scroll the list no longer competes with a full-row swipe. A
+// plain tap on the handle works too, for the same result without needing
+// to pull it at all.
+const PullHandle = ({
+  direction,
+  tone,
+  icon,
+  enabled,
+  onCommit,
+  label,
+}: {
+  direction: 'left' | 'right';
+  tone: 'present' | 'absent';
+  icon: ReactNode;
+  enabled: boolean;
+  onCommit: () => void;
+  label: string;
+}) => (
+  <motion.button
+    type="button"
+    className={`pull-handle pull-handle-${tone}`}
+    aria-label={label}
+    disabled={!enabled}
+    drag={enabled ? 'x' : false}
+    dragConstraints={{ left: 0, right: 0 }}
+    dragElastic={0.6}
+    whileDrag={{ scale: 1.08 }}
+    onDragEnd={(_e, info) => {
+      if (direction === 'left' ? info.offset.x > PULL_THRESHOLD : info.offset.x < -PULL_THRESHOLD) {
+        onCommit();
+      }
+    }}
+    onTap={enabled ? onCommit : undefined}
+  >
+    {icon}
+  </motion.button>
+);
 
 const StudentRow = ({
   student,
@@ -336,22 +397,22 @@ const StudentRow = ({
   disabled: boolean;
 }) => {
   // A self-submitted row is forensic student data — the manual-mark endpoint
-  // 409s on it, so it isn't swipeable here either; shown read-only instead.
+  // 409s on it, so it isn't markable here either; shown read-only instead.
   const readOnly = student.source === 'self_submitted';
+  const enabled = !readOnly && !disabled;
   const statusClass = student.status === 'present' ? ' list-row-present' : student.status === 'absent' ? ' list-row-absent' : '';
 
   return (
-    <motion.div
-      className={`list-row${statusClass}${readOnly ? ' list-row-readonly' : ''}`}
-      drag={readOnly || disabled ? false : 'x'}
-      dragConstraints={{ left: 0, right: 0 }}
-      dragElastic={0.5}
-      whileDrag={{ scale: 1.01 }}
-      onDragEnd={(_e, info) => {
-        if (info.offset.x < -SWIPE_THRESHOLD) onSwipe(student, 'present');
-        else if (info.offset.x > SWIPE_THRESHOLD) onSwipe(student, 'absent');
-      }}
-    >
+    <div className={`list-row${statusClass}${readOnly ? ' list-row-readonly' : ''}`}>
+      <PullHandle
+        direction="left"
+        tone="present"
+        enabled={enabled}
+        onCommit={() => onSwipe(student, 'present')}
+        label={`Mark ${student.name} present`}
+        icon={<ChevronRight size={17} />}
+      />
+
       <div className="list-row-avatar">{initials(student.name)}</div>
       <div className="list-row-info">
         <div className="list-row-name">{student.name}</div>
@@ -365,14 +426,23 @@ const StudentRow = ({
           type="button"
           className="icon-btn"
           style={{ width: 30, height: 30, flexShrink: 0 }}
-          onClick={(e) => { e.stopPropagation(); onUndo(student); }}
+          onClick={() => onUndo(student)}
           aria-label={`Undo mark for ${student.name}`}
           title="Undo"
         >
           <RotateCcw size={13} />
         </button>
       )}
-    </motion.div>
+
+      <PullHandle
+        direction="right"
+        tone="absent"
+        enabled={enabled}
+        onCommit={() => onSwipe(student, 'absent')}
+        label={`Mark ${student.name} absent`}
+        icon={<ChevronLeft size={17} />}
+      />
+    </div>
   );
 };
 

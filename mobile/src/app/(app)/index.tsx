@@ -12,14 +12,13 @@ import { LoadingScreen } from '../../components/ui/LoadingScreen';
 import { Panel } from '../../components/ui/Panel';
 import { StatCard } from '../../components/ui/StatCard';
 import { DonutChart } from '../../components/DonutChart';
+import { GreetingBanner } from '../../components/GreetingBanner';
 import { Screen } from '../../components/Screen';
 import { Timeline, TimelineEntry } from '../../components/Timeline';
-import { useAuth } from '../../context/AuthContext';
 import { sessionState, useDashboard } from '../../hooks/useDashboard';
 import { useTheme } from '../../theme/ThemeProvider';
 import { Session } from '../../api/types';
 import { formatClock, formatSlot, timeUntil } from '../../utils/formatTime';
-import { greetingWord } from '../../utils/greeting';
 
 // Calendar-day comparison (local time), not a millisecond/24h-window
 // comparison — a session starting at 11pm today and one starting at 1am
@@ -34,7 +33,6 @@ const isToday = (iso: string) => {
 
 export default function Dashboard() {
   const { colors, font, radii } = useTheme();
-  const { admin } = useAuth();
   const router = useRouter();
   const { data, isLoading, isError, isFetching, refetch } = useDashboard();
 
@@ -51,7 +49,6 @@ export default function Dashboard() {
     if (isError) Toast.show({ type: 'error', text1: 'Failed to load your sessions' });
   }, [isError]);
 
-  const displayName = admin?.fullName || admin?.username || '';
   const [sessionsTab, setSessionsTab] = useState<'today' | 'upcoming'>('today');
 
   const {
@@ -146,13 +143,7 @@ export default function Dashboard() {
 
   return (
     <Screen mode="brand" refreshing={isFetching} onRefresh={refetch}>
-      <View style={{ marginBottom: 4 }}>
-        <Text style={[styles.greeting, { color: colors.text, fontFamily: font.extrabold }]}>
-          {greetingWord()}
-          {displayName ? `, ${displayName}` : ''} 👋
-        </Text>
-        <Text style={[styles.subGreeting, { color: colors.muted }]}>Here&apos;s what&apos;s happening today</Text>
-      </View>
+      <GreetingBanner />
 
       {sessions.length === 0 ? (
         <EmptyState
@@ -311,8 +302,6 @@ const MetaItem = ({ icon, text }: { icon: React.ReactNode; text: string }) => {
 };
 
 const styles = StyleSheet.create({
-  greeting: { fontSize: 22 },
-  subGreeting: { fontSize: 13, marginTop: 4 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 16 },
   tabRow: { flexDirection: 'row', gap: 6, margin: 14, marginBottom: 4, padding: 4 },
   tabBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9 },

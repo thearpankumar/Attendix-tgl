@@ -8,10 +8,10 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../theme/ThemeProvider';
 import { IconButton } from './ui/IconButton';
 
-// Same indigo the native splash screen uses (app.json's expo-splash-screen
+// Same black the native splash screen uses (app.json's expo-splash-screen
 // plugin) — fixed rather than theme-driven so the brand bar always matches
 // the launch screen exactly, in both light and dark app themes.
-const BRAND_BG = '#4f46e5';
+const BRAND_BG = '#000000';
 
 export const Topbar = ({ mode }: { mode: 'brand' | 'back' }) => {
   const { colors, font } = useTheme();
@@ -29,14 +29,24 @@ export const Topbar = ({ mode }: { mode: 'brand' | 'back' }) => {
         {
           backgroundColor: isBrand ? BRAND_BG : colors.surface,
           borderBottomColor: isBrand ? BRAND_BG : colors.border,
-          paddingTop: insets.top + 14,
+          paddingTop: insets.top + 6,
         },
       ]}
     >
       {isBrand ? (
         <View style={styles.brand}>
+          {/* Sized to span both lines, so it sits between "Attendix" and
+              the username below it rather than only lining up with the
+              top line. */}
           <Image source={require('../../assets/images/splash-icon.png')} style={styles.brandLogo} resizeMode="contain" />
-          <Text style={[styles.brandText, { color: '#ffffff', fontFamily: font.extrabold }]}>Attendix</Text>
+          <View style={styles.brandCol}>
+            <Text style={[styles.brandText, { color: '#ffffff', fontFamily: font.extrabold }]}>Attendix</Text>
+            {displayName ? (
+              <Text style={[styles.name, { color: '#ffffffcc', fontFamily: font.medium }]} numberOfLines={1}>
+                {displayName}
+              </Text>
+            ) : null}
+          </View>
         </View>
       ) : (
         <IconButton accessibilityLabel="Back" onPress={() => router.back()} size={36}>
@@ -45,8 +55,8 @@ export const Topbar = ({ mode }: { mode: 'brand' | 'back' }) => {
       )}
 
       <View style={styles.actions}>
-        {displayName ? (
-          <Text style={[styles.name, { color: isBrand ? '#ffffffcc' : colors.muted, fontFamily: font.medium }]}>{displayName}</Text>
+        {!isBrand && displayName ? (
+          <Text style={[styles.name, { color: colors.muted, fontFamily: font.medium }]}>{displayName}</Text>
         ) : null}
         <IconButton accessibilityLabel="Settings" onPress={() => router.push('/settings')}>
           <SettingsIcon size={16} color={colors.muted} />
@@ -68,9 +78,10 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     borderBottomWidth: 1,
   },
-  brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  brandLogo: { width: 22, height: 22 },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 },
+  brandCol: { gap: 2, flexShrink: 1 },
+  brandLogo: { width: 52, height: 52 },
   brandText: { fontSize: 17 },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
   name: { fontSize: 13, marginRight: 2 },
 });

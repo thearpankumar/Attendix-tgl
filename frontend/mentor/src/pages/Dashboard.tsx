@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router';
 import { toast } from 'react-toastify';
 import { MapPin, Clock, Users, ClipboardX, Loader2, Activity, CalendarClock, GraduationCap, PieChart } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import GreetingBanner from '../components/GreetingBanner';
 
 interface Session {
   _id: string;
@@ -61,17 +61,8 @@ const isToday = (iso: string) => {
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
 };
 
-const greetingWord = () => {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
-};
-
 const Dashboard = () => {
   const navigate = useNavigate();
-  const { admin } = useAuth();
-  const displayName = admin?.fullName || admin?.username || '';
   const [sessions, setSessions] = useState<Session[]>([]);
   const [rosterMap, setRosterMap] = useState<Record<string, RosterSummary>>({});
   const [loading, setLoading] = useState(true);
@@ -158,12 +149,7 @@ const Dashboard = () => {
 
   return (
     <div className="fade-in">
-      <div style={{ marginBottom: 4 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>
-          {greetingWord()}{displayName ? `, ${displayName}` : ''} 👋
-        </h1>
-        <p style={{ fontSize: 13, color: 'var(--color-muted)', margin: '4px 0 0' }}>Here&apos;s what&apos;s happening today</p>
-      </div>
+      <GreetingBanner />
 
       {sessions.length === 0 ? (
         <div className="card empty-state" style={{ marginTop: 20 }}>
