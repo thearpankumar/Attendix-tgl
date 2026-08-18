@@ -12,6 +12,12 @@ import { UpdatePrompt } from './UpdatePrompt';
 
 const mockedUseAppUpdate = useAppUpdate as jest.Mock;
 
+// The first render in this file that actually mounts UpdateDetails' "Update
+// Now" button pays a one-time cold-start cost for expo-linear-gradient +
+// the SVG icon's native-module mocks, which can push past Jest's default
+// 5000ms timeout under load.
+jest.setTimeout(15000);
+
 const baseState = {
   checking: false,
   hasChecked: true,

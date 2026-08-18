@@ -4,6 +4,12 @@ import React from 'react';
 import { ThemeProvider } from '../theme/ThemeProvider';
 import { UpdateDetails } from './UpdateDetails';
 
+// The first render here pays a one-time cold-start cost for
+// expo-linear-gradient + the SVG icon's native-module mocks (used by
+// Button/lucide-react-native), which can push past Jest's default 5000ms
+// timeout under load.
+jest.setTimeout(15000);
+
 const baseProps = {
   currentVersion: '1.1.4',
   latestVersion: '1.2.0',
