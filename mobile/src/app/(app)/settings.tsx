@@ -1,17 +1,20 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Fingerprint, Lock } from 'lucide-react-native';
-import React, { useState } from 'react';
+import { ChevronDown, ChevronUp, Download, Fingerprint, Lock } from 'lucide-react-native';
+import React, { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { Switch, Text, View, StyleSheet } from 'react-native';
+import { Pressable, Switch, Text, View, StyleSheet } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import Toast from 'react-native-toast-message';
 import { z } from 'zod';
 
 import { Screen } from '../../components/Screen';
+import { UpdateDetails } from '../../components/UpdateDetails';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { TextField } from '../../components/ui/TextField';
 import { useAuth } from '../../context/AuthContext';
 import { useBiometricLock } from '../../context/BiometricLockContext';
+import { useAppUpdate } from '../../hooks/useAppUpdate';
 import { useTheme } from '../../theme/ThemeProvider';
 
 const schema = z
@@ -32,6 +35,17 @@ export default function Settings() {
   const { admin, changePassword } = useAuth();
   const biometricLock = useBiometricLock();
   const [biometricBusy, setBiometricBusy] = useState(false);
+  const update = useAppUpdate();
+
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const passwordOpenProgress = useSharedValue(0);
+  useEffect(() => {
+    passwordOpenProgress.value = withTiming(passwordOpen ? 1 : 0, { duration: 200 });
+  }, [passwordOpen, passwordOpenProgress]);
+  const passwordFieldsStyle = useAnimatedStyle(() => ({
+    maxHeight: passwordOpenProgress.value * 400,
+    opacity: passwordOpenProgress.value,
+  }));
 
   const { control, handleSubmit, reset, formState: { isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -96,35 +110,80 @@ export default function Settings() {
         )}
       </Card>
 
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <Pressable
+          style={styles.rowHeader}
+          onPress={() => setPasswordOpen((open) => !open)}
+          accessibilityRole="button"
+          accessibilityLabel="Change Password"
+        >
+          <Lock size={16} color={colors.primary} />
+          <Text style={[styles.rowHeaderText, { color: colors.text, fontFamily: font.bold, flex: 1 }]}>Change Password</Text>
+          {passwordOpen ? <ChevronUp size={16} color={colors.muted} /> : <ChevronDown size={16} color={colors.muted} />}
+        </Pressable>
+
+        <Animated.View style={[{ overflow: 'hidden' }, passwordFieldsStyle]}>
+          <Controller
+            control={control}
+            name="currentPassword"
+            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+              <TextField label="Current Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+            )}
+          />
+          <Controller
+            control={control}
+            name="newPassword"
+            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+              <TextField label="New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+            )}
+          />
+          <Controller
+            control={control}
+            name="confirmPassword"
+            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+              <TextField label="Confirm New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+            )}
+          />
+
+          <Button title={isSubmitting ? 'Saving…' : 'Update Password'} onPress={handleSubmit(onSubmit)} loading={isSubmitting} block />
+        </Animated.View>
+      </Card>
+
       <Card style={{ padding: 16 }}>
         <View style={styles.rowHeader}>
-          <Lock size={16} color={colors.primary} />
-          <Text style={[styles.rowHeaderText, { color: colors.text, fontFamily: font.bold }]}>Change Password</Text>
+          <Download size={16} color={colors.primary} />
+          <Text style={[styles.rowHeaderText, { color: colors.text, fontFamily: font.bold }]}>App Update</Text>
         </View>
 
-        <Controller
-          control={control}
-          name="currentPassword"
-          render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-            <TextField label="Current Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-          )}
-        />
-        <Controller
-          control={control}
-          name="newPassword"
-          render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-            <TextField label="New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-          )}
-        />
-        <Controller
-          control={control}
-          name="confirmPassword"
-          render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-            <TextField label="Confirm New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-          )}
-        />
+        <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 12 }}>
+          Current version: {update.currentVersion}
+        </Text>
 
-        <Button title={isSubmitting ? 'Saving…' : 'Update Password'} onPress={handleSubmit(onSubmit)} loading={isSubmitting} block />
+        {update.updateAvailable && update.latestVersion ? (
+          <UpdateDetails
+            currentVersion={update.currentVersion}
+            latestVersion={update.latestVersion}
+            notes={update.notes}
+            downloading={update.downloading}
+            progress={update.progress}
+            error={update.error}
+            onUpdate={update.download}
+          />
+        ) : (
+          <>
+            {update.hasChecked ? (
+              <Text style={{ color: colors.successTxt, fontSize: 13, marginBottom: 12 }}>You&apos;re up to date.</Text>
+            ) : null}
+            <Button
+              title={update.checking ? 'Checking…' : 'Check for Updates'}
+              onPress={update.check}
+              loading={update.checking}
+              variant="secondary"
+              block
+            />
+            {update.error ? <Text style={{ color: colors.dangerTxt, fontSize: 12, marginTop: 8 }}>{update.error}</Text> : null}
+          </>
+        )}
       </Card>
     </Screen>
   );
