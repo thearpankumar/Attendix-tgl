@@ -316,6 +316,26 @@ fn unique(prefix: &str) -> String {
     )
 }
 
+/// Wipes every admin/session-adjacent table (CASCADE pulls in
+/// `excel_batches`/`session_admins`/`short_links`/etc. via their FKs into
+/// `sessions`/`admins`). Needed before any test that asserts an *exact*
+/// session/record count: now that a super-admin can see every session in
+/// the database (not just ones they created), such a test would otherwise
+/// also count leftover rows from every other test in this
+/// `#[file_serial(admin_bootstrap)]` group that ran earlier in the same
+/// shared testcontainers database. Mirrors the same reset
+/// `exam_session_flow_tests::register_bootstraps_super_admin_then_locks_itself`
+/// already does for the same reason.
+async fn reset_db(pool: &sqlx::PgPool) {
+    sqlx::query(
+        "TRUNCATE TABLE admins, locations, batches, students, sessions, attendances, \
+         admin_audit_log RESTART IDENTITY CASCADE",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Reads back an xlsx byte buffer's first sheet's rows as strings — used to
 /// assert on the actual generated export content rather than just status
 /// codes. `calamine` is already a normal dependency of the main crate (used
@@ -355,6 +375,7 @@ fn sheet_count(bytes: &[u8]) -> usize {
 #[file_serial(admin_bootstrap)]
 async fn excel_upload_parse_commit_and_full_session_lifecycle() {
     let (app, db) = create_test_app().await;
+    reset_db(&db).await;
 
     let super_username = unique("excel-super");
     seed_admin(
@@ -882,6 +903,7 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
 #[file_serial(admin_bootstrap)]
 async fn list_endpoints_support_scroll_paging_without_gaps_or_duplicates() {
     let (app, db) = create_test_app().await;
+    reset_db(&db).await;
 
     let super_username = unique("paging-super");
     seed_admin(
@@ -1031,4 +1053,194 @@ async fn list_endpoints_support_scroll_paging_without_gaps_or_duplicates() {
         offset += page.len();
     }
     assert_eq!(seen_session_ids, seeded_session_ids);
+}
+
+/// Regression test for the same cross-tenant visibility bug as
+/// `exam_session_flow_tests::second_super_admin_sees_and_manages_first_super_admins_session`,
+/// but for batches and locations: every super-admin is a peer with full
+/// visibility, not a tenant scoped to `created_by`. A second super-admin
+/// must be able to list, read, and delete a batch/location created by the
+/// first — while a mentor (who only ever sees their own) still can't.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn second_super_admin_sees_and_manages_first_super_admins_batches_and_locations() {
+    let (app, db) = create_test_app().await;
+    reset_db(&db).await;
+
+    let super_a_username = unique("cross-batch-super-a");
+    seed_admin(
+        &db,
+        &super_a_username,
+        &format!("{}@example.com", super_a_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_a_client = Client::login(&app, &super_a_username, "super-password-123").await;
+
+    let super_b_username = unique("cross-batch-super-b");
+    seed_admin(
+        &db,
+        &super_b_username,
+        &format!("{}@example.com", super_b_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_b_client = Client::login(&app, &super_b_username, "super-password-123").await;
+
+    // ── Batch ──────────────────────────────────────────────────────
+    let (status, batch_body) = super_a_client
+        .post_multipart_csv(
+            &app,
+            "/api/admin/batches",
+            &[
+                ("name", "Cross Admin Batch"),
+                ("description", "cross-visibility test"),
+            ],
+            "file",
+            "roster.csv",
+            b"name,roll_number\nStudent A,R1\n",
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "super-admin A should be able to create a batch: {batch_body:?}"
+    );
+    let batch_id = batch_body["batchId"].as_str().unwrap().to_string();
+
+    let (status, list_body) = super_b_client.get(&app, "/api/admin/batches").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list_body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["_id"] == batch_id),
+        "super-admin B's batch list must include super-admin A's batch: {list_body:?}"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/batches/{batch_id}"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to fetch super-admin A's batch directly"
+    );
+
+    // ── Location ───────────────────────────────────────────────────
+    let (status, location_body) = super_a_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/locations",
+            serde_json::json!({
+                "name": "Cross Admin Location",
+                "latitude": 12.9,
+                "longitude": 77.6,
+                "radiusMeters": 100,
+            }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "super-admin A should be able to create a location: {location_body:?}"
+    );
+    let location_id = location_body["_id"].as_str().unwrap().to_string();
+
+    let (status, list_body) = super_b_client.get(&app, "/api/admin/locations").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list_body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["_id"] == location_id),
+        "super-admin B's location list must include super-admin A's location: {list_body:?}"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/locations/{location_id}"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to fetch super-admin A's location directly"
+    );
+
+    let (status, _) = super_b_client
+        .mutate(
+            &app,
+            "PUT",
+            &format!("/api/admin/locations/{location_id}"),
+            serde_json::json!({ "name": "Renamed by B" }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to update super-admin A's location"
+    );
+
+    let (status, _) = super_b_client
+        .mutate(
+            &app,
+            "DELETE",
+            &format!("/api/admin/locations/{location_id}"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to delete super-admin A's location"
+    );
+
+    let (status, _) = super_b_client
+        .mutate(
+            &app,
+            "DELETE",
+            &format!("/api/admin/batches/{batch_id}"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to delete super-admin A's batch"
+    );
+
+    // A mentor with no batches/locations of their own must still see none —
+    // the fix widens super-admin visibility, it must not widen mentor
+    // visibility.
+    let mentor_username = unique("cbatch-outsider");
+    let (_status, _) = super_a_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/users",
+            serde_json::json!({
+                "username": mentor_username,
+                "email": format!("{}@example.com", mentor_username),
+                "password": "outsider-password-123",
+                "role": "admin",
+            }),
+        )
+        .await;
+    let mentor_client = Client::login(&app, &mentor_username, "outsider-password-123").await;
+    let (status, mentor_batches) = mentor_client.get(&app, "/api/admin/batches").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        mentor_batches.as_array().unwrap().is_empty(),
+        "a mentor with no batches of their own must see none: {mentor_batches:?}"
+    );
+    let (status, mentor_locations) = mentor_client.get(&app, "/api/admin/locations").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        mentor_locations.as_array().unwrap().is_empty(),
+        "a mentor with no locations of their own must see none: {mentor_locations:?}"
+    );
 }

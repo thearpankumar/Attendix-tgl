@@ -130,9 +130,10 @@ async fn fetch_assigned_mentors(
 }
 
 /// Role-scoped session lookup shared by every session read/sub-resource
-/// handler: super-admins see sessions they created, mentors only ever see
-/// sessions a super-admin has explicitly assigned to them. Never trust a
-/// client-supplied filter for this — the role check happens at the SQL level.
+/// handler: super-admins see every session regardless of who created it,
+/// mentors only ever see sessions a super-admin has explicitly assigned to
+/// them. Never trust a client-supplied filter for this — the role check
+/// happens at the SQL level.
 pub async fn find_session_for_admin(
     db: &sqlx::PgPool,
     session_id: Uuid,
@@ -140,10 +141,10 @@ pub async fn find_session_for_admin(
 ) -> Result<Session> {
     sqlx::query_as(
         "SELECT * FROM sessions WHERE id = $1 \
-         AND (($2 = 'super_admin' AND created_by = $3) \
-              OR ($2 <> 'super_admin' AND EXISTS ( \
+         AND ($2 = 'super_admin' \
+              OR EXISTS ( \
                     SELECT 1 FROM session_admins sa WHERE sa.session_id = sessions.id AND sa.admin_id = $3 \
-              )))",
+              ))",
     )
     .bind(session_id)
     .bind(&auth.role)
@@ -656,12 +657,14 @@ pub async fn deactivate_session(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let result =
-        sqlx::query("UPDATE sessions SET is_active = false WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .execute(&state.db)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE sessions SET is_active = false WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Session not found".to_string()));
@@ -688,14 +691,17 @@ pub async fn delete_session(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    // First verify session ownership (so cross-admin deletions get 404, not 401)
-    let _session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Any super-admin may delete any session; mentors never reach this route
+    // via the frontend, but are denied outright rather than silently scoped.
+    let _session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     // Verify password - re-fetch admin with password field
     let admin: Admin = sqlx::query_as("SELECT * FROM admins WHERE id = $1")
@@ -820,12 +826,14 @@ pub async fn bulk_delete_sessions(
             continue;
         };
 
-        let owned: Option<Session> =
-            sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-                .bind(session_id)
-                .bind(auth.id)
-                .fetch_optional(&state.db)
-                .await?;
+        let owned: Option<Session> = sqlx::query_as(
+            "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+        )
+        .bind(session_id)
+        .bind(&auth.role)
+        .bind(auth.id)
+        .fetch_optional(&state.db)
+        .await?;
 
         if owned.is_none() {
             failed_ids.push(raw_id.clone());
@@ -854,16 +862,20 @@ pub async fn rotate_token(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    // Ownership check. Without it any admin could rotate any other admin's
-    // session and receive the new attendance token in the response body,
-    // hijacking that session and breaking it for its owner at the same time.
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Ownership check. Without it a mentor could rotate any admin's session
+    // and receive the new attendance token in the response body, hijacking
+    // that session and breaking it for its owner at the same time. Any
+    // super-admin, however, may rotate any session — they're peers, not
+    // tenants of each other.
+    let session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let new_token = Session::generate_token();
 
@@ -895,13 +907,15 @@ pub async fn export_session_attendance(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     if let Some(excel_batch_id) = session.excel_batch_id {
         return export_mentor_format(&state, &session, excel_batch_id).await;
@@ -1206,7 +1220,8 @@ struct MentorExportRow {
 /// `samplefiles/attendance-data-2026-08-15.csv`; the "Batch" column holds the
 /// group's time-range, not a batch name). Reached only from
 /// `export_session_attendance`, which has already scoped the session lookup
-/// by `created_by = auth.id` — same authorization boundary as the GPS path.
+/// to sessions the caller may access — same authorization boundary as the
+/// GPS path.
 async fn export_mentor_format(
     state: &Arc<crate::AppState>,
     session: &Session,
@@ -1404,8 +1419,9 @@ pub async fn export_bulk_attendance(
 type XlsxAttachment = (StatusCode, [(header::HeaderName, String); 2], Vec<u8>);
 
 /// Builds a single workbook containing one worksheet per session (skipping
-/// any id not owned by the caller), auto-detecting GPS vs mentor format per
-/// session exactly as the single-session export does.
+/// any id the caller can't access — any session for a super-admin, only
+/// sessions they created for a mentor), auto-detecting GPS vs mentor format
+/// per session exactly as the single-session export does.
 pub(crate) async fn build_sessions_workbook_response(
     state: &Arc<crate::AppState>,
     auth: &AuthenticatedAdmin,
@@ -1416,12 +1432,14 @@ pub(crate) async fn build_sessions_workbook_response(
     let mut included = 0usize;
 
     for &session_id in session_ids {
-        let Some(session): Option<Session> =
-            sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-                .bind(session_id)
-                .bind(auth.id)
-                .fetch_optional(&state.db)
-                .await?
+        let Some(session): Option<Session> = sqlx::query_as(
+            "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+        )
+        .bind(session_id)
+        .bind(&auth.role)
+        .bind(auth.id)
+        .fetch_optional(&state.db)
+        .await?
         else {
             continue;
         };
@@ -1685,12 +1703,13 @@ pub struct UpdateSessionMentorsResponse {
 }
 
 /// Adds/removes mentors from a session's `session_admins` assignment.
-/// Deliberately scoped by direct `created_by = auth.id` rather than
+/// Deliberately scoped by a direct role-aware query rather than
 /// `find_session_for_admin` — that helper also matches a session via the
 /// caller's *own* mentor assignment, which would let a mentor edit their own
-/// session's mentor list. Only the super-admin who created the session may.
-/// Works identically for Excel-based and manually-created exam sessions,
-/// since it only ever touches `session_admins`.
+/// session's mentor list. Only a super-admin (any super-admin, not just the
+/// one who created the session) may. Works identically for Excel-based and
+/// manually-created exam sessions, since it only ever touches
+/// `session_admins`.
 pub async fn update_session_mentors(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -1700,13 +1719,15 @@ pub async fn update_session_mentors(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let _session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let _session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let mut add_ids = Vec::with_capacity(payload.add.len());
     for raw_id in &payload.add {

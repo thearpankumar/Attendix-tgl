@@ -234,10 +234,15 @@ pub async fn get_dashboard_stats(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<DashboardQuery>,
 ) -> Result<impl IntoResponse> {
-    // Build session filter query dynamically
-    let mut qb =
-        sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM sessions WHERE created_by = ");
+    // Build session filter query dynamically. Any super-admin sees every
+    // session; a mentor only ones they created themselves (dashboards are
+    // not part of the mentor app, but this keeps the scoping consistent with
+    // every other admin-role query in this file).
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM sessions WHERE (");
+    qb.push_bind(auth.role.clone());
+    qb.push(" = 'super_admin' OR created_by = ");
     qb.push_bind(auth.id);
+    qb.push(")");
 
     if let Some(batch_id_str) = &query.batch_id {
         if batch_id_str != "all" {
@@ -607,10 +612,12 @@ pub async fn get_dashboard_stats(
     }
 
     // Low engagement batches
-    let batches: Vec<Batch> = sqlx::query_as("SELECT * FROM batches WHERE created_by = $1")
-        .bind(auth.id)
-        .fetch_all(&state.db)
-        .await?;
+    let batches: Vec<Batch> =
+        sqlx::query_as("SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2)")
+            .bind(&auth.role)
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
 
     let batch_ids_for_student_count: Vec<Uuid> = batches.iter().map(|b| b.id).collect();
     let mut batch_student_counts: std::collections::HashMap<Uuid, i64> =
@@ -855,11 +862,13 @@ pub async fn get_dashboard_filters(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    let batches: Vec<Batch> =
-        sqlx::query_as("SELECT * FROM batches WHERE created_by = $1 ORDER BY name")
-            .bind(auth.id)
-            .fetch_all(&state.db)
-            .await?;
+    let batches: Vec<Batch> = sqlx::query_as(
+        "SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY name",
+    )
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
     let mut batches_out = vec![FilterOption {
         value: "all".to_string(),
         label: "All Batches".to_string(),
@@ -871,11 +880,13 @@ pub async fn get_dashboard_filters(
         });
     }
 
-    let locations: Vec<Location> =
-        sqlx::query_as("SELECT * FROM locations WHERE created_by = $1 ORDER BY name")
-            .bind(auth.id)
-            .fetch_all(&state.db)
-            .await?;
+    let locations: Vec<Location> = sqlx::query_as(
+        "SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY name",
+    )
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
     let mut centers = vec![FilterOption {
         value: "all".to_string(),
         label: "All Centers".to_string(),
@@ -962,11 +973,14 @@ pub async fn get_recent_activity(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
-    // Get session IDs for this admin
-    let sessions: Vec<Session> = sqlx::query_as("SELECT * FROM sessions WHERE created_by = $1")
-        .bind(auth.id)
-        .fetch_all(&state.db)
-        .await?;
+    // Every session visible to this admin: all of them for a super-admin,
+    // only ones they created for a mentor.
+    let sessions: Vec<Session> =
+        sqlx::query_as("SELECT * FROM sessions WHERE ($1 = 'super_admin' OR created_by = $2)")
+            .bind(&auth.role)
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
     let mut session_map: std::collections::HashMap<Uuid, Option<Uuid>> =
         std::collections::HashMap::new();
     for session in &sessions {
@@ -1049,11 +1063,13 @@ pub async fn get_attendance_series(
     let days = query.days.unwrap_or(180).min(730);
     let from = Utc::now() - chrono::Duration::days(days);
 
-    // Get admin's locations
-    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE created_by = $1")
-        .bind(auth.id)
-        .fetch_all(&state.db)
-        .await?;
+    // Every location visible to this admin.
+    let locations: Vec<Location> =
+        sqlx::query_as("SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2)")
+            .bind(&auth.role)
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
     let mut location_ids: Vec<Uuid> = Vec::new();
     let mut location_names: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();
@@ -1141,11 +1157,13 @@ pub async fn get_sessions_by_date(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<SessionsByDateQuery>,
 ) -> Result<impl IntoResponse> {
-    // Get admin's locations
-    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE created_by = $1")
-        .bind(auth.id)
-        .fetch_all(&state.db)
-        .await?;
+    // Every location visible to this admin.
+    let locations: Vec<Location> =
+        sqlx::query_as("SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2)")
+            .bind(&auth.role)
+            .bind(auth.id)
+            .fetch_all(&state.db)
+            .await?;
     let mut location_ids: Vec<Uuid> = Vec::new();
     let mut location_names: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();

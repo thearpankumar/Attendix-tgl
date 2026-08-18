@@ -31,11 +31,14 @@ pub async fn get_flagged_attendance(
             let session_id = Uuid::parse_str(&session_id_str)
                 .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-            // Verify session ownership
+            // Verify session access — this route already requires super-admin
+            // (see above), so any super-admin may inspect any session's
+            // flags, not just the one they created.
             sqlx::query_as::<_, Session>(
-                "SELECT * FROM sessions WHERE id = $1 AND created_by = $2",
+                "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
             )
             .bind(session_id)
+            .bind(&auth.role)
             .bind(auth.id)
             .fetch_optional(&state.db)
             .await?
@@ -120,13 +123,17 @@ pub async fn verify_attendance(
         .await?
         .ok_or_else(|| AppError::NotFound("Attendance not found".to_string()))?;
 
-    // Verify session ownership
-    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-        .bind(attendance.session_id)
-        .bind(auth.id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Verify the session exists (route already requires super-admin above,
+    // and any super-admin may verify attendance on any session).
+    sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(attendance.session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     sqlx::query("UPDATE attendances SET verified = $1 WHERE id = $2")
         .bind(payload.verified)
@@ -167,13 +174,17 @@ pub async fn bulk_verify_attendance(
     let session_uuid = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    // Verify session ownership
-    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-        .bind(session_uuid)
-        .bind(auth.id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    // Verify session access — any super-admin may bulk-verify any session;
+    // a mentor (who never has a matching `created_by`) is denied.
+    sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_uuid)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let ids: Result<Vec<Uuid>> = payload
         .ids

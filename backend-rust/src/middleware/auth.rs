@@ -58,10 +58,12 @@ impl AuthenticatedAdmin {
     /// `crate::constants::ROLE_SUPER_ADMIN` explicitly.
     ///
     /// Session/location/batch deletion are deliberately NOT gated here:
-    /// they're already scoped to `created_by = admin.id` at the query level
-    /// (an admin can only ever delete their own resources), so the
-    /// equal-privilege risk this guards against doesn't apply to them the
-    /// same way it does to global config that affects every session.
+    /// they're already scoped at the query level to "any super-admin, or the
+    /// mentor who created it" (mentors never actually qualify for
+    /// delete/mutate routes on sessions, which check `created_by`, not the
+    /// assignment table) — so the equal-privilege risk this guards against
+    /// doesn't apply to them the same way it does to
+    /// global config that affects every session.
     pub fn require_role(&self, role: &str) -> Result<()> {
         if self.role != role {
             return Err(AppError::Forbidden(format!(

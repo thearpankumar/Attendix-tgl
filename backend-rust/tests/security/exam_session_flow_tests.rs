@@ -397,6 +397,168 @@ async fn super_admin_creates_mentor_and_role_gates_are_enforced() {
     );
 }
 
+/// Regression test for a cross-tenant visibility bug: every super-admin is a
+/// peer with full visibility into every session, not a tenant scoped to
+/// `created_by`. A second super-admin must be able to list, read, and manage
+/// a session created by the first — while a mentor with no assignment to it
+/// must still be denied (the fix widens super-admin visibility, it must not
+/// widen mentor visibility).
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn second_super_admin_sees_and_manages_first_super_admins_session() {
+    let (app, db) = create_test_app().await;
+
+    let super_a_username = unique("cross-super-a");
+    let super_a_id = seed_admin(
+        &db,
+        &super_a_username,
+        &format!("{}@example.com", super_a_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_a_client = Client::login(&app, &super_a_username, "super-password-123").await;
+
+    let super_b_username = unique("cross-super-b");
+    seed_admin(
+        &db,
+        &super_b_username,
+        &format!("{}@example.com", super_b_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_b_client = Client::login(&app, &super_b_username, "super-password-123").await;
+
+    let (location_id, _batch_id) = seed_location_and_batch(&db, super_a_id, "CROSS001").await;
+
+    let (status, session_body) = super_a_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "locationId": location_id.to_string(),
+                "durationMinutes": 30,
+            }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "super-admin A should be able to create a session: {session_body:?}"
+    );
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+
+    // Super-admin B did not create this session, but must see it in the
+    // list anyway.
+    let (status, list_body) = super_b_client.get(&app, "/api/admin/sessions").await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions = list_body.as_array().expect("sessions list is an array");
+    assert!(
+        sessions.iter().any(|s| s["_id"] == session_id),
+        "super-admin B's session list must include super-admin A's session: {list_body:?}"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to fetch super-admin A's session directly"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must see the session's stats"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/totp"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must see the session's TOTP"
+    );
+
+    let (status, _) = super_b_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/devices"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must see the session's devices"
+    );
+
+    let (status, rotate_body) = super_b_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/rotate"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "super-admin B must be able to rotate super-admin A's session token: {rotate_body:?}"
+    );
+
+    let (status, overview_body) = super_b_client
+        .get(&app, "/api/admin/sessions/stats-overview")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        overview_body["totalRecords"].as_i64().unwrap_or(0) >= 1,
+        "stats-overview must count sessions created by other super-admins too: {overview_body:?}"
+    );
+
+    let (status, _) = super_b_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/deactivate"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "super-admin B must be able to deactivate super-admin A's session"
+    );
+
+    // A mentor with no assignment to this session must still be denied.
+    let outsider_username = unique("cross-outsider-mentor");
+    let (_status, _) = super_a_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/users",
+            serde_json::json!({
+                "username": outsider_username,
+                "email": format!("{}@example.com", outsider_username),
+                "password": "outsider-password-123",
+                "role": "admin",
+            }),
+        )
+        .await;
+    let outsider_client = Client::login(&app, &outsider_username, "outsider-password-123").await;
+    let (status, _) = outsider_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}"))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unassigned mentor must still not see this session"
+    );
+}
+
 /// A super-admin can edit their own profile fields, but cannot demote or
 /// deactivate themselves — there's no email-based recovery to undo it.
 #[tokio::test]

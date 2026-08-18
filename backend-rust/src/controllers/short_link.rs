@@ -61,9 +61,10 @@ pub async fn create_short_link(
 
     if let Some(sid) = session_id {
         let _session = sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE id = $1 AND created_by = $2",
+            "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
         )
         .bind(sid)
+        .bind(&auth.role)
         .bind(auth.id)
         .fetch_optional(&state.db)
         .await?
@@ -157,12 +158,13 @@ pub async fn get_short_links(
 
     let links = sqlx::query_as::<_, ShortLink>(
         "SELECT * FROM short_links \
-         WHERE created_by = $1 \
-           AND ($2::uuid IS NULL OR session_id = $2) \
-           AND ($3::bool IS NULL OR is_active = $3) \
+         WHERE ($1 = 'super_admin' OR created_by = $2) \
+           AND ($3::uuid IS NULL OR session_id = $3) \
+           AND ($4::bool IS NULL OR is_active = $4) \
          ORDER BY created_at DESC \
-         OFFSET $4 LIMIT $5",
+         OFFSET $5 LIMIT $6",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .bind(session_id_filter)
     .bind(is_active_filter)
@@ -194,9 +196,10 @@ pub async fn get_short_link_by_code(
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
     let link = sqlx::query_as::<_, ShortLink>(
-        "SELECT * FROM short_links WHERE short_code = $1 AND created_by = $2",
+        "SELECT * FROM short_links WHERE short_code = $1 AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(short_code.to_lowercase())
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_optional(&state.db)
     .await?
@@ -284,13 +287,15 @@ pub async fn attach_short_link(
         }
     }
 
-    let _session =
-        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
+    let _session = sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found or unauthorized".to_string()))?;
 
     let existing_link: Option<ShortLink> = sqlx::query_as(
         "SELECT * FROM short_links WHERE session_id = $1 AND is_active = true AND id != $2",
@@ -326,9 +331,10 @@ pub async fn detach_short_link(
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
     let link = sqlx::query_as::<_, ShortLink>(
-        "SELECT * FROM short_links WHERE short_code = $1 AND created_by = $2",
+        "SELECT * FROM short_links WHERE short_code = $1 AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(short_code.to_lowercase())
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_optional(&state.db)
     .await?
@@ -349,11 +355,14 @@ pub async fn delete_short_link(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let result = sqlx::query("DELETE FROM short_links WHERE short_code = $1 AND created_by = $2")
-        .bind(short_code.to_lowercase())
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM short_links WHERE short_code = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(short_code.to_lowercase())
+    .bind(&auth.role)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Short link not found".to_string()));
@@ -369,8 +378,9 @@ pub async fn get_available_sessions(
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
     let sessions = sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions WHERE is_active = true AND created_by = $1 ORDER BY created_at DESC",
+        "SELECT * FROM sessions WHERE is_active = true AND ($1 = 'super_admin' OR created_by = $2) ORDER BY created_at DESC",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_all(&state.db)
     .await?;

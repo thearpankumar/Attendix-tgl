@@ -164,13 +164,15 @@ pub async fn get_session_totp(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     // Generate QR token for anti-sharing using session ID and totp_secret
     let qr_token = session
@@ -196,13 +198,15 @@ pub async fn get_session_devices(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let _session: Session =
-        sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND created_by = $2")
-            .bind(session_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let _session: Session = sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     let devices: Vec<crate::models::Device> =
         sqlx::query_as("SELECT * FROM devices WHERE session_id = $1 ORDER BY last_seen_at DESC")

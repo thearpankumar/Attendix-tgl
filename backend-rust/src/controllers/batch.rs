@@ -159,8 +159,9 @@ pub async fn get_batches(
     Query(query): Query<GetBatchesQuery>,
 ) -> Result<impl IntoResponse> {
     let batches = sqlx::query_as::<_, Batch>(
-        "SELECT * FROM batches WHERE created_by = $1 ORDER BY created_at DESC",
+        "SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY created_at DESC",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_all(&state.db)
     .await?;
@@ -208,8 +209,9 @@ pub async fn get_batches(
                 (SELECT COUNT(*) FROM excel_batch_students WHERE excel_batch_id = eb.id) AS student_count \
          FROM excel_batches eb \
          JOIN sessions s ON s.excel_batch_id = eb.id \
-         WHERE eb.created_by = $1",
+         WHERE ($1 = 'super_admin' OR eb.created_by = $2)",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_all(&state.db)
     .await?;
@@ -249,13 +251,15 @@ pub async fn get_batch(
     let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    let batch =
-        sqlx::query_as::<_, Batch>("SELECT * FROM batches WHERE id = $1 AND created_by = $2")
-            .bind(batch_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
+    let batch = sqlx::query_as::<_, Batch>(
+        "SELECT * FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(batch_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
 
     let students = fetch_students(&state.db, batch_id).await?;
 
@@ -278,11 +282,14 @@ pub async fn delete_batch(
     let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    let result = sqlx::query("DELETE FROM batches WHERE id = $1 AND created_by = $2")
-        .bind(batch_id)
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(batch_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Batch not found".to_string()));

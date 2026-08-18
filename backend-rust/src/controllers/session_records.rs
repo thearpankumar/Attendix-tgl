@@ -253,9 +253,9 @@ WITH scoped_sessions AS (
     FROM sessions s
     LEFT JOIN excel_batches eb ON eb.id = s.excel_batch_id
     LEFT JOIN locations l ON l.id = s.location_id
-    WHERE (($1 = 'super_admin' AND s.created_by = $2)
-           OR ($1 <> 'super_admin' AND EXISTS (
-                SELECT 1 FROM session_admins sa WHERE sa.session_id = s.id AND sa.admin_id = $2)))
+    WHERE ($1 = 'super_admin'
+           OR EXISTS (
+                SELECT 1 FROM session_admins sa WHERE sa.session_id = s.id AND sa.admin_id = $2))
       AND ($3::uuid IS NULL OR s.location_id = $3)
       AND ($4::timestamptz IS NULL OR s.created_at >= $4)
       AND ($5::timestamptz IS NULL OR s.created_at <= $5)
@@ -452,9 +452,9 @@ pub async fn get_sessions_stats_overview(
 
     let total_records: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sessions s \
-         WHERE (($1 = 'super_admin' AND s.created_by = $2) \
-                OR ($1 <> 'super_admin' AND EXISTS ( \
-                      SELECT 1 FROM session_admins sa WHERE sa.session_id = s.id AND sa.admin_id = $2)))",
+         WHERE ($1 = 'super_admin' \
+                OR EXISTS ( \
+                      SELECT 1 FROM session_admins sa WHERE sa.session_id = s.id AND sa.admin_id = $2))",
     )
     .bind(&auth.role)
     .bind(auth.id)

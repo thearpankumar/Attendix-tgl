@@ -100,8 +100,9 @@ pub async fn get_locations(
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
     let locations = sqlx::query_as::<_, Location>(
-        "SELECT * FROM locations WHERE created_by = $1 ORDER BY created_at DESC",
+        "SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY created_at DESC",
     )
+    .bind(&auth.role)
     .bind(auth.id)
     .fetch_all(&state.db)
     .await?;
@@ -120,13 +121,15 @@ pub async fn get_location(
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let location =
-        sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1 AND created_by = $2")
-            .bind(location_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    let location = sqlx::query_as::<_, Location>(
+        "SELECT * FROM locations WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(location_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
     Ok(Json(LocationResponse::from(location)))
 }
@@ -154,15 +157,18 @@ pub async fn update_location(
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    // A geofence defines what "present" means. Letting one admin move
-    // another's would falsify that session's attendance wholesale.
-    let existing =
-        sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1 AND created_by = $2")
-            .bind(location_id)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // A geofence defines what "present" means. Letting a mentor move one they
+    // didn't create would falsify that session's attendance wholesale — but
+    // any super-admin may, since they're peers, not tenants of each other.
+    let existing = sqlx::query_as::<_, Location>(
+        "SELECT * FROM locations WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(location_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
 
     let merged = Location {
         id: existing.id,
@@ -201,11 +207,14 @@ pub async fn delete_location(
     let location_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
-    let result = sqlx::query("DELETE FROM locations WHERE id = $1 AND created_by = $2")
-        .bind(location_id)
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM locations WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(location_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Location not found".to_string()));

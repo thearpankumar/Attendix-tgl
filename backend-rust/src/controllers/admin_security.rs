@@ -35,17 +35,25 @@ pub struct SecuritySummary {
     pub flag_percentage: String,
 }
 
-/// Confirms the session belongs to the calling admin.
+/// Confirms the calling admin may access the session: any super-admin may
+/// access any session; a mentor only one they created (which in practice is
+/// never, since mentors don't create sessions — these security-review
+/// endpoints are effectively super-admin only).
 ///
 /// These endpoints previously took `Extension(_auth)` and looked rows up by
 /// path parameter alone, so any admin could read any other admin's flagged
 /// submissions and student PII, or approve their attendance records.
-async fn assert_session_owned(pool: &sqlx::PgPool, session_id: Uuid, admin_id: Uuid) -> Result<()> {
+async fn assert_session_owned(
+    pool: &sqlx::PgPool,
+    session_id: Uuid,
+    admin: &AuthenticatedAdmin,
+) -> Result<()> {
     let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND created_by = $2)",
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3))",
     )
     .bind(session_id)
-    .bind(admin_id)
+    .bind(&admin.role)
+    .bind(admin.id)
     .fetch_one(pool)
     .await?;
 
@@ -56,21 +64,23 @@ async fn assert_session_owned(pool: &sqlx::PgPool, session_id: Uuid, admin_id: U
     }
 }
 
-/// Confirms the attendance row belongs to a session the calling admin owns.
+/// Confirms the calling admin may access the attendance row's session (see
+/// `assert_session_owned`).
 async fn assert_attendance_owned(
     pool: &sqlx::PgPool,
     attendance_id: Uuid,
-    admin_id: Uuid,
+    admin: &AuthenticatedAdmin,
 ) -> Result<()> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
              SELECT 1 FROM attendances a \
              JOIN sessions s ON s.id = a.session_id \
-             WHERE a.id = $1 AND s.created_by = $2 \
+             WHERE a.id = $1 AND ($2 = 'super_admin' OR s.created_by = $3) \
          )",
     )
     .bind(attendance_id)
-    .bind(admin_id)
+    .bind(&admin.role)
+    .bind(admin.id)
     .fetch_one(pool)
     .await?;
 
@@ -91,7 +101,7 @@ pub async fn get_security_summary(
     let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    assert_session_owned(&state.db, session_id, auth.id).await?;
+    assert_session_owned(&state.db, session_id, &auth).await?;
 
     let total_submissions: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
@@ -169,7 +179,7 @@ pub async fn review_submission(
     let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
-    assert_attendance_owned(&state.db, attendance_uuid, auth.id).await?;
+    assert_attendance_owned(&state.db, attendance_uuid, &auth).await?;
 
     let message = match payload.action.as_str() {
         "approve" => {
@@ -266,7 +276,7 @@ pub async fn get_flagged_submissions(
     let session_id = Uuid::parse_str(&session_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    assert_session_owned(&state.db, session_id, auth.id).await?;
+    assert_session_owned(&state.db, session_id, &auth).await?;
 
     let attendances: Vec<Attendance> = sqlx::query_as(
         "SELECT * FROM attendances WHERE session_id = $1 AND flagged = true LIMIT 100",
@@ -309,7 +319,7 @@ pub async fn get_submission_details(
     let attendance_uuid = Uuid::parse_str(&attendance_id)
         .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
 
-    assert_attendance_owned(&state.db, attendance_uuid, auth.id).await?;
+    assert_attendance_owned(&state.db, attendance_uuid, &auth).await?;
 
     let attendance: Attendance = sqlx::query_as("SELECT * FROM attendances WHERE id = $1")
         .bind(attendance_uuid)
