@@ -1,9 +1,9 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ChevronDown, ChevronUp, Download, Fingerprint, Lock } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { Pressable, Switch, Text, View, StyleSheet } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import Toast from 'react-native-toast-message';
 import { z } from 'zod';
 
@@ -38,14 +38,6 @@ export default function Settings() {
   const update = useAppUpdate();
 
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const passwordOpenProgress = useSharedValue(0);
-  useEffect(() => {
-    passwordOpenProgress.value = withTiming(passwordOpen ? 1 : 0, { duration: 200 });
-  }, [passwordOpen, passwordOpenProgress]);
-  const passwordFieldsStyle = useAnimatedStyle(() => ({
-    maxHeight: passwordOpenProgress.value * 400,
-    opacity: passwordOpenProgress.value,
-  }));
 
   const { control, handleSubmit, reset, formState: { isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -122,31 +114,33 @@ export default function Settings() {
           {passwordOpen ? <ChevronUp size={16} color={colors.muted} /> : <ChevronDown size={16} color={colors.muted} />}
         </Pressable>
 
-        <Animated.View style={[{ overflow: 'hidden' }, passwordFieldsStyle]}>
-          <Controller
-            control={control}
-            name="currentPassword"
-            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-              <TextField label="Current Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-            )}
-          />
-          <Controller
-            control={control}
-            name="newPassword"
-            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-              <TextField label="New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-            )}
-          />
-          <Controller
-            control={control}
-            name="confirmPassword"
-            render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
-              <TextField label="Confirm New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
-            )}
-          />
+        {passwordOpen ? (
+          <Animated.View entering={FadeIn.duration(150)}>
+            <Controller
+              control={control}
+              name="currentPassword"
+              render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+                <TextField label="Current Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+              )}
+            />
+            <Controller
+              control={control}
+              name="newPassword"
+              render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+                <TextField label="New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+              )}
+            />
+            <Controller
+              control={control}
+              name="confirmPassword"
+              render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+                <TextField label="Confirm New Password" value={value} onChangeText={onChange} onBlur={onBlur} secureTextEntry error={error?.message} />
+              )}
+            />
 
-          <Button title={isSubmitting ? 'Saving…' : 'Update Password'} onPress={handleSubmit(onSubmit)} loading={isSubmitting} block />
-        </Animated.View>
+            <Button title={isSubmitting ? 'Saving…' : 'Update Password'} onPress={handleSubmit(onSubmit)} loading={isSubmitting} block />
+          </Animated.View>
+        ) : null}
       </Card>
 
       <Card style={{ padding: 16 }}>

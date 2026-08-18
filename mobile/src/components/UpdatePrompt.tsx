@@ -24,9 +24,10 @@ export const UpdatePrompt = () => {
   }, []);
 
   const visible = update.updateAvailable && !dismissed;
+  if (!visible) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={() => {}}>
+    <Modal visible transparent animationType="fade" onRequestClose={() => {}}>
       <View style={styles.backdrop}>
         <View style={[styles.card, { backgroundColor: colors.surface, borderRadius: radii.lg }]}>
           <Text style={[styles.title, { color: colors.text, fontFamily: font.extrabold }]}>Update available</Text>

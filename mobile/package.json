@@ -86,6 +86,10 @@
       "src/**/*.{ts,tsx}",
       "!src/app/**",
       "!**/*.d.ts"
-    ]
+    ],
+    "moduleNameMapper": {
+      "^lucide-react-native$": "<rootDir>/node_modules/lucide-react-native/dist/cjs/lucide-react-native.js"
+    },
+    "resolver": "react-native-worklets/jest/resolver.js"
   }
 }
