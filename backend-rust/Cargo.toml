@@ -25,6 +25,11 @@ webauthn-rs = { version = "0.5", features = [
     # Enrollment stores resident keys so autofill can discover them.
     "resident-key-support",
 ] }
+# Only for ResidentKeyRequirement, which webauthn-rs's prelude doesn't
+# re-export. Same "0.5" range as webauthn-rs above so Cargo unifies both to
+# one resolved version instead of a future `cargo update` deadlocking an
+# exact pin against whatever webauthn-rs pulls transitively.
+webauthn-rs-proto = "0.5"
 ciborium = "0.2"
 # `default-features = false` drops the `rustls` feature, which pulls
 # aws-smithy-runtime/tls-rustls -> the legacy hyper-0.14 + rustls 0.21.12 +

@@ -28,6 +28,30 @@ const toB64url = (buf: ArrayBuffer) =>
 const fromB64url = (s: string) =>
   Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
+/**
+ * The backend returns registration/authentication options as flat JSON
+ * (challenge/user.id/allowCredentials[].id as base64url strings) — the
+ * server must NOT wrap this in a `publicKey` envelope, or these fields end
+ * up `undefined` here and `fromB64url` throws on `.replace` of undefined.
+ */
+interface RegistrationOptionsResponse {
+  rp: { id: string; name: string };
+  user: { id: string; name: string; displayName: string };
+  challenge: string;
+  pubKeyCredParams: PublicKeyCredentialParameters[];
+  timeout?: number;
+  authenticatorSelection?: AuthenticatorSelectionCriteria;
+  attestation?: AttestationConveyancePreference;
+}
+
+interface AuthenticationOptionsResponse {
+  challenge: string;
+  timeout?: number;
+  rpId?: string;
+  allowCredentials?: { id: string; type: 'public-key'; transports?: AuthenticatorTransport[] }[];
+  userVerification?: UserVerificationRequirement;
+}
+
 const Spinner = () => (
   <div className="flex flex-col items-center py-10">
     <div className="spinner" />
@@ -265,14 +289,20 @@ export default function StudentScan() {
   }, [step]);
 
   useEffect(() => {
+    // Despite the name, the backend sends an `<img src="data:image/png;...">`
+    // wrapping a distorted PNG, not an <svg> element (captcha.rs switched
+    // from plain-SVG-with-readable-<text> to a rendered PNG). Parsing this
+    // as image/svg+xml produced a foreign-namespace element with no `.style`
+    // property, so `Object.assign(svg.style, ...)` threw and crashed the
+    // whole page via the error boundary the moment a captcha loaded.
     if (step === 'form' && captchaSvg && captchaContainerRef.current) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(captchaSvg, 'image/svg+xml');
-      const svg = doc.documentElement;
-      svg.removeAttribute('width'); svg.removeAttribute('height');
-      Object.assign(svg.style, { height: '40px', width: 'auto', display: 'block' });
-      captchaContainerRef.current.innerHTML = '';
-      captchaContainerRef.current.appendChild(svg);
+      captchaContainerRef.current.innerHTML = captchaSvg;
+      const img = captchaContainerRef.current.querySelector('img');
+      if (img) {
+        img.removeAttribute('width');
+        img.removeAttribute('height');
+        Object.assign(img.style, { height: '40px', width: 'auto', display: 'block' });
+      }
     }
   }, [step, captchaSvg]);
 
@@ -449,11 +479,14 @@ export default function StudentScan() {
         body: JSON.stringify({ rollNumber: rollRef.current, studentName: name }),
       });
       if (!startRes.ok) { const e = await startRes.json(); throw new Error(e.message); }
-      const opts = await startRes.json();
-      opts.challenge = fromB64url(opts.challenge);
-      opts.user.id = fromB64url(opts.user.id);
+      const opts: RegistrationOptionsResponse = await startRes.json();
+      const publicKey: PublicKeyCredentialCreationOptions = {
+        ...opts,
+        challenge: fromB64url(opts.challenge),
+        user: { ...opts.user, id: fromB64url(opts.user.id) },
+      };
 
-      const credential = await navigator.credentials.create({ publicKey: opts }) as PublicKeyCredential;
+      const credential = await navigator.credentials.create({ publicKey }) as PublicKeyCredential;
       const resp = credential.response as AuthenticatorAttestationResponse;
 
       flash('Verifying registration...');
@@ -493,13 +526,14 @@ export default function StudentScan() {
         body: JSON.stringify({ rollNumber: rollRef.current }),
       });
       if (!startRes.ok) { const e = await startRes.json(); throw new Error(e.message); }
-      const opts = await startRes.json();
-      opts.challenge = fromB64url(opts.challenge);
-      if (opts.allowCredentials) {
-        opts.allowCredentials = opts.allowCredentials.map((c: { id: string; [key: string]: unknown }) => ({ ...c, id: fromB64url(c.id) }));
-      }
+      const opts: AuthenticationOptionsResponse = await startRes.json();
+      const publicKey: PublicKeyCredentialRequestOptions = {
+        ...opts,
+        challenge: fromB64url(opts.challenge),
+        allowCredentials: opts.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
+      };
 
-      const assertion = await navigator.credentials.get({ publicKey: opts }) as PublicKeyCredential;
+      const assertion = await navigator.credentials.get({ publicKey }) as PublicKeyCredential;
       const resp = assertion.response as AuthenticatorAssertionResponse;
 
       credentialRef.current = {
@@ -540,14 +574,18 @@ export default function StudentScan() {
         headers: { 'Content-Type': 'application/json' },
       });
       if (!startRes.ok) return;
-      const opts = await startRes.json();
-      opts.challenge = fromB64url(opts.challenge);
-      
+      const opts: AuthenticationOptionsResponse = await startRes.json();
+      const publicKey: PublicKeyCredentialRequestOptions = {
+        ...opts,
+        challenge: fromB64url(opts.challenge),
+        allowCredentials: opts.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
+      };
+
       const abortController = new AbortController();
       conditionalUiAbortRef.current = abortController;
-      
+
       const assertion = await navigator.credentials.get({
-        publicKey: opts,
+        publicKey,
         mediation: 'conditional',
         signal: abortController.signal,
       }) as PublicKeyCredential;

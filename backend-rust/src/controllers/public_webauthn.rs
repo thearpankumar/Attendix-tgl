@@ -233,7 +233,7 @@ pub async fn start_registration(
 
     // webauthn-rs generates the challenge and retains the matching state
     // (challenge bytes, user-verification policy, exclude list) for finish.
-    let (creation_challenge, registration_state) = state
+    let (mut creation_challenge, registration_state) = state
         .webauthn
         .start_passkey_registration(
             crate::webauthn_user_handle(&roll_upper),
@@ -242,6 +242,20 @@ pub async fn start_registration(
             None,
         )
         .map_err(|e| AppError::Internal(format!("Failed to start registration: {e}")))?;
+
+    // start_passkey_registration() hardcodes residentKey: "discouraged". Force
+    // a resident/discoverable credential instead so conditional-UI autofill
+    // (start_discoverable_authentication only finds discoverable credentials)
+    // and third-party password managers (Bitwarden, 1Password) can properly
+    // save and sync the passkey, matching the old Node backend's behavior.
+    if let Some(sel) = creation_challenge
+        .public_key
+        .authenticator_selection
+        .as_mut()
+    {
+        sel.resident_key = Some(webauthn_rs_proto::ResidentKeyRequirement::Required);
+        sel.require_resident_key = true;
+    }
 
     let webauthn_challenge = WebAuthnChallenge {
         id: Uuid::new_v4(),
@@ -269,7 +283,12 @@ pub async fn start_registration(
         "WebAuthn enrollment started"
     );
 
-    Ok(Json(creation_challenge))
+    // webauthn-rs wraps options in a `publicKey` envelope
+    // (CreationChallengeResponse { public_key: ... }) to mirror the browser's
+    // CredentialCreationOptions shape. The frontend expects the flat options
+    // object directly (matching the old @simplewebauthn/server contract), so
+    // unwrap it here rather than at every call site.
+    Ok(Json(creation_challenge.public_key))
 }
 
 // =================== Registration Finish ===================
@@ -283,6 +302,7 @@ pub struct RegistrationFinishRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegistrationFinishResponse {
     pub verified: bool,
     pub credential_id: String,
@@ -431,7 +451,9 @@ pub async fn start_authentication(
 
     insert_webauthn_challenge(&state.db, &webauthn_challenge).await?;
 
-    Ok(Json(request_challenge))
+    // See start_registration's comment: unwrap webauthn-rs's `publicKey`
+    // envelope to match the flat options shape the frontend expects.
+    Ok(Json(request_challenge.public_key))
 }
 
 // =================== Conditional Authentication ===================
@@ -472,7 +494,7 @@ pub async fn start_conditional_authentication(
 
     insert_webauthn_challenge(&state.db, &webauthn_challenge).await?;
 
-    Ok(Json(request_challenge))
+    Ok(Json(request_challenge.public_key))
 }
 
 /// Base64url-encodes without padding, matching the WebAuthn wire format.
@@ -1123,5 +1145,77 @@ mod contract_tests {
         assert_eq!(gps_metadata.accuracy, Some(5.0));
         assert_eq!(gps_metadata.is_mock_location, Some(false));
         assert_eq!(payload.face_detected, Some(true));
+    }
+
+    /// Regression test for the "Registration failed: Cannot read properties
+    /// of undefined (reading 'replace')" bug: webauthn-rs's
+    /// `CreationChallengeResponse` wraps its payload in a `publicKey` field,
+    /// but StudentScan.tsx reads `challenge`/`user` off the top level of the
+    /// JSON body (matching the old @simplewebauthn/server contract, which
+    /// returned options flat). `start_registration` must serialize
+    /// `creation_challenge.public_key`, not `creation_challenge` itself, and
+    /// must force `residentKey: "required"` so autofill/password-manager
+    /// sync works (see the old Node backend's
+    /// `authenticatorSelection.residentKey: 'required'`).
+    #[test]
+    fn registration_start_response_is_unwrapped_and_requires_resident_key() {
+        let webauthn = webauthn_rs::prelude::WebauthnBuilder::new(
+            "localhost",
+            &webauthn_rs::prelude::Url::parse("http://localhost:5000").unwrap(),
+        )
+        .unwrap()
+        .rp_name("Test RP")
+        .build()
+        .unwrap();
+
+        let (mut creation_challenge, _registration_state) = webauthn
+            .start_passkey_registration(
+                webauthn_rs::prelude::Uuid::new_v4(),
+                "ABC123",
+                "Test Student",
+                None,
+            )
+            .unwrap();
+
+        // Same override as start_registration() in the live handler.
+        if let Some(sel) = creation_challenge
+            .public_key
+            .authenticator_selection
+            .as_mut()
+        {
+            sel.resident_key = Some(webauthn_rs_proto::ResidentKeyRequirement::Required);
+            sel.require_resident_key = true;
+        }
+
+        let wire_body = serde_json::to_value(&creation_challenge.public_key).unwrap();
+
+        // Top-level fields, not nested under "publicKey".
+        assert!(
+            wire_body.get("publicKey").is_none(),
+            "response must not be wrapped in a publicKey envelope"
+        );
+        assert!(
+            wire_body["challenge"].is_string()
+                && !wire_body["challenge"].as_str().unwrap().is_empty()
+        );
+        assert!(
+            wire_body["user"]["id"].is_string()
+                && !wire_body["user"]["id"].as_str().unwrap().is_empty()
+        );
+        assert!(wire_body["rp"].is_object());
+        assert!(wire_body["pubKeyCredParams"].is_array());
+
+        assert_eq!(
+            wire_body["authenticatorSelection"]["residentKey"],
+            "required"
+        );
+        assert_eq!(
+            wire_body["authenticatorSelection"]["requireResidentKey"],
+            true
+        );
+        assert_eq!(
+            wire_body["authenticatorSelection"]["userVerification"],
+            "required"
+        );
     }
 }
