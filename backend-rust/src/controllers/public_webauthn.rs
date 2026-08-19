@@ -1035,9 +1035,13 @@ pub async fn finish_authentication(
 // =================== Upload URL ===================
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UploadUrlResponse {
     pub upload_url: String,
     pub public_id: String,
+    pub method: String,
+    pub content_type: String,
+    pub headers: Vec<(String, String)>,
 }
 
 pub async fn get_upload_url(
@@ -1057,9 +1061,18 @@ pub async fn get_upload_url(
         .get_upload_url(&key, "image/jpeg")
         .await?;
 
+    // Previously missing `method`/`headers`/camelCase: the frontend does
+    // `fetch(urlData.uploadUrl, { method: urlData.method, headers:
+    // urlData.headers })`, so with those fields absent/snake_case it called
+    // `fetch(undefined, { method: undefined, ... body: blob })` — a GET
+    // request with a body, which the Fetch API rejects outright, breaking
+    // every S3 direct-upload submission.
     Ok(Json(UploadUrlResponse {
         upload_url: presigned.upload_url,
         public_id: presigned.public_id,
+        method: presigned.method,
+        content_type: presigned.content_type,
+        headers: presigned.headers,
     }))
 }
 

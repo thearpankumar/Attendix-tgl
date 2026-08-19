@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import axios from 'axios';
 import Dashboard from '../src/pages/Dashboard';
@@ -10,7 +10,22 @@ vi.mock('../src/context/AuthContext', () => ({
 
 const ROSTER_SUMMARY = { total: 45, marked: 42, present: 40, absent: 2, unmarked: 3 };
 
-const LIVE_SESSION = {
+// Fixed at noon so every fixture's Date.now()-relative offset (this file
+// leans on "-1h" / "+1h" / "+1 day" to build live/today/tomorrow sessions)
+// stays on the intended calendar day regardless of what time it actually is
+// when the suite runs. Without this, a session built as "starts in 1h" —
+// which Dashboard.tsx's isToday() must accept as still "today" — rolls into
+// tomorrow whenever the suite happens to run within an hour of local
+// midnight, which both fabricates and hides "Today" sessions depending on
+// the wall clock. Vitest's fake Date is what Dashboard.tsx's own
+// `new Date()`/`Date.now()` calls see too, so the component and the test
+// fixtures always agree on "now".
+const FIXED_NOW = new Date('2024-06-15T12:00:00');
+
+// A function, not a module-level const: it must be evaluated after
+// vi.setSystemTime() has pinned the clock (in beforeEach below), not once
+// at import time against the real wall clock.
+const liveSession = () => ({
   _id: 'sess1',
   collegeName: 'XYZ Engineering College',
   batchName: 'CS101',
@@ -19,7 +34,7 @@ const LIVE_SESSION = {
   expiresAt: new Date(Date.now() + 3600_000).toISOString(),
   isActive: true,
   attendanceCount: 42,
-};
+});
 
 const mockGet = (sessions: unknown[], roster: Record<string, unknown> = {}) => {
   (axios.get as any).mockImplementation((url: string) => {
@@ -33,6 +48,15 @@ const mockGet = (sessions: unknown[], roster: Record<string, unknown> = {}) => {
 describe('Mentor Dashboard', () => {
   beforeEach(() => {
     vi.mocked(axios.get).mockReset();
+    // shouldAdvanceTime: real time still elapses alongside the fake system
+    // clock, so @testing-library/react's setTimeout-polling `waitFor` keeps
+    // working without manual vi.advanceTimersByTime() calls in every test.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   const renderDashboard = () => render(
@@ -42,7 +66,7 @@ describe('Mentor Dashboard', () => {
   );
 
   it('shows a time-of-day greeting (no name — the Topbar already shows who is logged in) and the assigned session as a card', async () => {
-    mockGet([LIVE_SESSION]);
+    mockGet([liveSession()]);
     renderDashboard();
 
     await waitFor(() => {
@@ -64,7 +88,7 @@ describe('Mentor Dashboard', () => {
   });
 
   it('separates inactive sessions under a Past / Inactive heading', async () => {
-    mockGet([{ ...LIVE_SESSION, _id: 'sess2', isActive: false, collegeName: 'Closed College' }]);
+    mockGet([{ ...liveSession(), _id: 'sess2', isActive: false, collegeName: 'Closed College' }]);
     renderDashboard();
 
     await waitFor(() => {
@@ -75,10 +99,10 @@ describe('Mentor Dashboard', () => {
 
   it('shows stat cards with computed active/upcoming/students/attendance figures', async () => {
     const upcoming = {
-      ...LIVE_SESSION, _id: 'sess3', batchName: 'CS202',
+      ...liveSession(), _id: 'sess3', batchName: 'CS202',
       startsAt: new Date(Date.now() + 3_600_000).toISOString(),
     };
-    mockGet([LIVE_SESSION, upcoming], { sess1: ROSTER_SUMMARY, sess3: { total: 10, marked: 0, present: 0, absent: 0, unmarked: 10 } });
+    mockGet([liveSession(), upcoming], { sess1: ROSTER_SUMMARY, sess3: { total: 10, marked: 0, present: 0, absent: 0, unmarked: 10 } });
     renderDashboard();
 
     await waitFor(() => {
@@ -99,7 +123,7 @@ describe('Mentor Dashboard', () => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(9, 0, 0, 0);
     const tomorrowSession = {
-      ...LIVE_SESSION, _id: 'sess-tomorrow', batchName: 'SRM IST', collegeName: 'SRM IST',
+      ...liveSession(), _id: 'sess-tomorrow', batchName: 'SRM IST', collegeName: 'SRM IST',
       startsAt: tomorrow.toISOString(),
       expiresAt: new Date(tomorrow.getTime() + 3_600_000).toISOString(),
     };
@@ -121,7 +145,7 @@ describe('Mentor Dashboard', () => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const upcomingWithStrayMarks = {
-      ...LIVE_SESSION, _id: 'sess-upcoming-marked', batchName: 'SRM IST',
+      ...liveSession(), _id: 'sess-upcoming-marked', batchName: 'SRM IST',
       startsAt: tomorrow.toISOString(),
       expiresAt: new Date(tomorrow.getTime() + 3_600_000).toISOString(),
     };
@@ -142,11 +166,11 @@ describe('Mentor Dashboard', () => {
   it('keeps a live session and one starting later today under the "Today" tab', async () => {
     const laterToday = new Date(Date.now() + 3_600_000);
     const todaySession = {
-      ...LIVE_SESSION, _id: 'sess-later-today', batchName: 'CS303',
+      ...liveSession(), _id: 'sess-later-today', batchName: 'CS303',
       startsAt: laterToday.toISOString(),
       expiresAt: new Date(laterToday.getTime() + 3_600_000).toISOString(),
     };
-    mockGet([LIVE_SESSION, todaySession]);
+    mockGet([liveSession(), todaySession]);
     renderDashboard();
 
     await waitFor(() => {
@@ -156,7 +180,7 @@ describe('Mentor Dashboard', () => {
   });
 
   it('renders an Attendance Overview donut once at least one student is marked', async () => {
-    mockGet([LIVE_SESSION]);
+    mockGet([liveSession()]);
     renderDashboard();
 
     await waitFor(() => {

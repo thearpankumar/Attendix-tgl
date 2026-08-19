@@ -301,7 +301,7 @@ export default function StudentScan() {
       if (img) {
         img.removeAttribute('width');
         img.removeAttribute('height');
-        Object.assign(img.style, { height: '40px', width: 'auto', display: 'block' });
+        Object.assign(img.style, { height: '76px', width: 'auto', display: 'block' });
       }
     }
   }, [step, captchaSvg]);

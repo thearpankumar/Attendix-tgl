@@ -189,7 +189,7 @@ const SessionDetail = () => {
       const dateOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
       const dateStr = sessionDate.toLocaleDateString('en-GB', dateOpts).replace(/ /g, '_');
 
-      const locName = session?.locationId?.name || 'Location';
+      const locName = session?.locationName || (typeof session?.locationId === 'object' ? session.locationId?.name : undefined) || 'Location';
       const batchPart = session?.batchId?.name ? `_${session.batchId.name}` : '';
       const rawName = `${locName}${batchPart}_${dateStr}`;
       const safeName = rawName.replace(/[^a-zA-Z0-9_-]/g, '_');

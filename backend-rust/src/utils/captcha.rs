@@ -43,11 +43,19 @@ pub fn issue(jwt_secret: &str) -> Result<IssuedCaptcha> {
 
     // Distortion is what makes the challenge non-trivial to read
     // programmatically — the plain-SVG variant this replaced had none.
+    //
+    // `Noise::new(p)` flips each pixel to black independently with
+    // probability `p` — 0.4 meant 40% of the entire image, rendering the
+    // characters unreadable to humans too. `Dots::new(n)` stamps `n` solid
+    // circles (radius 5-10px by default) at random across the image; at 15
+    // on a 220x120 canvas they routinely blotted out whole letters. Both are
+    // toned down to a light, still-non-trivial-to-OCR distortion; Wave's
+    // amplitude is reduced similarly so it warps rather than shreds the text.
     captcha
-        .apply_filter(Noise::new(0.4))
-        .apply_filter(Wave::new(2.0, 20.0).horizontal())
+        .apply_filter(Noise::new(0.015))
+        .apply_filter(Wave::new(2.0, 4.0).horizontal())
         .view(220, 120)
-        .apply_filter(Dots::new(15));
+        .apply_filter(Dots::new(2).min_radius(2).max_radius(3));
 
     let png = captcha
         .as_png()

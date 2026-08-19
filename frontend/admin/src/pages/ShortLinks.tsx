@@ -18,7 +18,8 @@ interface Session {
   isActive: boolean;
   expiresAt: string;
   description?: string;
-  locationId?: { name: string };
+  locationId?: { name: string } | string;
+  locationName?: string;
 }
 
 interface ShortLink {
@@ -27,7 +28,7 @@ interface ShortLink {
   isActive: boolean;
   clickCount?: number;
   createdAt: string;
-  sessionId?: { _id: string; isActive: boolean; expiresAt: string; description?: string };
+  sessionId?: { _id: string; isActive: boolean; expiresAt: string; description?: string } | string;
 }
 
 const ShortLinks = () => {
@@ -118,21 +119,28 @@ const ShortLinks = () => {
         </div>
       );
     }},
-    { key: 'session', label: 'Attached Session', width: '20%', render: (l) => l.sessionId ? (
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.sessionId.description || 'Session'}</div>
-        <div style={{ fontSize: '12px', color: 'var(--color-muted)' }}>Expires: {new Date(l.sessionId.expiresAt).toLocaleString()}</div>
-      </div>
-    ) : <span style={{ color: 'var(--color-faint)' }}>Not attached</span> },
+    { key: 'session', label: 'Attached Session', width: '20%', render: (l) => {
+      if (!l.sessionId) return <span style={{ color: 'var(--color-faint)' }}>Not attached</span>;
+      // sessionId stays a bare string when fetchData couldn't resolve it against
+      // /api/admin/sessions (the referenced session no longer exists there).
+      if (typeof l.sessionId === 'string') return <span style={{ color: 'var(--color-faint)' }}>Session unavailable</span>;
+      return (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.sessionId.description || 'Session'}</div>
+          <div style={{ fontSize: '12px', color: 'var(--color-muted)' }}>Expires: {new Date(l.sessionId.expiresAt).toLocaleString()}</div>
+        </div>
+      );
+    }},
     { key: 'status', label: 'Status', width: '11%', render: (l) => {
       if (!l.isActive) return <Badge tone="neutral">Deactivated</Badge>;
       if (!l.sessionId) return <Badge tone="neutral">Unassigned</Badge>;
-      
+      if (typeof l.sessionId === 'string') return <Badge tone="neutral">Unassigned</Badge>;
+
       const sessionExpired = l.sessionId.expiresAt && new Date(l.sessionId.expiresAt) < new Date();
       if (!l.sessionId.isActive || sessionExpired) {
         return <Badge tone="danger">Expired</Badge>;
       }
-      
+
       return <Badge tone="success">Active</Badge>;
     }},
     { key: 'clicks',  label: 'Clicks',  width: '8%',  align: 'center', render: (l) => l.clickCount || 0 },
@@ -148,7 +156,7 @@ const ShortLinks = () => {
             defaultValue=""
           >
             <option value="" disabled>Attach to...</option>
-            {activeSessions.map((s) => <option key={s._id} value={s._id}>{s.description || s.locationId?.name || 'Session'}</option>)}
+            {activeSessions.map((s) => <option key={s._id} value={s._id}>{s.description || s.locationName || (typeof s.locationId === 'object' ? s.locationId?.name : undefined) || 'Session'}</option>)}
           </select>
         )}
         <Button variant="delete" size="sm" onClick={() => setConfirmAction({ type: 'delete', shortCode: l.shortCode })}>Delete</Button>
