@@ -68,7 +68,11 @@ attendixv2.talenciaglobal.com {
 		# photos with a browser-side PUT straight to a presigned S3 URL
 		# (backend-rust/src/storage/s3.rs) — that request never touches our
 		# origin, so 'self' alone blocks it.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' data: https://tgl-attendence-system-storage.s3.ap-south-1.amazonaws.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none';"
+		# img-src needs the same S3 host: the admin/mentor panels render
+		# attendance photos with a plain <img src=...> pointing straight at the
+		# public S3 URL (SessionDetail.tsx) — img-src, not connect-src, governs
+		# that load, and S3 returning 200 doesn't matter if CSP blocks it first.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob: https://tgl-attendence-system-storage.s3.ap-south-1.amazonaws.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' data: https://tgl-attendence-system-storage.s3.ap-south-1.amazonaws.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none';"
 		# Referrer policy
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# The student page needs camera + geolocation; nothing needs a mic.

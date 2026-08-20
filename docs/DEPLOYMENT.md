@@ -176,6 +176,32 @@ docker-compose ps
 - **Ports**: 80, 443
 - **Access logging**: JSON, `/var/log/caddy/access.log` (shared `caddy_logs`
   volume), watched by the `fail2ban` service below
+- **Content-Security-Policy** (`Caddyfile.prod`, applies to all four
+  frontends): locked down to `'self'` plus the specific exceptions each app
+  actually needs. Three of those exist only for the attendance-photo flow
+  (student capture/upload + admin/mentor display) and are easy to regress:
+  - `script-src` needs `'wasm-unsafe-eval'` — required for
+    `WebAssembly.instantiate`/`instantiateStreaming`, which is how the
+    on-device MediaPipe face-detection model compiles. This is a distinct
+    grant from `'unsafe-eval'` (JS `eval`), not a broader one.
+  - `connect-src` needs `data:` (MediaPipe internally `fetch()`s the captured
+    frame as a `data:` URI) and the S3 bucket's virtual-hosted host,
+    `https://<AWS_S3_BUCKET>.s3.<AWS_REGION>.amazonaws.com` — the student app
+    uploads the attendance photo with a browser-side `PUT` straight to a
+    presigned S3 URL (`backend-rust/src/storage/s3.rs`), which never touches
+    our own origin.
+  - `img-src` needs that same S3 host — the admin/mentor panels render
+    attendance photos with a plain `<img src=...>` pointing straight at the
+    public S3 URL (`SessionDetail.tsx`). This is a separate directive from
+    `connect-src`: img-src governs `<img>` loads, connect-src governs
+    fetch/XHR — the S3 object returning 200 doesn't matter if `img-src`
+    blocks the load first.
+  - If `AWS_S3_BUCKET` or `AWS_REGION` changes, update this host in **both**
+    `connect-src` and `img-src` in `Caddyfile.prod`, or you'll get a CSP
+    violation in the browser console (not a server-side error — check the
+    browser devtools Console/Network tab, not `docker compose logs`): photo
+    upload breaks if only `connect-src` is stale, photo display breaks if
+    only `img-src` is stale.
 
 ### fail2ban
 - Watches Caddy's access log for repeated failed `/api/admin/login` and
@@ -233,6 +259,88 @@ aws s3api put-bucket-lifecycle-configuration \
       "Expiration": { "Days": 90 }
     }]
   }'
+```
+
+### One-time setup: S3 bucket CORS (required for photo upload)
+
+Also not automated by this repo (no Terraform/IaC here) — set it once per
+bucket, or every student attendance submission fails at the photo-upload
+step. The student app uploads attendance photos with a **browser-side `PUT`**
+straight to a presigned S3 URL (`backend-rust/src/storage/s3.rs`
+`get_upload_url`) rather than proxying the bytes through the backend. That
+makes it a genuine cross-origin request from the browser's point of view, so
+S3 itself — not just Caddy's CSP — has to answer the browser's CORS
+preflight. A bucket with no CORS configuration returns `403` with no
+`Access-Control-Allow-Origin` header on the preflight `OPTIONS`, which the
+browser reports as a generic "Failed to fetch" / CORS error, never reaching
+S3's actual response:
+
+```bash
+aws s3api put-bucket-cors --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --cors-configuration '{
+    "CORSRules": [{
+      "AllowedOrigins": ["https://your-domain.com"],
+      "AllowedMethods": ["PUT"],
+      "AllowedHeaders": ["content-type"],
+      "MaxAgeSeconds": 3600
+    }]
+  }'
+```
+
+### One-time setup: S3 public read for `attendance-photos/` (required for photo viewing)
+
+Also not automated by this repo. `get_file_url()` (`backend-rust/src/storage/s3.rs`)
+builds a **plain, unsigned** `https://$AWS_S3_BUCKET.s3.$AWS_REGION.amazonaws.com/<key>`
+URL and hands it straight to the admin panel's `<img src=...>`
+(`frontend/admin/src/pages/SessionDetail.tsx`) — there is no presigned-GET or
+backend-proxy step. A fresh bucket has AWS's default Block Public Access on
+and no bucket policy, so every photo `GET` 403s and the admin session view
+just shows a broken image with nothing in the server logs (check the
+browser's Network tab, not `docker compose logs`).
+
+Fix: allow public `s3:GetObject` scoped **only** to the `attendance-photos/`
+prefix — `postgres-backups/` (and anything else in the bucket) must stay
+blocked. This trades a small amount of exposure (anyone with an exact,
+unguessable UUID-based photo URL can view that one photo, indefinitely, with
+no auth) for zero backend changes; that tradeoff was chosen deliberately over
+switching to presigned GET URLs, so don't "helpfully" lock the bucket back
+down without re-introducing a presigned-GET/proxy read path first.
+
+```bash
+# 1. Allow bucket policies to grant public access (ACLs stay blocked — this
+#    uses a bucket policy, not object ACLs)
+aws s3api put-public-access-block --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false
+
+# 2. Grant public read on the attendance-photos/ prefix only
+aws s3api put-bucket-policy --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" --policy '{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "PublicReadAttendancePhotos",
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::'"$AWS_S3_BUCKET"'/attendance-photos/*"
+  }]
+}'
+```
+
+Verify without your own AWS credentials (this is what the browser experiences):
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "https://$AWS_S3_BUCKET.s3.$AWS_REGION.amazonaws.com/attendance-photos/<some-existing-key>.jpg"
+# expect 200
+```
+
+Replace `AllowedOrigins` with your actual `DOMAIN` (must be the exact
+scheme+host the browser sends as `Origin` — no path, no trailing slash).
+Only `PUT` is needed: nothing in the frontend `fetch()`s or canvas-reads a
+photo URL cross-origin — the admin/mentor panels just render it in a plain
+`<img src=...>`, which isn't CORS-gated. Verify with:
+
+```bash
+aws s3api get-bucket-cors --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION"
 ```
 
 ### Restoring from a backup
@@ -314,31 +422,149 @@ Rotating `JWT_SECRET` invalidates every outstanding admin session.
 - Localhost HTTP (no SSL)
 - Direct Postgres connection (`postgres` service in `docker-compose.yml`)
 
-#### Production Mode
-1. Update `.env`:
-   ```bash
-   NODE_ENV=production
-   DOMAIN=your-domain.com
-   ```
+#### Production Mode — full CLI walkthrough
 
-2. Uncomment production section in `Caddyfile`
+`docker-compose.prod.yml` (resource limits, per-service replicas) is a
+**separate config** from the dev compose above — not a section to uncomment
+in the same file. Its Postgres/backup and Caddy/fail2ban services live in
+their own files on purpose (`docker-compose.postgres.yml`,
+`docker-compose.caddy.yml`), so routine app changes never have the DB or
+reverse-proxy config in view. These run purely off pre-built ECR images (no
+`build:` blocks) — `--build` does nothing for this stack, unlike dev.
 
-3. Restart:
-   ```bash
-   docker-compose down
-   docker-compose up -d --build
-   ```
+**1. One-time AWS setup** — an S3 bucket for photos + Postgres backups.
+Skip bucket creation if one already exists; the CORS/public-read/lifecycle
+steps still need to be applied to it once (see **Backups → One-time setup**
+above for exactly what each does and why — this just orders them):
 
-> **Note:** `docker-compose.prod.yml` (the fuller prod stack with resource
-> limits and per-service replicas) is a separate config from the dev compose
-> above. Its Postgres/backup and Caddy/fail2ban services live in their own
-> files on purpose — `docker-compose.postgres.yml` and
-> `docker-compose.caddy.yml` — so routine app changes never have the DB or
-> reverse-proxy config in view. Run all three together:
-> ```bash
-> aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-> docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d --build
-> ```
+```bash
+# Only if the bucket doesn't already exist. ap-south-1 (and every region
+# except us-east-1) requires an explicit LocationConstraint or this 400s.
+aws s3api create-bucket --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+# Required for the student app's direct-to-S3 photo upload (CORS preflight)
+aws s3api put-bucket-cors --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --cors-configuration '{
+    "CORSRules": [{
+      "AllowedOrigins": ["https://your-domain.com"],
+      "AllowedMethods": ["PUT"],
+      "AllowedHeaders": ["content-type"],
+      "MaxAgeSeconds": 3600
+    }]
+  }'
+
+# Required for the admin/mentor panels to display photos (plain <img src>, no presigning)
+aws s3api put-public-access-block --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false
+aws s3api put-bucket-policy --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" --policy '{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "PublicReadAttendancePhotos",
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::'"$AWS_S3_BUCKET"'/attendance-photos/*"
+  }]
+}'
+
+# Optional but recommended — expire old Postgres backup dumps automatically
+aws s3api put-bucket-lifecycle-configuration --bucket "$AWS_S3_BUCKET" --region "$AWS_REGION" \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "expire-postgres-backups",
+      "Filter": { "Prefix": "postgres-backups/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 90 }
+    }]
+  }'
+```
+
+**2. Clone the repo and configure `.env`** on the server:
+
+```bash
+git clone <repository-url> && cd Attendence-GEOTAG-System
+cp .env.example .env
+```
+
+Edit `.env` and fill in, at minimum: `DOMAIN`, `CORS_ORIGIN` (exact origin,
+comma-separated if more than one — `*` is rejected), `WEBAUTHN_RP_ID` (bare
+domain, no scheme), `WEBAUTHN_ORIGIN` (`https://` + domain), `PUBLIC_BASE_URL`
+(same as `WEBAUTHN_ORIGIN` — used to build `/s/:code` short links),
+`AWS_S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
+(prefer an IAM role instead if the host supports it), and `TRUSTED_PROXIES`
+(the `web-net` subnet Caddy's container sits on — check with `docker network
+inspect <project>_web-net` after first bringing the stack up once, since it's
+assigned by Docker).
+
+Then generate everything else (JWT/admin/metrics/DB/Redis/Grafana secrets):
+
+```bash
+./scripts/generate-secrets.sh
+./scripts/generate-secrets.sh --check   # must exit 0 before continuing
+```
+
+**3. Point `Caddyfile.prod` at this domain.** Unlike `.env`, this file is
+**not templated** — it's bind-mounted as-is, so the domain and CSP host are
+hardcoded and must be hand-edited for a new deployment:
+- The site block's domain (`attendixv2.talenciaglobal.com {`) → your `DOMAIN`.
+- The `email` directive at the top of the file → a real address for ACME/Let's Encrypt.
+- The `Content-Security-Policy` header's `connect-src` **and** `img-src` —
+  both hardcode the S3 virtual-hosted host
+  (`https://<bucket>.s3.<region>.amazonaws.com`): `connect-src` for the
+  student app's direct-upload `PUT`, `img-src` for admin/mentor photo
+  display. Update both if `AWS_S3_BUCKET`/`AWS_REGION` differ from what's
+  already in the file — a stale `connect-src` breaks photo upload, a stale
+  `img-src` breaks photo display, and each fails silently as a CSP violation
+  in the browser console, not a server-side error.
+
+**4. Create the external network Caddy expects.** `docker-compose.caddy.yml`
+declares `monitoring-net` as `external: true` (so Prometheus can scrape
+Caddy's metrics listener without joining `web-net`) — Compose will refuse to
+start the stack if this network doesn't already exist, even if you never run
+the monitoring stack:
+
+```bash
+docker network create monitoring-net
+```
+
+**5. Log in to ECR and bring the stack up:**
+
+```bash
+aws ecr get-login-password --region "${AWS_REGION:-ap-south-1}" | \
+  docker login --username AWS --password-stdin "${ECR_REGISTRY:-559444199242.dkr.ecr.ap-south-1.amazonaws.com}"
+
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml pull
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml up -d
+```
+
+Add `-f docker-compose.monitoring.yml` to both commands above if you also
+want Prometheus/Loki/Grafana — it redeclares `web-net` itself, so it doesn't
+need its own external-network step.
+
+**6. Verify:**
+
+```bash
+curl https://your-domain.com/health
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml ps
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres.yml -f docker-compose.caddy.yml logs -f backend caddy
+```
+
+**7. Create the first admin account.** This route (`backend-rust/src/controllers/admin/auth.rs`)
+only ever bootstraps the *first* `super_admin` — every account after that is
+created through the authenticated User Management panel, not this endpoint:
+
+```bash
+curl -X POST https://your-domain.com/api/admin/register \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "owner",
+    "email": "owner@your-domain.com",
+    "password": "a-strong-password",
+    "adminSecret": "<ADMIN_SECRET from .env>"
+  }'
+```
 
 ---
 
@@ -488,6 +714,7 @@ docker-compose up -d --scale backend=5
 | `DOMAIN` | localhost | Domain for SSL |
 | `STORAGE_PROVIDER` | s3 | Storage backend |
 | `AWS_S3_BUCKET` | - | S3 bucket name (photos + Postgres backups) |
+| `AWS_REGION` | us-east-1 | S3 bucket region — must match the bucket's actual region and the CORS/CSP host below |
 | `AWS_ACCESS_KEY_ID` | - | AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | - | AWS secret key |
 | `POSTGRES_DB` | attendance_geotag | Postgres database name |
