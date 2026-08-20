@@ -6,7 +6,6 @@ import { MemoryRouter } from 'react-router';
 
 const EMPTY_OVERVIEW = {
   totalRecords: 0, filteredRecords: 0, present: 0, absent: 0, attendancePercent: 0,
-  topSession: null, bottomSession: null,
 };
 
 // Shared mock factory — always returns correct shape for all GET endpoints
@@ -324,8 +323,6 @@ describe('Sessions', () => {
       sessions: [ACTIVE_SESSION],
       overview: {
         totalRecords: 20, filteredRecords: 12, present: 8, absent: 4, attendancePercent: 66.7,
-        topSession: { id: '1', label: 'DSA — Room 3 — 4-6 PM', attendancePercent: 98 },
-        bottomSession: { id: '2', label: 'Cyber — Room 7 — 2-4 PM', attendancePercent: 34 },
       },
     }));
 
@@ -335,8 +332,6 @@ describe('Sessions', () => {
     expect(screen.getByText('8')).toBeInTheDocument(); // present
     expect(screen.getByText('4')).toBeInTheDocument(); // absent
     expect(screen.getByText('67%')).toBeInTheDocument(); // rounded attendance %
-    expect(screen.getByText(/Best attendance: DSA — Room 3 — 4-6 PM — 98%/i)).toBeInTheDocument();
-    expect(screen.getByText(/Needs attention: Cyber — Room 7 — 2-4 PM — 34%/i)).toBeInTheDocument();
   });
 
   it('exports everything matching the active filters via "Export Filtered"', async () => {

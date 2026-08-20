@@ -5,11 +5,9 @@ import {
   TrendingUp,
   Minus,
   CheckCircle2,
-  XCircle,
-  MessageSquareWarning,
   Users2,
   PartyPopper,
-  ShieldCheck,
+  Award,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -22,16 +20,14 @@ export interface RescueEntry {
   trend: 'up' | 'right' | 'down';
 }
 
-export interface QuarantineEntry {
-  _id: string;
-  rollNo: string;
+export interface LowBatchEntry {
   name: string;
-  flag: string;
-  distance: number;
-  face: 'Y' | 'N';
+  center: string;
+  trainer: string;
+  attendance: number;
 }
 
-export interface LowBatchEntry {
+export interface HighBatchEntry {
   name: string;
   center: string;
   trainer: string;
@@ -41,8 +37,8 @@ export interface LowBatchEntry {
 export interface WorklistsData {
   rescueList: RescueEntry[];
   rescueCount: number;
-  quarantineList: QuarantineEntry[];
-  quarantineCount: number;
+  highBatches: HighBatchEntry[];
+  highBatchesCount: number;
   lowBatches: LowBatchEntry[];
   lowBatchesCount: number;
 }
@@ -58,14 +54,6 @@ const pctClass = (pct: number) => {
   if (pct < 75) return 'worklist-pct worklist-pct-danger';
   if (pct < 85) return 'worklist-pct worklist-pct-warning';
   return 'worklist-pct worklist-pct-ok';
-};
-
-const flagBadgeClass = (flag: string) => {
-  const f = flag.toLowerCase();
-  if (f.includes('gps')) return 'worklist-badge worklist-badge-red';
-  if (f.includes('device') || f.includes('multi')) return 'worklist-badge worklist-badge-amber';
-  if (f.includes('fingerprint') || f.includes('shared')) return 'worklist-badge worklist-badge-purple';
-  return 'worklist-badge worklist-badge-slate';
 };
 
 const TrendIcon: React.FC<{ trend: 'up' | 'right' | 'down' }> = ({ trend }) => {
@@ -158,61 +146,55 @@ const RescueListPanel: React.FC<{ data: WorklistsData }> = ({ data }) => {
   );
 };
 
-// ─── Panel B: Security Quarantine ────────────────────────────────────────────
-const QUARANTINE_MIN_W = 460;
+// ─── Panel B: High-Engagement Batches ────────────────────────────────────────
+const HIGH_BATCH_MIN_W = 380;
 
-const QuarantinePanel: React.FC<{ data: WorklistsData }> = ({ data }) => {
-  const [list] = useState<QuarantineEntry[]>(data.quarantineList);
-  const [count] = useState<number>(data.quarantineCount);
+const HighBatchesPanel: React.FC<{ data: WorklistsData }> = ({ data }) => {
+  const [list] = useState<HighBatchEntry[]>(data.highBatches);
+  const [count] = useState<number>(data.highBatchesCount);
 
   return (
-    <div className="worklist-card worklist-card-amber">
+    <div className="worklist-card worklist-card-green">
       <div className="worklist-header">
         <div className="worklist-header-top">
           <div className="worklist-title">
-            <MessageSquareWarning size={16} className="worklist-icon-amber flex-shrink-0" />
-            <span className="worklist-title-text">2. Security Quarantine</span>
+            <Award size={16} className="worklist-icon-green flex-shrink-0" />
+            <span className="worklist-title-text">2. High-Engagement Batches</span>
           </div>
-          <span className="worklist-count-badge worklist-count-amber">{count}</span>
+          <span className="worklist-count-badge worklist-count-green">{count}</span>
         </div>
-        <p className="worklist-subtitle">High priority flags requiring review</p>
+        <p className="worklist-subtitle">Batches exceeding target attendance</p>
       </div>
 
       <div className="worklist-scroll-zone">
-        <div className="worklist-table-inner" style={{ minWidth: QUARANTINE_MIN_W }}>
+        <div className="worklist-table-inner" style={{ minWidth: HIGH_BATCH_MIN_W }}>
           <div className="worklist-table-header">
-            <span className="worklist-col-label" style={{ width: 100, flexShrink: 0 }}>Roll No</span>
-            <span className="worklist-col-label" style={{ flex: 1, minWidth: 120 }}>Name</span>
-            <span className="worklist-col-label" style={{ width: 130, flexShrink: 0 }}>Device Flag</span>
-            <span className="worklist-col-label" style={{ width: 60, flexShrink: 0, textAlign: 'right' }}>Dist (m)</span>
-            <span className="worklist-col-label" style={{ width: 36, flexShrink: 0, textAlign: 'center' }}>Face</span>
+            <span className="worklist-col-label" style={{ flex: 1, minWidth: 120 }}>Batch Name</span>
+            <span className="worklist-col-label" style={{ width: 90, flexShrink: 0 }}>Center</span>
+            <span className="worklist-col-label" style={{ width: 90, flexShrink: 0 }}>Trainer</span>
+            <span className="worklist-col-label" style={{ width: 60, flexShrink: 0, textAlign: 'right' }}>Avg %</span>
           </div>
 
           <div className="worklist-body">
             {list.length === 0 ? (
               <div className="worklist-empty">
-                <ShieldCheck size={28} className="text-cyan-500 mb-2 opacity-80" />
-                <span className="worklist-empty-text">No active security flags</span>
+                <Award size={28} className="text-emerald-500 mb-2 opacity-80" />
+                <span className="worklist-empty-text">No standout batches yet</span>
               </div>
             ) : (
               list.map((entry, idx) => (
-                <div className="worklist-row" key={`${entry._id}-${idx}`}>
-                  <span className="worklist-cell worklist-roll" style={{ width: 100, flexShrink: 0 }} title={entry.rollNo}>
-                    {entry.rollNo}
-                  </span>
+                <div className="worklist-row" key={`${entry.name}-${idx}`}>
                   <span className="worklist-cell worklist-name" style={{ flex: 1, minWidth: 120, paddingRight: 8 }} title={entry.name}>
                     {entry.name}
                   </span>
-                  <span className="worklist-cell" style={{ width: 130, flexShrink: 0, paddingRight: 6 }}>
-                    <span className={flagBadgeClass(entry.flag)} title={entry.flag}>{entry.flag}</span>
+                  <span className="worklist-cell worklist-meta" style={{ width: 90, flexShrink: 0, paddingRight: 6 }} title={entry.center}>
+                    {entry.center}
                   </span>
-                  <span className="worklist-cell" style={{ width: 60, flexShrink: 0, justifyContent: 'flex-end', fontSize: 12, fontWeight: 600, color: entry.distance > 100 ? '#f97066' : '#5c6080' }}>
-                    {entry.distance > 0 ? entry.distance.toLocaleString() : '—'}
+                  <span className="worklist-cell worklist-meta" style={{ width: 90, flexShrink: 0, paddingRight: 6 }} title={entry.trainer}>
+                    {entry.trainer}
                   </span>
-                  <span className="worklist-cell" style={{ width: 36, flexShrink: 0, justifyContent: 'center' }}>
-                    {entry.face === 'Y'
-                      ? <CheckCircle2 size={14} className="text-[#32d583]" />
-                      : <XCircle size={14} className="text-[#f97066]" />}
+                  <span className={`worklist-cell ${pctClass(entry.attendance)}`} style={{ width: 60, flexShrink: 0, justifyContent: 'flex-end' }}>
+                    {entry.attendance}%
                   </span>
                 </div>
               ))
@@ -290,7 +272,7 @@ const DashboardTables: React.FC<DashboardTablesProps> = ({ worklists, loading })
     return (
       <div className="worklist-grid">
         <SkeletonPanel accent="red" />
-        <SkeletonPanel accent="amber" />
+        <SkeletonPanel accent="green" />
         <SkeletonPanel accent="orange" />
       </div>
     );
@@ -301,7 +283,7 @@ const DashboardTables: React.FC<DashboardTablesProps> = ({ worklists, loading })
   return (
     <div className="worklist-grid">
       <RescueListPanel data={worklists} />
-      <QuarantinePanel data={worklists} />
+      <HighBatchesPanel data={worklists} />
       <LowBatchesPanel data={worklists} />
     </div>
   );

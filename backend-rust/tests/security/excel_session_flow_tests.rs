@@ -691,8 +691,6 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
     assert_eq!(overview["filteredRecords"], 2);
     assert_eq!(overview["present"], 1);
     assert_eq!(overview["absent"], 2);
-    assert_eq!(overview["topSession"]["id"], dsa_session_id);
-    assert_eq!(overview["bottomSession"]["id"], cyber_session_id);
 
     let (status, overview_dsa) = super_client
         .get(&app, "/api/admin/sessions/stats-overview?tracks=DSA")

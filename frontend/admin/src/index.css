@@ -1484,38 +1484,6 @@
 }
 .stat-card-percent .stat-card-accent-line { background: var(--viz-1); }
 
-.session-highlights-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.session-highlight-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-pill);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  text-decoration: none;
-  border: 1px solid var(--color-border);
-  transition: transform 0.15s var(--ease);
-}
-.session-highlight-chip:hover { transform: translateY(-1px); }
-
-.session-highlight-best {
-  background: var(--color-success-bg);
-  color: var(--color-success-txt);
-  border-color: color-mix(in srgb, var(--color-success) 25%, transparent);
-}
-.session-highlight-worst {
-  background: var(--color-warning-bg);
-  color: var(--color-warning-txt);
-  border-color: color-mix(in srgb, var(--color-warning) 25%, transparent);
-}
-
 .session-record-filters {
   margin-bottom: var(--space-4);
 }
@@ -2303,18 +2271,22 @@
 .worklist-card-red  { border-color: rgba(240, 68, 56, 0.15); }
 .worklist-card-amber { border-color: rgba(247, 144, 9, 0.15); }
 .worklist-card-orange { border-color: rgba(251, 146, 60, 0.15); }
+.worklist-card-green { border-color: rgba(50, 213, 131, 0.15); }
 
 .worklist-icon-red    { color: #f97066; }
 .worklist-icon-amber  { color: #fdb022; }
 .worklist-icon-orange { color: #fb923c; }
+.worklist-icon-green  { color: #32d583; }
 
 .worklist-count-red    { background: rgba(240,68,56,0.15);  color: #f97066; }
 .worklist-count-amber  { background: rgba(247,144,9,0.15);  color: #fdb022; }
 .worklist-count-orange { background: rgba(251,146,60,0.15); color: #fb923c; }
+.worklist-count-green  { background: rgba(50,213,131,0.15); color: #32d583; }
 
 .worklist-footer-red    { color: #f97066; }
 .worklist-footer-amber  { color: #fdb022; }
 .worklist-footer-orange { color: #fb923c; }
+.worklist-footer-green  { color: #32d583; }
 
 /* Empty state */
 .worklist-empty {

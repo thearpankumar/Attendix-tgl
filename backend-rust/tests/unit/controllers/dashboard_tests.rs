@@ -10,13 +10,9 @@
 //! - GET /api/admin/system-health - returns system health data
 //! - GET /api/admin/system-health - validates component structure
 
-use chrono::Utc;
-
 // =================== GET /api/admin/dashboard Tests ===================
 
 mod get_dashboard_tests {
-    use super::*;
-
     /// Test: should reject requests without a valid token
     ///
     /// Original Node.js test (lines 28-31):
@@ -94,8 +90,8 @@ mod get_dashboard_tests {
     ///   expect(data).toHaveProperty('worklists');
     ///   expect(data.worklists).toHaveProperty('rescueList');
     ///   expect(Array.isArray(data.worklists.rescueList)).toBe(true);
-    ///   expect(data.worklists).toHaveProperty('quarantineList');
-    ///   expect(Array.isArray(data.worklists.quarantineList)).toBe(true);
+    ///   expect(data.worklists).toHaveProperty('highBatches');
+    ///   expect(Array.isArray(data.worklists.highBatches)).toBe(true);
     ///   expect(data.worklists).toHaveProperty('lowBatches');
     ///   expect(Array.isArray(data.worklists.lowBatches)).toBe(true);
     ///   
@@ -153,9 +149,9 @@ mod get_dashboard_tests {
 
         // Verify weeklyTrends is Vec<WeeklyTrend> (admin.rs line 305)
         // Verify WorklistsData structure (admin.rs lines 373-387)
-        let worklist_fields = vec!["rescueList", "quarantineList", "lowBatches"];
+        let worklist_fields = vec!["rescueList", "highBatches", "lowBatches"];
         assert!(worklist_fields.contains(&"rescueList"));
-        assert!(worklist_fields.contains(&"quarantineList"));
+        assert!(worklist_fields.contains(&"highBatches"));
         assert!(worklist_fields.contains(&"lowBatches"));
 
         // Verify lastUpdated field exists (admin.rs line 258-259)
@@ -313,7 +309,6 @@ mod get_dashboard_tests {
 // =================== GET /api/admin/dashboard/filters Tests ===================
 
 mod get_dashboard_filters_tests {
-    use super::*;
 
     /// Test: should reject requests without a valid token
     ///
@@ -552,7 +547,6 @@ mod get_dashboard_filters_tests {
 // =================== GET /api/admin/system-health Tests ===================
 
 mod get_system_health_tests {
-    use super::*;
 
     /// Test: should reject requests without a valid token
     ///
@@ -770,7 +764,7 @@ mod get_system_health_tests {
         let admin_service_score: i64 = 85;
 
         // Each component has equal weight of 25
-        let calculated_score = (ai_model_score + backend_score + student_containers_score + admin_service_score);
+        let calculated_score = ai_model_score + backend_score + student_containers_score + admin_service_score;
         
         // The score in response is health_score, which is derived from overall system health
         // If all components are equal, total = 4 * component_score
@@ -902,7 +896,6 @@ mod get_system_health_tests {
 // =================== Dashboard Stats Structure Tests ===================
 
 mod dashboard_stats_structure_tests {
-    use super::*;
 
     /// Test: PulseMetric has correct fields for serialization
     #[test]
@@ -957,20 +950,17 @@ mod dashboard_stats_structure_tests {
         assert!(funnel_step_fields.contains(&"percentage"));
     }
 
-    /// Test: QuarantineItem has correct fields
+    /// Test: HighBatch has correct fields
     #[test]
-    fn quarantine_item_has_correct_fields() {
-        // From admin.rs lines 399-408
-        // QuarantineItem: _id, rollNo, name, flag, distance, face
+    fn high_batch_has_correct_fields() {
+        // HighBatch: name, center, trainer, attendance (mirrors LowBatch)
 
-        let quarantine_item_fields = vec!["_id", "rollNo", "name", "flag", "distance", "face"];
-        assert_eq!(quarantine_item_fields.len(), 6);
-        assert!(quarantine_item_fields.contains(&"_id"));
-        assert!(quarantine_item_fields.contains(&"rollNo"));
-        assert!(quarantine_item_fields.contains(&"name"));
-        assert!(quarantine_item_fields.contains(&"flag"));
-        assert!(quarantine_item_fields.contains(&"distance"));
-        assert!(quarantine_item_fields.contains(&"face"));
+        let high_batch_fields = vec!["name", "center", "trainer", "attendance"];
+        assert_eq!(high_batch_fields.len(), 4);
+        assert!(high_batch_fields.contains(&"name"));
+        assert!(high_batch_fields.contains(&"center"));
+        assert!(high_batch_fields.contains(&"trainer"));
+        assert!(high_batch_fields.contains(&"attendance"));
     }
 
     /// Test: WeeklyTrend has correct fields
@@ -1004,7 +994,6 @@ mod dashboard_stats_structure_tests {
 // =================== System Health Service Tests ===================
 
 mod system_health_service_tests {
-    use super::*;
 
     /// Test: SystemHealth struct has correct fields
     #[test]
@@ -1067,7 +1056,6 @@ mod system_health_service_tests {
 // =================== Error Response Tests ===================
 
 mod dashboard_error_tests {
-    use super::*;
 
     /// Test: Unauthorized error maps to 401
     #[test]

@@ -409,40 +409,17 @@ pub async fn session_record_stats_for(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionHighlight {
-    pub id: String,
-    pub label: String,
-    pub attendance_percent: f64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionRecordsOverview {
     pub total_records: i64,
     pub filtered_records: i64,
     pub present: i64,
     pub absent: i64,
     pub attendance_percent: f64,
-    pub top_session: Option<SessionHighlight>,
-    pub bottom_session: Option<SessionHighlight>,
 }
 
-fn highlight_label(r: &SessionRecordStats) -> String {
-    match (&r.track, &r.class_label, &r.session_time_raw) {
-        (Some(track), Some(class_label), Some(time)) => {
-            format!("{track} — {class_label} — {time}")
-        }
-        _ => r
-            .class_label
-            .clone()
-            .unwrap_or_else(|| format!("Session {}", &r.id.to_string()[..8])),
-    }
-}
-
-/// Global counts + best/worst-attendance highlights for the currently active
-/// filters, scanning every matching session (no page-size cap) — this is
-/// what lets the Sessions page's stat cards stay accurate even once the list
-/// itself is capped for display.
+/// Global counts for the currently active filters, scanning every matching
+/// session (no page-size cap) — this is what lets the Sessions page's stat
+/// cards stay accurate even once the list itself is capped for display.
 pub async fn get_sessions_stats_overview(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -466,20 +443,10 @@ pub async fn get_sessions_stats_overview(
 
     let mut present = 0i64;
     let mut absent = 0i64;
-    let mut top: Option<(&SessionRecordStats, f64)> = None;
-    let mut bottom: Option<(&SessionRecordStats, f64)> = None;
 
     for r in &records {
         present += r.present_count;
         absent += r.roster_size - r.present_count;
-        if let Some(pct) = r.attendance_percent() {
-            if !top.as_ref().is_some_and(|(_, p)| *p >= pct) {
-                top = Some((r, pct));
-            }
-            if !bottom.as_ref().is_some_and(|(_, p)| *p <= pct) {
-                bottom = Some((r, pct));
-            }
-        }
     }
 
     let attendance_percent = if present + absent > 0 {
@@ -494,16 +461,6 @@ pub async fn get_sessions_stats_overview(
         present,
         absent,
         attendance_percent,
-        top_session: top.map(|(r, pct)| SessionHighlight {
-            id: r.id.to_string(),
-            label: highlight_label(r),
-            attendance_percent: pct,
-        }),
-        bottom_session: bottom.map(|(r, pct)| SessionHighlight {
-            id: r.id.to_string(),
-            label: highlight_label(r),
-            attendance_percent: pct,
-        }),
     }))
 }
 

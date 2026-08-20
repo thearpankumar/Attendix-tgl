@@ -78,7 +78,13 @@ pub const DEVICE_FINGERPRINT_SUBMIT_WINDOW_SECS: u64 = 300;
 pub const DASHBOARD_RESCUE_LIST_LIMIT: usize = 10;
 pub const DASHBOARD_QUARANTINE_LIST_LIMIT: i64 = 5;
 pub const DASHBOARD_LOW_BATCHES_LIMIT: usize = 5;
+pub const DASHBOARD_HIGH_BATCHES_LIMIT: usize = 5;
 pub const ATTENDANCE_EXPORT_LIMIT: i64 = 100;
+
+// A batch counts as "high engagement" once its average attendance reaches
+// this percentage; below DASHBOARD_LOW_BATCHES threshold (80) it's "low
+// engagement" instead, leaving a middle band that is neither.
+pub const DASHBOARD_HIGH_ENGAGEMENT_THRESHOLD: i64 = 90;
 
 // Percentage thresholds for risk classification (0-100 scale)
 pub const RISK_THRESHOLD_LOW: i64 = 85;

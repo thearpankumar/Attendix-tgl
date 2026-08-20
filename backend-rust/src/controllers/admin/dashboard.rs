@@ -178,10 +178,10 @@ pub struct WorklistsData {
     pub rescue_list: Vec<RescueItem>,
     #[serde(rename = "rescueCount")]
     pub rescue_count: i64,
-    #[serde(rename = "quarantineList")]
-    pub quarantine_list: Vec<QuarantineItem>,
-    #[serde(rename = "quarantineCount")]
-    pub quarantine_count: i64,
+    #[serde(rename = "highBatches")]
+    pub high_batches: Vec<HighBatch>,
+    #[serde(rename = "highBatchesCount")]
+    pub high_batches_count: i64,
     #[serde(rename = "lowBatches")]
     pub low_batches: Vec<LowBatch>,
     #[serde(rename = "lowBatchesCount")]
@@ -199,18 +199,15 @@ pub struct RescueItem {
 }
 
 #[derive(Debug, Serialize)]
-pub struct QuarantineItem {
-    pub _id: String,
-    #[serde(rename = "rollNo")]
-    pub roll_no: String,
+pub struct LowBatch {
     pub name: String,
-    pub flag: String,
-    pub distance: i64,
-    pub face: String,
+    pub center: String,
+    pub trainer: String,
+    pub attendance: i64,
 }
 
 #[derive(Debug, Serialize)]
-pub struct LowBatch {
+pub struct HighBatch {
     pub name: String,
     pub center: String,
     pub trainer: String,
@@ -388,8 +385,8 @@ pub async fn get_dashboard_stats(
             worklists: WorklistsData {
                 rescue_list: vec![],
                 rescue_count: 0,
-                quarantine_list: vec![],
-                quarantine_count: 0,
+                high_batches: vec![],
+                high_batches_count: 0,
                 low_batches: vec![],
                 low_batches_count: 0,
             },
@@ -583,35 +580,7 @@ pub async fn get_dashboard_stats(
         });
     }
 
-    // Quarantine list - flagged and unverified attendance
-    let quarantine_attendances: Vec<Attendance> = sqlx::query_as(
-        "SELECT * FROM attendances WHERE session_id = ANY($1) AND verified = false \
-         AND device_flag IS NOT NULL ORDER BY captured_at DESC LIMIT $2",
-    )
-    .bind(&session_ids)
-    .bind(DASHBOARD_QUARANTINE_LIST_LIMIT)
-    .fetch_all(&state.db)
-    .await?;
-
-    let mut quarantine_list: Vec<QuarantineItem> = Vec::new();
-    for attendance in quarantine_attendances {
-        quarantine_list.push(QuarantineItem {
-            _id: attendance.id.to_string(),
-            roll_no: attendance.roll_number,
-            name: attendance.student_name,
-            flag: match attendance.device_flag.as_ref() {
-                Some(f) => serde_json::to_string(f)
-                    .unwrap_or_else(|_| "\"Unknown\"".to_string())
-                    .trim_matches('"')
-                    .to_string(),
-                None => "None".to_string(),
-            },
-            distance: attendance.distance_from_location.round() as i64,
-            face: if attendance.face_detected { "Y" } else { "N" }.to_string(),
-        });
-    }
-
-    // Low engagement batches
+    // Low / high engagement batches
     let batches: Vec<Batch> =
         sqlx::query_as("SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2)")
             .bind(&auth.role)
@@ -635,6 +604,7 @@ pub async fn get_dashboard_stats(
     }
 
     let mut low_batches: Vec<LowBatch> = Vec::new();
+    let mut high_batches: Vec<HighBatch> = Vec::new();
     for batch in &batches {
         let batch_id = batch.id;
         // Get sessions for this batch
@@ -678,12 +648,23 @@ pub async fn get_dashboard_stats(
                 trainer: "System".to_string(),
                 attendance: attendance_pct,
             });
+        } else if attendance_pct >= DASHBOARD_HIGH_ENGAGEMENT_THRESHOLD {
+            high_batches.push(HighBatch {
+                name: batch.name.clone(),
+                center: "Main Campus".to_string(),
+                trainer: "System".to_string(),
+                attendance: attendance_pct,
+            });
         }
     }
 
     low_batches.sort_by_key(|a| a.attendance);
     let low_batches_count = low_batches.len() as i64;
     low_batches.truncate(DASHBOARD_LOW_BATCHES_LIMIT);
+
+    high_batches.sort_by_key(|a| std::cmp::Reverse(a.attendance));
+    let high_batches_count = high_batches.len() as i64;
+    high_batches.truncate(DASHBOARD_HIGH_BATCHES_LIMIT);
 
     // System health
     let system_health = crate::services::system_health::get_system_health(
@@ -819,8 +800,8 @@ pub async fn get_dashboard_stats(
         worklists: WorklistsData {
             rescue_list,
             rescue_count,
-            quarantine_list,
-            quarantine_count,
+            high_batches,
+            high_batches_count,
             low_batches,
             low_batches_count,
         },

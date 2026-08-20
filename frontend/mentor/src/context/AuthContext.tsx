@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
+import { logWarning } from '../utils/logger';
+
 interface Admin {
   _id: string;
   username: string;
@@ -79,7 +81,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       await axios.post('/api/admin/logout');
     } catch (e) {
-      console.warn('Logout request failed', e);
+      logWarning('Logout request failed', e);
     } finally {
       setAdmin(null);
     }

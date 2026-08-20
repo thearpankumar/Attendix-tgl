@@ -100,11 +100,11 @@ export const mockDashboardData: DashboardData = {
       { rollNo: 'STU003', name: 'Bob Wilson', batch: 'Batch A', attendance: 80, trend: 'up' }
     ],
     rescueCount: 3,
-    quarantineList: [
-      { _id: 'q1', rollNo: 'STU004', name: 'Alice Brown', flag: 'GPS Violation', distance: 150, face: 'Y' },
-      { _id: 'q2', rollNo: 'STU005', name: 'Charlie Davis', flag: 'Device Anomaly', distance: 0, face: 'N' }
+    highBatches: [
+      { name: 'Batch E', center: 'Center Alpha', trainer: 'Trainer X', attendance: 96 },
+      { name: 'Batch F', center: 'Center Beta', trainer: 'Trainer Y', attendance: 92 }
     ],
-    quarantineCount: 2,
+    highBatchesCount: 2,
     lowBatches: [
       { name: 'Batch C', center: 'Center Alpha', trainer: 'Trainer X', attendance: 72 },
       { name: 'Batch D', center: 'Center Beta', trainer: 'Trainer Y', attendance: 65 }
@@ -170,8 +170,8 @@ export const mockEmptyDashboardData: DashboardData = {
   worklists: {
     rescueList: [],
     rescueCount: 0,
-    quarantineList: [],
-    quarantineCount: 0,
+    highBatches: [],
+    highBatchesCount: 0,
     lowBatches: [],
     lowBatchesCount: 0
   },
@@ -195,10 +195,10 @@ export const mockXSSDashboardData: DashboardData = {
       { rollNo: 'STU001', name: '<script>alert("xss")</script>', batch: '<img onerror="alert(1)" src=x>', attendance: 68, trend: 'down' }
     ],
     rescueCount: 1,
-    quarantineList: [
-      { _id: 'q1', rollNo: 'STU002', name: 'Test User', flag: 'javascript:alert("xss")', distance: 150, face: 'Y' }
+    highBatches: [
+      { name: '<img src=x onerror="alert(1)">', center: 'Test Center', trainer: 'Trainer', attendance: 95 }
     ],
-    quarantineCount: 1,
+    highBatchesCount: 1,
     lowBatches: [
       { name: '<script>document.cookie</script>', center: 'Test Center', trainer: 'Trainer', attendance: 72 }
     ],
@@ -224,8 +224,8 @@ export const mockBoundaryDashboardData: DashboardData = {
       { rollNo: 'STU001', name: 'Boundary Student', batch: 'Test Batch', attendance: 74, trend: 'right' }
     ],
     rescueCount: 1,
-    quarantineList: [],
-    quarantineCount: 0,
+    highBatches: [],
+    highBatchesCount: 0,
     lowBatches: [],
     lowBatchesCount: 0
   },
