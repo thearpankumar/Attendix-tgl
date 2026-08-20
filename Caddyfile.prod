@@ -58,7 +58,17 @@ attendixv2.talenciaglobal.com {
 		# preload shim. Removing it requires nonce injection at the proxy, which
 		# is tracked separately.
 		# blob: is needed for camera capture and the MediaPipe WASM worker.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none';"
+		# 'wasm-unsafe-eval' is needed for the MediaPipe on-device face-detection
+		# WASM module (vision_wasm_internal) — WebAssembly.instantiate is a
+		# distinct capability from JS eval and does not weaken script-src the
+		# way 'unsafe-eval' would; browsers gate it separately.
+		# connect-src additions: `data:` is needed because the MediaPipe vision
+		# bundle fetches captured frames via `fetch(dataUrl)` internally. The S3
+		# bucket host is needed because the student app uploads attendance
+		# photos with a browser-side PUT straight to a presigned S3 URL
+		# (backend-rust/src/storage/s3.rs) — that request never touches our
+		# origin, so 'self' alone blocks it.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' data: https://tgl-attendence-system-storage.s3.ap-south-1.amazonaws.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none';"
 		# Referrer policy
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# The student page needs camera + geolocation; nothing needs a mic.
