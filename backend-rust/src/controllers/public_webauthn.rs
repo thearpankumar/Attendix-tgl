@@ -1,5 +1,6 @@
 use axum::{
     extract::{ConnectInfo, Extension, Json, Path, State},
+    http::HeaderMap,
     response::IntoResponse,
 };
 use chrono::{Duration, Utc};
@@ -572,6 +573,7 @@ pub struct AttendanceSummary {
     pub webauthn_verified: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn finish_authentication(
     State(state): State<Arc<AppState>>,
     Path(short_code): Path<String>,
@@ -585,11 +587,17 @@ pub async fn finish_authentication(
     // would 500 in any test/context that doesn't go through
     // into_make_service_with_connect_info.
     connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    headers: HeaderMap,
     Json(payload): Json<AuthenticationFinishRequest>,
 ) -> Result<impl IntoResponse> {
     let client_ip = connect_info
         .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
         .unwrap_or_else(|| "unknown-peer".to_string());
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
     let sys_config = crate::models::SystemConfig::load(&state.db)
         .await?
         .unwrap_or_default();
@@ -952,10 +960,10 @@ pub async fn finish_authentication(
     .bind(payload.latitude) // 9 student_latitude
     .bind(payload.longitude) // 10 student_longitude
     .bind(distance) // 11 distance_from_location
-    .bind(Option::<String>::None) // 12 ip_address
-    .bind(Option::<String>::None) // 13 user_agent
-    .bind(Option::<String>::None) // 14 network_provider
-    .bind(Option::<String>::None) // 15 network_org
+    .bind(Some(client_ip.clone())) // 12 ip_address
+    .bind(Some(user_agent.clone())) // 13 user_agent
+    .bind(Some(ip_info.isp.clone())) // 14 network_provider
+    .bind(Some(ip_info.org.clone())) // 15 network_org
     .bind(true) // 16 verified
     .bind(face_detected_result.or(payload.face_detected).unwrap_or(true)) // 17 face_detected
     .bind(&payload.device_fingerprint) // 18 device_fingerprint

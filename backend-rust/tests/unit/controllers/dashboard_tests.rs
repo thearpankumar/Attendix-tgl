@@ -116,7 +116,7 @@ mod get_dashboard_tests {
 
         // Verify PulseMetric structure (admin.rs lines 271-278)
         // Fields: value, target, delta, delta_type, status
-        let pulse_metric_fields = vec!["value", "target", "delta", "deltaType", "status"];
+        let pulse_metric_fields = ["value", "target", "delta", "deltaType", "status"];
         assert!(pulse_metric_fields.contains(&"value"));
         assert!(pulse_metric_fields.contains(&"target"));
         assert_eq!(pulse_metric_fields.len(), 5);
@@ -130,7 +130,7 @@ mod get_dashboard_tests {
         assert_eq!(integrity_target, 100);
 
         // Verify PulseMetrics structure (admin.rs lines 262-268)
-        let pulse_fields = vec!["eligibility", "integrity", "turnout", "quarantine"];
+        let pulse_fields = ["eligibility", "integrity", "turnout", "quarantine"];
         assert!(pulse_fields.contains(&"eligibility"));
         assert!(pulse_fields.contains(&"integrity"));
         assert!(pulse_fields.contains(&"quarantine"));
@@ -141,7 +141,7 @@ mod get_dashboard_tests {
         assert!(integrity_has_components);
 
         // Verify ChartsData structure (admin.rs lines 298-306)
-        let chart_fields = vec!["funnel", "integrityBreakdown", "systemHealth", "weeklyTrends"];
+        let chart_fields = ["funnel", "integrityBreakdown", "systemHealth", "weeklyTrends"];
         assert!(chart_fields.contains(&"funnel"));
         assert!(chart_fields.contains(&"integrityBreakdown"));
         assert!(chart_fields.contains(&"systemHealth"));
@@ -149,7 +149,7 @@ mod get_dashboard_tests {
 
         // Verify weeklyTrends is Vec<WeeklyTrend> (admin.rs line 305)
         // Verify WorklistsData structure (admin.rs lines 373-387)
-        let worklist_fields = vec!["rescueList", "highBatches", "lowBatches"];
+        let worklist_fields = ["rescueList", "highBatches", "lowBatches"];
         assert!(worklist_fields.contains(&"rescueList"));
         assert!(worklist_fields.contains(&"highBatches"));
         assert!(worklist_fields.contains(&"lowBatches"));
@@ -199,7 +199,7 @@ mod get_dashboard_tests {
         // batch
         // attendance (i64)
         // trend (String)
-        let rescue_item_fields = vec!["rollNo", "name", "batch", "attendance", "trend"];
+        let rescue_item_fields = ["rollNo", "name", "batch", "attendance", "trend"];
         assert_eq!(rescue_item_fields.len(), 5);
         assert!(rescue_item_fields.contains(&"rollNo"));
         assert!(rescue_item_fields.contains(&"name"));
@@ -246,13 +246,13 @@ mod get_dashboard_tests {
         // Components JSON is built in admin.rs lines 890-895
 
         // Integrity fields
-        let integrity_fields = vec!["value", "status", "components"];
+        let integrity_fields = ["value", "status", "components"];
         assert!(integrity_fields.contains(&"value"));
         assert!(integrity_fields.contains(&"status"));
         assert!(integrity_fields.contains(&"components"));
 
         // Component names (admin.rs lines 890-895)
-        let component_names = vec!["aiModel", "backend", "studentContainers", "adminService"];
+        let component_names = ["aiModel", "backend", "studentContainers", "adminService"];
         assert_eq!(component_names.len(), 4);
         assert!(component_names.contains(&"aiModel"));
         assert!(component_names.contains(&"backend"));
@@ -293,13 +293,13 @@ mod get_dashboard_tests {
         // SystemHealthSummary (admin.rs lines 358-364) has: healthy_components, total_components
 
         // SystemHealthChart fields (admin.rs lines 348-356)
-        let system_health_fields = vec!["score", "status", "healthStatus", "components", "summary"];
+        let system_health_fields = ["score", "status", "healthStatus", "components", "summary"];
         assert!(system_health_fields.contains(&"score"));
         assert!(system_health_fields.contains(&"status"));
         assert!(system_health_fields.contains(&"summary"));
 
         // SystemHealthSummary fields (admin.rs lines 358-364)
-        let summary_fields = vec!["healthyComponents", "totalComponents"];
+        let summary_fields = ["healthyComponents", "totalComponents"];
         assert_eq!(summary_fields.len(), 2);
         assert!(summary_fields.contains(&"healthyComponents"));
         assert!(summary_fields.contains(&"totalComponents"));
@@ -391,7 +391,7 @@ mod get_dashboard_filters_tests {
         // FilterOption has value and label fields
 
         // DashboardFilters fields (admin.rs lines 980-986)
-        let filters_fields = vec!["batches", "centers", "timeframes", "riskLevels"];
+        let filters_fields = ["batches", "centers", "timeframes", "riskLevels"];
         assert_eq!(filters_fields.len(), 4);
         assert!(filters_fields.contains(&"batches"));
         assert!(filters_fields.contains(&"centers"));
@@ -399,7 +399,7 @@ mod get_dashboard_filters_tests {
         assert!(filters_fields.contains(&"riskLevels"));
 
         // FilterOption fields (admin.rs lines 988-992)
-        let filter_option_fields = vec!["value", "label"];
+        let filter_option_fields = ["value", "label"];
         assert_eq!(filter_option_fields.len(), 2);
         assert!(filter_option_fields.contains(&"value"));
         assert!(filter_option_fields.contains(&"label"));
@@ -535,7 +535,7 @@ mod get_dashboard_filters_tests {
         // In Rust implementation (admin.rs lines 1082-1087):
         // risk_levels vec!["All Levels", "High Risk", "Medium Risk", "Low Risk"]
 
-        let expected_risk_levels = vec!["All Levels", "High Risk", "Medium Risk", "Low Risk"];
+        let expected_risk_levels = ["All Levels", "High Risk", "Medium Risk", "Low Risk"];
         assert_eq!(expected_risk_levels.len(), 4);
         assert_eq!(expected_risk_levels[0], "All Levels");
         assert_eq!(expected_risk_levels[1], "High Risk");
@@ -633,7 +633,7 @@ mod get_system_health_tests {
         // SystemHealth struct with overall_score, components, last_updated
 
         // SystemHealth fields (services/system_health.rs lines 4-9)
-        let system_health_fields = vec!["overall_score", "components", "last_updated"];
+        let system_health_fields = ["overall_score", "components", "last_updated"];
         assert!(system_health_fields.contains(&"overall_score"));
 
         // Score range validation
@@ -643,19 +643,19 @@ mod get_system_health_tests {
         assert!(max_score <= 100.0);
 
         // Status values (admin.rs lines 497-498, 870-871)
-        let valid_statuses = vec!["On Track", "At Risk", "Critical"];
+        let valid_statuses = ["On Track", "At Risk", "Critical"];
         assert!(valid_statuses.contains(&"On Track"));
         assert!(valid_statuses.contains(&"At Risk"));
         assert!(valid_statuses.contains(&"Critical"));
 
         // Health status values
-        let valid_health_statuses = vec!["healthy", "degraded", "unhealthy"];
+        let valid_health_statuses = ["healthy", "degraded", "unhealthy"];
         assert!(valid_health_statuses.contains(&"healthy"));
         assert!(valid_health_statuses.contains(&"degraded"));
         assert!(valid_health_statuses.contains(&"unhealthy"));
 
         // Component names
-        let component_names = vec!["aiModel", "backend", "studentContainers", "adminService"];
+        let component_names = ["aiModel", "backend", "studentContainers", "adminService"];
         assert_eq!(component_names.len(), 4);
 
         // Summary totalComponents = 4 (admin.rs line 562, 952)
@@ -710,7 +710,7 @@ mod get_system_health_tests {
         // Components are built as JSON with these fields
 
         // Component fields (from admin.rs JSON structure)
-        let component_fields = vec!["name", "healthy", "score", "weight"];
+        let component_fields = ["name", "healthy", "score", "weight"];
         assert_eq!(component_fields.len(), 4);
         assert!(component_fields.contains(&"name"));
         assert!(component_fields.contains(&"healthy"));
@@ -847,7 +847,7 @@ mod get_system_health_tests {
         // - The actual implementation may differ from Node.js
 
         // The system_health service checks database (MongoDB), redis, and storage
-        let backend_detail_fields = vec!["express", "redis", "mongodb"];
+        let backend_detail_fields = ["express", "redis", "mongodb"];
 
         // Note: Rust implementation uses "database" instead of "mongodb"
         // and "storage" instead of "express"
@@ -888,7 +888,7 @@ mod get_system_health_tests {
         assert!(admin_count >= 0);
 
         // Expected field
-        let admin_service_detail_fields = vec!["adminCount"];
+        let admin_service_detail_fields = ["adminCount"];
         assert!(admin_service_detail_fields.contains(&"adminCount"));
     }
 }
@@ -903,7 +903,7 @@ mod dashboard_stats_structure_tests {
         // From admin.rs lines 271-278
         // Fields: value, target, delta, delta_type (serialized as deltaType), status
 
-        let pulse_metric_fields = vec!["value", "target", "delta", "deltaType", "status"];
+        let pulse_metric_fields = ["value", "target", "delta", "deltaType", "status"];
         assert_eq!(pulse_metric_fields.len(), 5);
         assert!(pulse_metric_fields.contains(&"value"));
         assert!(pulse_metric_fields.contains(&"target"));
@@ -930,7 +930,7 @@ mod dashboard_stats_structure_tests {
         // From admin.rs lines 308-316
         // FunnelData: total, on_track, at_risk, disqualified
 
-        let funnel_fields = vec!["total", "onTrack", "atRisk", "disqualified"];
+        let funnel_fields = ["total", "onTrack", "atRisk", "disqualified"];
         assert_eq!(funnel_fields.len(), 4);
         assert!(funnel_fields.contains(&"total"));
         assert!(funnel_fields.contains(&"onTrack"));
@@ -944,7 +944,7 @@ mod dashboard_stats_structure_tests {
         // From admin.rs lines 318-322
         // FunnelStep: count, percentage
 
-        let funnel_step_fields = vec!["count", "percentage"];
+        let funnel_step_fields = ["count", "percentage"];
         assert_eq!(funnel_step_fields.len(), 2);
         assert!(funnel_step_fields.contains(&"count"));
         assert!(funnel_step_fields.contains(&"percentage"));
@@ -955,7 +955,7 @@ mod dashboard_stats_structure_tests {
     fn high_batch_has_correct_fields() {
         // HighBatch: name, center, trainer, attendance (mirrors LowBatch)
 
-        let high_batch_fields = vec!["name", "center", "trainer", "attendance"];
+        let high_batch_fields = ["name", "center", "trainer", "attendance"];
         assert_eq!(high_batch_fields.len(), 4);
         assert!(high_batch_fields.contains(&"name"));
         assert!(high_batch_fields.contains(&"center"));
@@ -969,7 +969,7 @@ mod dashboard_stats_structure_tests {
         // From admin.rs lines 366-371
         // WeeklyTrend: date, day, rate
 
-        let weekly_trend_fields = vec!["date", "day", "rate"];
+        let weekly_trend_fields = ["date", "day", "rate"];
         assert_eq!(weekly_trend_fields.len(), 3);
         assert!(weekly_trend_fields.contains(&"date"));
         assert!(weekly_trend_fields.contains(&"day"));
@@ -982,7 +982,7 @@ mod dashboard_stats_structure_tests {
         // From admin.rs lines 410-416
         // LowBatch: name, center, trainer, attendance
 
-        let low_batch_fields = vec!["name", "center", "trainer", "attendance"];
+        let low_batch_fields = ["name", "center", "trainer", "attendance"];
         assert_eq!(low_batch_fields.len(), 4);
         assert!(low_batch_fields.contains(&"name"));
         assert!(low_batch_fields.contains(&"center"));
@@ -1001,7 +1001,7 @@ mod system_health_service_tests {
         // From services/system_health.rs lines 4-9
         // SystemHealth: overall_score, components, last_updated
 
-        let system_health_fields = vec!["overall_score", "components", "last_updated"];
+        let system_health_fields = ["overall_score", "components", "last_updated"];
         assert_eq!(system_health_fields.len(), 3);
         assert!(system_health_fields.contains(&"overall_score"));
         assert!(system_health_fields.contains(&"components"));
@@ -1014,7 +1014,7 @@ mod system_health_service_tests {
         // From services/system_health.rs lines 11-16
         // ComponentHealth: database, redis, storage
 
-        let component_health_fields = vec!["database", "redis", "storage"];
+        let component_health_fields = ["database", "redis", "storage"];
         assert_eq!(component_health_fields.len(), 3);
         assert!(component_health_fields.contains(&"database"));
         assert!(component_health_fields.contains(&"redis"));
@@ -1027,7 +1027,7 @@ mod system_health_service_tests {
         // From services/system_health.rs lines 18-24
         // HealthStatus: status, score, latency_ms, last_check
 
-        let health_status_fields = vec!["status", "score", "latency_ms", "last_check"];
+        let health_status_fields = ["status", "score", "latency_ms", "last_check"];
         assert_eq!(health_status_fields.len(), 4);
         assert!(health_status_fields.contains(&"status"));
         assert!(health_status_fields.contains(&"score"));
