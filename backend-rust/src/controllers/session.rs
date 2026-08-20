@@ -780,6 +780,32 @@ async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Re
     .execute(&state.db)
     .await?;
 
+    // Every table below has a `session_id` FK with no ON DELETE CASCADE, so
+    // any session that ever had a WebAuthn ceremony, a photo-reuse check, or
+    // a device seen against it would fail `DELETE FROM sessions` outright
+    // with a foreign-key-violation 500 — this hit every session, not just
+    // some, since webauthn_challenges.session_id is NOT NULL and gets a row
+    // on every registration/authentication attempt.
+    sqlx::query("DELETE FROM webauthn_challenges WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM photo_hashes WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM devices WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
+    // webauthn_credentials outlive any single session (they're the student's
+    // enrolled passkey) — detach the pointer to the last session it was used
+    // in rather than deleting the credential.
+    sqlx::query("UPDATE webauthn_credentials SET last_session_id = NULL WHERE last_session_id = $1")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
+
     // Delete the session
     sqlx::query("DELETE FROM sessions WHERE id = $1")
         .bind(session_id)
