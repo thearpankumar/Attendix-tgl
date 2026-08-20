@@ -813,7 +813,7 @@ const SessionDetail = () => {
                         <img src={record.photoUrl} alt="Student" style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} />
                       </td>
 
-                      <td><span style={{ whiteSpace: 'nowrap' }}>{record.distanceFromLocation}m</span></td>
+                      <td><span style={{ whiteSpace: 'nowrap' }}>{Math.round(record.distanceFromLocation)}m</span></td>
 
                       <td><span style={{ whiteSpace: 'nowrap' }}>{new Date(record.capturedAt).toLocaleTimeString()}</span></td>
 

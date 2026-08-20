@@ -239,7 +239,7 @@ export default function LegacyAttend() {
 
       streamRef.current?.getTracks().forEach(t => t.stop());
       const att = data.attendance;
-      setDistanceInfo(`Distance: ${att.distanceFromLocation}m | ${att.verified ? 'VERIFIED - Within allowed area' : 'NOT VERIFIED - Outside allowed area'}`);
+      setDistanceInfo(`Distance: ${Math.round(att.distanceFromLocation)}m | ${att.verified ? 'VERIFIED - Within allowed area' : 'NOT VERIFIED - Outside allowed area'}`);
       setStep('success');
     } catch (err) {
       flash((err as Error).message);
