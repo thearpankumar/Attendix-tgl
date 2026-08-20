@@ -38,7 +38,7 @@ mod get_dashboard_tests {
 
         // Verify error type for unauthorized access
         let error = attendance_geotag_backend::AppError::Unauthorized(
-            "Missing or invalid authentication token".to_string()
+            "Missing or invalid authentication token".to_string(),
         );
 
         match &error {
@@ -141,7 +141,12 @@ mod get_dashboard_tests {
         assert!(integrity_has_components);
 
         // Verify ChartsData structure (admin.rs lines 298-306)
-        let chart_fields = ["funnel", "integrityBreakdown", "systemHealth", "weeklyTrends"];
+        let chart_fields = [
+            "funnel",
+            "integrityBreakdown",
+            "systemHealth",
+            "weeklyTrends",
+        ];
         assert!(chart_fields.contains(&"funnel"));
         assert!(chart_fields.contains(&"integrityBreakdown"));
         assert!(chart_fields.contains(&"systemHealth"));
@@ -331,9 +336,8 @@ mod get_dashboard_filters_tests {
         // - Handler requires Extension<AuthenticatedAdmin>
         // - Auth middleware validates token
 
-        let error = attendance_geotag_backend::AppError::Unauthorized(
-            "Missing authentication".to_string()
-        );
+        let error =
+            attendance_geotag_backend::AppError::Unauthorized("Missing authentication".to_string());
 
         match &error {
             attendance_geotag_backend::AppError::Unauthorized(msg) => {
@@ -568,9 +572,8 @@ mod get_system_health_tests {
         // In Rust implementation (admin.rs lines 969-977):
         // - Handler requires Extension<AuthenticatedAdmin>
 
-        let error = attendance_geotag_backend::AppError::Unauthorized(
-            "Missing authentication".to_string()
-        );
+        let error =
+            attendance_geotag_backend::AppError::Unauthorized("Missing authentication".to_string());
 
         match &error {
             attendance_geotag_backend::AppError::Unauthorized(msg) => {
@@ -734,9 +737,9 @@ mod get_system_health_tests {
     ///   expect(res.status).toBe(200);
     ///
     ///   const { components, score } = res.body;
-    ///   const calculatedScore = components.aiModel.score + 
-    ///                           components.backend.score + 
-    ///                           components.studentContainers.score + 
+    ///   const calculatedScore = components.aiModel.score +
+    ///                           components.backend.score +
+    ///                           components.studentContainers.score +
     ///                           components.adminService.score;
     ///   
     ///   expect(score).toBe(calculatedScore);
@@ -764,8 +767,9 @@ mod get_system_health_tests {
         let admin_service_score: i64 = 85;
 
         // Each component has equal weight of 25
-        let calculated_score = ai_model_score + backend_score + student_containers_score + admin_service_score;
-        
+        let calculated_score =
+            ai_model_score + backend_score + student_containers_score + admin_service_score;
+
         // The score in response is health_score, which is derived from overall system health
         // If all components are equal, total = 4 * component_score
         assert!(calculated_score >= 0);
@@ -799,7 +803,13 @@ mod get_system_health_tests {
         // let health_status = if health_score >= 85 { "On Track" } else if health_score >= 50 { "At Risk" } else { "Critical" }
 
         let score: i64 = 90;
-        let expected_status = if score >= 85 { "On Track" } else if score >= 50 { "At Risk" } else { "Critical" };
+        let expected_status = if score >= 85 {
+            "On Track"
+        } else if score >= 50 {
+            "At Risk"
+        } else {
+            "Critical"
+        };
 
         if score >= 85 {
             assert_eq!(expected_status, "On Track");
@@ -809,10 +819,22 @@ mod get_system_health_tests {
         let at_risk_score: i64 = 60;
         let critical_score: i64 = 40;
 
-        let at_risk_status = if at_risk_score >= 85 { "On Track" } else if at_risk_score >= 50 { "At Risk" } else { "Critical" };
+        let at_risk_status = if at_risk_score >= 85 {
+            "On Track"
+        } else if at_risk_score >= 50 {
+            "At Risk"
+        } else {
+            "Critical"
+        };
         assert_eq!(at_risk_status, "At Risk");
 
-        let critical_status = if critical_score >= 85 { "On Track" } else if critical_score >= 50 { "At Risk" } else { "Critical" };
+        let critical_status = if critical_score >= 85 {
+            "On Track"
+        } else if critical_score >= 50 {
+            "At Risk"
+        } else {
+            "Critical"
+        };
         assert_eq!(critical_status, "Critical");
     }
 

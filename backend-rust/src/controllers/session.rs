@@ -801,10 +801,12 @@ async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Re
     // webauthn_credentials outlive any single session (they're the student's
     // enrolled passkey) — detach the pointer to the last session it was used
     // in rather than deleting the credential.
-    sqlx::query("UPDATE webauthn_credentials SET last_session_id = NULL WHERE last_session_id = $1")
-        .bind(session_id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE webauthn_credentials SET last_session_id = NULL WHERE last_session_id = $1",
+    )
+    .bind(session_id)
+    .execute(&state.db)
+    .await?;
 
     // Delete the session
     sqlx::query("DELETE FROM sessions WHERE id = $1")
