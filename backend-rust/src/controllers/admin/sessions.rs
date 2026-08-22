@@ -25,6 +25,96 @@ pub struct SessionAttendanceResponse {
     pub signed_photo_url: Option<String>,
 }
 
+#[cfg(test)]
+mod session_attendance_response_tests {
+    use super::*;
+    use crate::models::{AttendanceSource, AttendanceStatus};
+    use sqlx::types::Json;
+
+    // Regression test for the "selecting one student selects all" bug
+    // (admin SessionDetail.tsx): `get_session_attendance` returns a
+    // `Vec<SessionAttendanceResponse>`, which flattens `Attendance` straight
+    // into the JSON array the frontend reads `record._id` from. If
+    // `Attendance::id` ever lost its `_id` rename, every row would come back
+    // keyed `"id"` instead, `record._id` would be `undefined` for every row,
+    // and the frontend's `Set<string>` selection state would collapse every
+    // row onto the same `undefined` key -- exactly the reported symptom.
+    #[test]
+    fn flattened_response_exposes_underscore_id_not_id() {
+        let attendance = Attendance {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            student_name: "Test Student".to_string(),
+            roll_number: "CS101".to_string(),
+            photo_url: "https://example.com/photo.jpg".to_string(),
+            photo_public_id: "photo-id".to_string(),
+            photo_hash: None,
+            photo_reuse_detected: false,
+            student_latitude: 12.9716,
+            student_longitude: 77.5946,
+            distance_from_location: 10.0,
+            ip_address: None,
+            user_agent: None,
+            network_provider: None,
+            network_org: None,
+            verified: false,
+            source: AttendanceSource::default(),
+            status: AttendanceStatus::default(),
+            marked_by_admin_id: None,
+            face_detected: true,
+            device_fingerprint: None,
+            device_fingerprint_hash: None,
+            device_first_seen: false,
+            totp_code: None,
+            totp_valid: None,
+            device_flag: None,
+            webauthn_credential_id: None,
+            webauthn_verified: false,
+            webauthn_device_type: None,
+            webauthn_authenticator_attachment: None,
+            webauthn_counter: None,
+            webauthn_replay_attack: false,
+            flag_reviewed: false,
+            flag_reviewed_by: None,
+            flag_reviewed_at: None,
+            flagged: false,
+            flag_reason: None,
+            flag_details: None,
+            captured_at: Utc::now(),
+            gps_accuracy: None,
+            gps_altitude: None,
+            gps_altitude_accuracy: None,
+            gps_speed: None,
+            gps_heading: None,
+            gps_timestamp: None,
+            gps_mock_location: false,
+            gps_provider: None,
+            gps_anomalies: Json(Vec::new()),
+            gps_confidence: None,
+            emulator_detected: false,
+            emulator_flags: Json(Vec::new()),
+            integrity_checks: Json(Vec::new()),
+        };
+        let expected_id = attendance.id;
+
+        let response = SessionAttendanceResponse {
+            attendance,
+            signed_photo_url: None,
+        };
+
+        let value = serde_json::to_value(&response).expect("response must serialize");
+        assert_eq!(
+            value["_id"],
+            serde_json::json!(expected_id),
+            "flattened response must expose the record's id under \"_id\" (frontend's AttendanceRecord._id)"
+        );
+        assert!(
+            value.get("id").is_none(),
+            "flattened response must not also expose a plain \"id\" key"
+        );
+    }
+}
+
 pub async fn get_session_attendance(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,

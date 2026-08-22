@@ -16,9 +16,11 @@ const makeMockGet = ({
   batches = [] as object[],
   mentors = [BATCH_MENTOR] as object[],
   overview = EMPTY_OVERVIEW as object,
+  rules = [] as object[],
 } = {}) =>
   (url: string) => {
     if (url.includes('/stats-overview')) return Promise.resolve({ data: overview });
+    if (url.includes('/recurring-rules')) return Promise.resolve({ data: rules });
     if (url.includes('/sessions')) return Promise.resolve({ data: sessions });
     if (url.includes('/locations')) return Promise.resolve({ data: locations });
     if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortLinks } });
@@ -397,6 +399,128 @@ describe('Sessions', () => {
     await waitFor(() => expect(screen.getByText('Loc 34')).toBeInTheDocument());
     // Page-1 rows must still be there — appended, not replaced.
     expect(screen.getByText('Loc 0')).toBeInTheDocument();
+  });
+
+  // ─── Recurring ("cron job") sessions ───────────────────────────────────────
+
+  const RULE = {
+    _id: 'rule1',
+    locationId: 'loc1',
+    description: 'Morning check-in',
+    durationMinutes: 30,
+    runTimesLocal: ['09:00', '13:30'],
+    timezone: 'Asia/Kolkata',
+    daysOfWeek: [1, 2, 3, 4, 5],
+    isActive: true,
+    lockedShortCode: 'morning-checkin',
+    nextRunAt: new Date(Date.now() + 3600000).toISOString(),
+    consecutiveFailures: 0,
+    createdAt: new Date().toISOString(),
+  };
+
+  it('cron cadence fields are hidden until "Cron job" is selected, then reveal time/day/timezone pickers', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    expect(screen.queryByText(/Time\(s\) of day/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Days of week/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/Cron job \(recurring\)/i));
+    expect(screen.getByText(/Time\(s\) of day/i)).toBeInTheDocument();
+    expect(screen.getByText(/Days of week/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Timezone$/i)).toBeInTheDocument();
+    // One time input by default.
+    expect(container.querySelectorAll('input[type="time"]').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('"Add another time" adds a second time-of-day input', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText(/Cron job \(recurring\)/i));
+    expect(container.querySelectorAll('input[type="time"]').length).toBe(1);
+
+    fireEvent.click(screen.getByText(/Add another time/i));
+    expect(container.querySelectorAll('input[type="time"]').length).toBe(2);
+  });
+
+  it('creates a recurring rule with the selected times, days, and timezone', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.post as any).mockResolvedValue({ data: RULE });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
+    fireEvent.click(screen.getByText(/Cron job \(recurring\)/i));
+
+    const timeInput = container.querySelector('input[type="time"]')!;
+    fireEvent.change(timeInput, { target: { value: '08:00' } });
+    // Uncheck Sunday (day 0) — days default to every day.
+    fireEvent.click(screen.getByText('Sun'));
+
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules', expect.objectContaining({
+        locationId: 'loc1',
+        runTimesLocal: ['08:00'],
+        daysOfWeek: [1, 2, 3, 4, 5, 6],
+        shortlinkMode: 'auto',
+      }));
+    });
+    // The one-off session endpoint must not also be called.
+    expect(axios.post).not.toHaveBeenCalledWith('/api/admin/sessions', expect.anything());
+  });
+
+  it('renders the Recurring Rules panel with pause/resume/delete actions and calls the right endpoints', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], rules: [RULE] }));
+    (axios.post as any).mockResolvedValue({ data: { ...RULE, isActive: false } });
+    (axios.delete as any).mockResolvedValue({ data: {} });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText(/Recurring Rules \(1\)/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText(/Recurring Rules \(1\)/i));
+    await waitFor(() => expect(screen.getByText('09:00, 13:30')).toBeInTheDocument());
+    expect(screen.getByText('Room 101')).toBeInTheDocument();
+    expect(screen.getByText('/s/morning-checkin')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Pause'));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules/rule1/pause');
+    });
+
+    fireEvent.click(screen.getByText('Delete'));
+    await waitFor(() => expect(screen.getByText(/Delete Recurring Rule/i)).toBeInTheDocument());
+    // Two "Delete" buttons are now on screen: the table row's and the
+    // confirm modal's — the modal's is the last one rendered.
+    const deleteButtons = screen.getAllByText('Delete');
+    fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith('/api/admin/recurring-rules/rule1');
+    });
+  });
+
+  it('resumes a paused rule via its Resume button', async () => {
+    const pausedRule = { ...RULE, isActive: false, lockedShortCode: undefined };
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], rules: [pausedRule] }));
+    (axios.post as any).mockResolvedValue({ data: { ...pausedRule, isActive: true } });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText(/Recurring Rules \(1\)/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/Recurring Rules \(1\)/i));
+    await waitFor(() => expect(screen.getByText('Resume')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Resume'));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules/rule1/resume');
+    });
   });
 
   it('deletes multiple selected sessions via the bulk-delete confirmation', async () => {

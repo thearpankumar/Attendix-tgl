@@ -156,11 +156,19 @@ pub async fn get_short_links(
         .and_then(|s| Uuid::parse_str(s).ok());
     let is_active_filter = query.is_active.as_deref().map(|s| s == "true");
 
+    // Codes locked to an active recurring rule are excluded here so the
+    // admin's "existing short code" picker never offers one that would 400
+    // if selected (see the guard in controllers::session::create_session) —
+    // pausing or deleting the owning rule frees the code again immediately.
     let links = sqlx::query_as::<_, ShortLink>(
         "SELECT * FROM short_links \
          WHERE ($1 = 'super_admin' OR created_by = $2) \
            AND ($3::uuid IS NULL OR session_id = $3) \
            AND ($4::bool IS NULL OR is_active = $4) \
+           AND NOT EXISTS ( \
+                SELECT 1 FROM recurring_session_rules r \
+                WHERE r.locked_short_code = short_links.short_code AND r.is_active = true \
+           ) \
          ORDER BY created_at DESC \
          OFFSET $5 LIMIT $6",
     )

@@ -75,9 +75,9 @@ function WebAuthnCredentials() {
     if (!reason.trim()) { toast.error('Please provide a reason'); return; }
     setActionLoading(true);
     try {
-      const res = await axios.post<{ message: string }>('/api/admin/webauthn/reset', { 
-        rollNumber: selectedStudent?.studentId, 
-        reason: reason.trim() 
+      const res = await axios.post<{ message: string }>('/api/admin/webauthn/reset', {
+        student_id: selectedStudent?.studentId,
+        reason: reason.trim()
       });
       toast.success(res.data.message); 
       setShowResetModal(false); 
@@ -96,9 +96,9 @@ function WebAuthnCredentials() {
     if (!reason.trim()) { toast.error('Please provide a reason'); return; }
     setActionLoading(true);
     try {
-      const res = await axios.post<{ message: string }>(`/api/admin/webauthn/${suspend ? 'suspend' : 'unsuspend'}`, { 
-        rollNumber: selectedStudent?.studentId, 
-        reason: reason.trim() 
+      const res = await axios.post<{ message: string }>(`/api/admin/webauthn/${suspend ? 'suspend' : 'unsuspend'}`, {
+        student_id: selectedStudent?.studentId,
+        reason: reason.trim()
       });
       toast.success(res.data.message); 
       setShowSuspendModal(false); 

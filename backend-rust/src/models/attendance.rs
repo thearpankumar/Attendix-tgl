@@ -8,6 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Attendance {
+    #[serde(rename = "_id")]
     pub id: Uuid,
     pub session_id: Uuid,
     pub student_name: String,
@@ -260,6 +261,86 @@ pub enum IntegrityCheckType {
 impl Attendance {
     pub fn table_name() -> &'static str {
         "attendances"
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+
+    // Regression test for the "selecting one student selects all" bug: this
+    // struct is `#[serde(flatten)]`-ed directly into `SessionAttendanceResponse`
+    // (controllers::admin::sessions), so if `id` ever loses its `_id` rename
+    // again, every admin SessionDetail row would collapse onto the same
+    // `undefined` selection key, exactly like before the fix.
+    #[test]
+    fn serializes_id_as_underscore_id_not_id() {
+        let attendance = Attendance {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            student_name: "Test Student".to_string(),
+            roll_number: "CS101".to_string(),
+            photo_url: "https://example.com/photo.jpg".to_string(),
+            photo_public_id: "photo-id".to_string(),
+            photo_hash: None,
+            photo_reuse_detected: false,
+            student_latitude: 12.9716,
+            student_longitude: 77.5946,
+            distance_from_location: 10.0,
+            ip_address: None,
+            user_agent: None,
+            network_provider: None,
+            network_org: None,
+            verified: false,
+            source: AttendanceSource::default(),
+            status: AttendanceStatus::default(),
+            marked_by_admin_id: None,
+            face_detected: true,
+            device_fingerprint: None,
+            device_fingerprint_hash: None,
+            device_first_seen: false,
+            totp_code: None,
+            totp_valid: None,
+            device_flag: None,
+            webauthn_credential_id: None,
+            webauthn_verified: false,
+            webauthn_device_type: None,
+            webauthn_authenticator_attachment: None,
+            webauthn_counter: None,
+            webauthn_replay_attack: false,
+            flag_reviewed: false,
+            flag_reviewed_by: None,
+            flag_reviewed_at: None,
+            flagged: false,
+            flag_reason: None,
+            flag_details: None,
+            captured_at: Utc::now(),
+            gps_accuracy: None,
+            gps_altitude: None,
+            gps_altitude_accuracy: None,
+            gps_speed: None,
+            gps_heading: None,
+            gps_timestamp: None,
+            gps_mock_location: false,
+            gps_provider: None,
+            gps_anomalies: Json(Vec::new()),
+            gps_confidence: None,
+            emulator_detected: false,
+            emulator_flags: Json(Vec::new()),
+            integrity_checks: Json(Vec::new()),
+        };
+
+        let value = serde_json::to_value(&attendance).expect("Attendance must serialize");
+        assert!(
+            value.get("_id").is_some(),
+            "Attendance JSON must have an \"_id\" key (was: {:?})",
+            value.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+        assert!(
+            value.get("id").is_none(),
+            "Attendance JSON must NOT have a plain \"id\" key alongside \"_id\""
+        );
+        assert_eq!(value["_id"], serde_json::json!(attendance.id));
     }
 }
 

@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router';
 import { toast } from 'react-toastify';
-import { ClipboardList, Sparkles, Link as LinkIcon, Pencil, AlertTriangle, FileSpreadsheet, Download } from 'lucide-react';
+import { ClipboardList, Sparkles, Link as LinkIcon, Pencil, AlertTriangle, FileSpreadsheet, Download, RefreshCw, Plus, X, Pause, Play, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
@@ -51,7 +51,43 @@ interface Session {
   attendancePercent?: number;
   batchId?: string;
   excelBatchId?: string;
+  recurringRuleId?: string;
 }
+
+interface RecurringRule {
+  _id: string;
+  locationId: string;
+  batchId?: string;
+  description?: string;
+  durationMinutes: number;
+  runTimesLocal: string[];
+  timezone: string;
+  daysOfWeek: number[];
+  isActive: boolean;
+  lockedShortCode?: string;
+  nextRunAt: string;
+  lastGeneratedAt?: string;
+  lastGeneratedSessionId?: string;
+  consecutiveFailures: number;
+  lastError?: string;
+  createdAt: string;
+}
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const COMMON_TIMEZONES = (() => {
+  try {
+    // Modern browsers only — falls back to a small curated list otherwise.
+    const values = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.('timeZone');
+    if (values && values.length > 0) return values;
+  } catch { /* fall through */ }
+  return ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'UTC'];
+})();
+
+const browserTimezone = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+  catch { return 'UTC'; }
+})();
 
 const getLocationName = (s: Session) => {
   if (s.locationName) return s.locationName;
@@ -109,9 +145,18 @@ const Sessions = () => {
     collegeName: '',
     startsDate: '',
     startsTime: '',
+    // Cron-job (recurring) fields — only used/shown when recurrence === 'cron'.
+    recurrence: 'once' as 'once' | 'cron',
+    runTimesLocal: ['09:00'] as string[],
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6] as number[],
+    timezone: browserTimezone,
   };
   const [formData, setFormData] = useState(emptyFormData);
   const [activeShortLinks, setActiveShortLinks] = useState<ShortLink[]>([]);
+  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
+  const [rulesExpanded, setRulesExpanded] = useState(false);
+  const [ruleDeleteId, setRuleDeleteId] = useState<string | null>(null);
+  const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
   const [reassignConfirm, setReassignConfirm] = useState({ open: false, shortCode: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
   const [deletePassword, setDeletePassword] = useState('');
@@ -157,7 +202,7 @@ const Sessions = () => {
       const { baseParams, filteredParams } = buildFilteredParams();
       const sessionsLimit = reset ? PAGE_SIZE : Math.max(PAGE_SIZE, sessionsOffsetRef.current);
 
-      const [sessionsRes, allSessionsRes, locationsRes, shortLinksRes, batchesRes, mentorsRes, overviewRes] =
+      const [sessionsRes, allSessionsRes, locationsRes, shortLinksRes, batchesRes, mentorsRes, overviewRes, rulesRes] =
         await Promise.all([
           axios.get<Session[]>('/api/admin/sessions', {
             params: { ...filteredParams, limit: sessionsLimit, offset: 0 },
@@ -175,6 +220,7 @@ const Sessions = () => {
             params: filteredParams,
             signal: abortRef.current.signal,
           }),
+          axios.get<RecurringRule[]>('/api/admin/recurring-rules', { signal: abortRef.current.signal }),
         ]);
       setSessions(sessionsRes.data);
       sessionsOffsetRef.current = sessionsRes.data.length;
@@ -189,10 +235,18 @@ const Sessions = () => {
       setAllBatches(batchesRes.data);
       setMentors(mentorsRes.data.filter((m) => m.role === 'admin' && m.isActive));
       setOverview(overviewRes.data);
+      setRecurringRules(rulesRes.data);
     } catch (error) {
       if ((error as { name?: string }).name !== 'CanceledError') toast.error('Failed to fetch data');
     } finally { setLoading(false); }
   }, []);
+
+  const fetchRecurringRules = async () => {
+    try {
+      const res = await axios.get<RecurringRule[]>('/api/admin/recurring-rules');
+      setRecurringRules(res.data);
+    } catch { toast.error('Failed to refresh recurring rules'); }
+  };
 
   // Scroll-triggered: fetches and appends the next page of sessions without
   // touching anything else (locations/batches/mentors/overview stay as-is).
@@ -273,6 +327,7 @@ const Sessions = () => {
       const duration = parseInt(String(formData.durationMinutes));
       if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
       const isExam = formData.sessionType === 'exam';
+      const isCron = !isExam && formData.recurrence === 'cron';
       if (isExam) {
         if (!formData.batchId) { toast.error('A batch is required for an exam session'); return; }
         if (formData.assignedAdminIds.length === 0) { toast.error('Assign at least one mentor to this exam session'); return; }
@@ -282,18 +337,45 @@ const Sessions = () => {
         toast.error('A location is required for a self check-in session');
         return;
       }
+      if (isCron) {
+        if (formData.runTimesLocal.length === 0) { toast.error('Add at least one time of day'); return; }
+        if (formData.daysOfWeek.length === 0) { toast.error('Select at least one day of the week'); return; }
+      }
       if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
         toast.error('Please select an existing short link, or switch to a different mode.');
         return;
       }
 
-      // Check for reassigning existing short link confirmation
-      if (formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
+      // Check for reassigning existing short link confirmation — cron rules
+      // always reject an already-locked code server-side, so this
+      // reassignment flow only ever applies to the one-off path.
+      if (!isCron && formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
         const selectedLink = activeShortLinks.find(l => l.shortCode === formData.existingShortCode);
         if (selectedLink && selectedLink.sessionId) {
           setReassignConfirm({ open: true, shortCode: formData.existingShortCode });
           return;
         }
+      }
+
+      if (isCron) {
+        await axios.post('/api/admin/recurring-rules', {
+          locationId: formData.locationId,
+          batchId: formData.batchId || undefined,
+          description: formData.description,
+          durationMinutes: duration,
+          runTimesLocal: formData.runTimesLocal,
+          timezone: formData.timezone,
+          daysOfWeek: formData.daysOfWeek,
+          shortlinkMode: formData.shortlinkMode,
+          customShortCode: formData.customShortCode.trim() || undefined,
+          existingShortCode: formData.existingShortCode || undefined,
+        });
+        toast.success('Recurring session rule created — it will start generating sessions at its scheduled times.');
+        setShowModal(false);
+        setFormData(emptyFormData);
+        setRulesExpanded(true);
+        fetchData();
+        return;
       }
 
       const res = await axios.post<{ _id: string; shortCode?: string }>('/api/admin/sessions', {
@@ -332,6 +414,65 @@ const Sessions = () => {
       const err = error as { response?: { data?: { message?: string; error?: string } } };
       toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to create session');
     }
+  };
+
+  const handlePauseRule = async (id: string) => {
+    setRuleBusyId(id);
+    try {
+      await axios.post(`/api/admin/recurring-rules/${id}/pause`);
+      toast.success('Rule paused — its locked link (if any) is now free to reuse');
+      fetchRecurringRules();
+    } catch { toast.error('Failed to pause rule'); }
+    finally { setRuleBusyId(null); }
+  };
+
+  const handleResumeRule = async (id: string) => {
+    setRuleBusyId(id);
+    try {
+      await axios.post(`/api/admin/recurring-rules/${id}/resume`);
+      toast.success('Rule resumed');
+      fetchRecurringRules();
+    } catch { toast.error('Failed to resume rule'); }
+    finally { setRuleBusyId(null); }
+  };
+
+  const handleDeleteRule = async () => {
+    if (!ruleDeleteId) return;
+    setRuleBusyId(ruleDeleteId);
+    try {
+      await axios.delete(`/api/admin/recurring-rules/${ruleDeleteId}`);
+      toast.success('Recurring rule deleted');
+      setRuleDeleteId(null);
+      fetchRecurringRules();
+    } catch { toast.error('Failed to delete rule'); }
+    finally { setRuleBusyId(null); }
+  };
+
+  const toggleFormDay = (day: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      daysOfWeek: prev.daysOfWeek.includes(day)
+        ? prev.daysOfWeek.filter((d) => d !== day)
+        : [...prev.daysOfWeek, day].sort((a, b) => a - b),
+    }));
+  };
+
+  const updateRunTime = (index: number, value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      runTimesLocal: prev.runTimesLocal.map((t, i) => (i === index ? value : t)),
+    }));
+  };
+
+  const addRunTime = () => {
+    setFormData((prev) => ({ ...prev, runTimesLocal: [...prev.runTimesLocal, '09:00'] }));
+  };
+
+  const removeRunTime = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      runTimesLocal: prev.runTimesLocal.length > 1 ? prev.runTimesLocal.filter((_, i) => i !== index) : prev.runTimesLocal,
+    }));
   };
 
   const handleDeactivate = async (id: string) => {
@@ -434,7 +575,16 @@ const Sessions = () => {
         aria-label={`Select session ${s._id}`}
       />
     )},
-    { key: 'location', label: 'Location',   width: '12%', render: (s) => getLocationName(s) },
+    { key: 'location', label: 'Location',   width: '12%', render: (s) => (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        {getLocationName(s)}
+        {s.recurringRuleId && (
+          <span title="Auto-generated by a recurring rule" style={{ display: 'inline-flex' }}>
+            <RefreshCw size={12} color="var(--color-primary, #4f46e5)" />
+          </span>
+        )}
+      </span>
+    ) },
     { key: 'college',  label: 'College',    width: '12%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'mentor',   label: 'Mentor',     width: '11%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'status',   label: 'Status',     width: '8%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
@@ -464,12 +614,61 @@ const Sessions = () => {
             <FileSpreadsheet size={15} style={{ marginRight: 6, verticalAlign: -2 }} />
             Upload Excel
           </button>
+          <button className="btn btn-secondary" onClick={() => setRulesExpanded((v) => !v)}>
+            <RefreshCw size={15} style={{ marginRight: 6, verticalAlign: -2 }} />
+            Recurring Rules {recurringRules.length > 0 ? `(${recurringRules.length})` : ''}
+            {rulesExpanded ? <ChevronUp size={14} style={{ marginLeft: 6, verticalAlign: -2 }} /> : <ChevronDown size={14} style={{ marginLeft: 6, verticalAlign: -2 }} />}
+          </button>
         </PageHeader>
         <SessionFilters locations={locations} onFilterChange={handleFilterChange} />
       </div>
 
       {locations.length === 0 && (
         <div className="card"><p>No locations found. <Link to="/locations">Create one</Link> if you need a self check-in (normal) session — exam sessions don't require a location.</p></div>
+      )}
+
+      {rulesExpanded && (
+        <div className="card card-table mb-4">
+          {recurringRules.length === 0 ? (
+            <div style={{ padding: '1.25rem', color: 'var(--color-muted)', fontSize: '0.88rem' }}>
+              No recurring rules yet. Create a session and choose "Cron job (recurring)" to set one up.
+            </div>
+          ) : (
+            <DataTable
+              rowKey={(r) => r._id}
+              rows={recurringRules}
+              columns={[
+                { key: 'location', label: 'Location', width: '14%', render: (r) => locations.find((l) => l._id === r.locationId)?.name || 'Unknown' },
+                { key: 'times', label: 'Times', width: '16%', render: (r) => r.runTimesLocal.join(', ') },
+                { key: 'days', label: 'Days', width: '16%', render: (r) => r.daysOfWeek.length === 7 ? 'Every day' : r.daysOfWeek.map((d) => DAY_LABELS[d]).join(', ') },
+                { key: 'timezone', label: 'Timezone', width: '13%', render: (r) => r.timezone },
+                { key: 'link', label: 'Locked Link', width: '11%', render: (r) => r.lockedShortCode ? `/s/${r.lockedShortCode}` : <span style={{ color: 'var(--color-muted)' }}>—</span> },
+                { key: 'next', label: 'Next Run', width: '13%', render: (r) => r.isActive ? new Date(r.nextRunAt).toLocaleString() : <span style={{ color: 'var(--color-muted)' }}>Paused</span> },
+                { key: 'status', label: 'Status', width: '8%', render: (r) => {
+                  if (!r.isActive) return <Badge tone="neutral">Paused</Badge>;
+                  if (r.consecutiveFailures > 0) return <Badge tone="warning">Attention</Badge>;
+                  return <Badge tone="success">Active</Badge>;
+                } },
+                { key: 'actions', label: 'Actions', width: '9%', render: (r) => (
+                  <div className="actions-cell">
+                    {r.isActive ? (
+                      <Button variant="secondary" size="sm" disabled={ruleBusyId === r._id} onClick={() => handlePauseRule(r._id)}>
+                        <Pause size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Pause
+                      </Button>
+                    ) : (
+                      <Button variant="secondary" size="sm" disabled={ruleBusyId === r._id} onClick={() => handleResumeRule(r._id)}>
+                        <Play size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Resume
+                      </Button>
+                    )}
+                    <Button variant="delete" size="sm" disabled={ruleBusyId === r._id} onClick={() => setRuleDeleteId(r._id)}>
+                      <Trash2 size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Delete
+                    </Button>
+                  </div>
+                ) },
+              ]}
+            />
+          )}
+        </div>
       )}
 
       <SessionStatsOverview overview={overview} />
@@ -561,6 +760,90 @@ const Sessions = () => {
               </select>
             </div>
           )}
+
+          {formData.sessionType === 'normal' && (
+            <div className="form-group">
+              <label>Cadence</label>
+              <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
+                {(['once', 'cron'] as const).map((mode) => (
+                  <label key={mode} style={{
+                    flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
+                    borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                    border: `1.5px solid ${
+                      formData.recurrence === mode ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'
+                    }`,
+                    background: formData.recurrence === mode ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                    color: formData.recurrence === mode ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                    transition: 'all 0.15s',
+                    userSelect: 'none',
+                  }}>
+                    <input type="radio" name="recurrence" value={mode}
+                      checked={formData.recurrence === mode}
+                      onChange={() => setFormData({ ...formData, recurrence: mode })}
+                      style={{ display: 'none' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                      {mode === 'cron' && <RefreshCw size={14} />}
+                      <span>{mode === 'once' ? 'One-time' : 'Cron job (recurring)'}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {formData.recurrence === 'cron' && (
+                <small style={{ color: 'var(--color-muted)' }}>
+                  A new session for this location is created automatically at each time below, on the selected days.
+                </small>
+              )}
+            </div>
+          )}
+
+          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
+            <>
+              <div className="form-group">
+                <label>Time(s) of day</label>
+                {formData.runTimesLocal.map((t, i) => (
+                  <div key={i} style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', marginBottom: '0.4rem' }}>
+                    <input type="time" value={t} onChange={(e) => updateRunTime(i, e.target.value)} required style={{ flex: 1 }} />
+                    {formData.runTimesLocal.length > 1 && (
+                      <button type="button" className="btn btn-secondary btn-small" onClick={() => removeRunTime(i)} aria-label="Remove time">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" className="btn btn-secondary btn-small" onClick={addRunTime}>
+                  <Plus size={14} style={{ marginRight: 4, verticalAlign: -2 }} />
+                  Add another time
+                </button>
+              </div>
+
+              <div className="form-group">
+                <label>Days of week</label>
+                <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.375rem', flexWrap: 'wrap' }}>
+                  {DAY_LABELS.map((label, day) => (
+                    <label key={day} style={{
+                      padding: '0.4rem 0.6rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                      border: `1.5px solid ${formData.daysOfWeek.includes(day) ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'}`,
+                      background: formData.daysOfWeek.includes(day) ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                      color: formData.daysOfWeek.includes(day) ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                      userSelect: 'none',
+                    }}>
+                      <input type="checkbox" checked={formData.daysOfWeek.includes(day)} onChange={() => toggleFormDay(day)} style={{ display: 'none' }} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="session-timezone">Timezone</label>
+                <select id="session-timezone" value={formData.timezone} onChange={(e) => setFormData({ ...formData, timezone: e.target.value })} required>
+                  {!COMMON_TIMEZONES.includes(formData.timezone) && <option value={formData.timezone}>{formData.timezone}</option>}
+                  {COMMON_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+                </select>
+              </div>
+            </>
+          )}
+
           <div className="form-group">
             <label>Duration (minutes)</label>
             <input type="number" value={formData.durationMinutes} onChange={(e) => setFormData({ ...formData, durationMinutes: parseInt(e.target.value) })} min="5" max="480" required />
@@ -652,7 +935,13 @@ const Sessions = () => {
           </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.shortlinkMode === 'auto' && (
+          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
+              This link will be locked to the rule — it always redirects to whichever occurrence is currently active, and can't be picked for another one-off session while the rule is active. Pausing or deleting the rule frees it again.
+            </p>
+          )}
+
+          {formData.sessionType === 'normal' && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               A random 6-character link will be created and copied to your clipboard.
             </p>
@@ -698,7 +987,9 @@ const Sessions = () => {
             </div>
           )}
           <div className="form-actions">
-            <button type="submit" className="btn btn-success">Create Session</button>
+            <button type="submit" className="btn btn-success">
+              {formData.sessionType === 'normal' && formData.recurrence === 'cron' ? 'Create Recurring Rule' : 'Create Session'}
+            </button>
             <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
           </div>
         </form>
@@ -754,6 +1045,15 @@ const Sessions = () => {
         confirmText="Deactivate"
         onConfirm={() => deactivateId && handleDeactivate(deactivateId)}
         onCancel={() => setDeactivateId(null)}
+      />
+
+      <ConfirmModal
+        isOpen={!!ruleDeleteId}
+        title="Delete Recurring Rule"
+        message="Are you sure you want to delete this recurring rule? It will stop generating new sessions, and its locked link (if any) will be freed for reuse. Sessions it already created are not affected."
+        confirmText="Delete"
+        onConfirm={handleDeleteRule}
+        onCancel={() => setRuleDeleteId(null)}
       />
 
       <Modal open={reassignConfirm.open} onClose={() => setReassignConfirm({ open: false, shortCode: '' })} title="">

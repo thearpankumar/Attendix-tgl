@@ -222,6 +222,24 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/excel-sessions/commit",
             post(crate::controllers::commit_excel_sessions),
         )
+        .route(
+            "/recurring-rules",
+            get(crate::controllers::get_recurring_rules)
+                .post(crate::controllers::create_recurring_rule),
+        )
+        .route(
+            "/recurring-rules/{id}",
+            patch(crate::controllers::update_recurring_rule)
+                .delete(crate::controllers::delete_recurring_rule),
+        )
+        .route(
+            "/recurring-rules/{id}/pause",
+            post(crate::controllers::pause_recurring_rule),
+        )
+        .route(
+            "/recurring-rules/{id}/resume",
+            post(crate::controllers::resume_recurring_rule),
+        )
         // Middleware execution order (innermost applied last, runs first):
         // 1. admin_rate_limit  — outermost, applied first, limits traffic
         // 2. auth              — validates the HttpOnly cookie / Bearer token

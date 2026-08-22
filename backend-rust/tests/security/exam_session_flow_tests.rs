@@ -36,7 +36,7 @@ use attendance_geotag_backend::{
 };
 use tokio::sync::RwLock;
 
-async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
+pub(crate) async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let db = crate::test_db::get_test_database().await;
     let config = AppConfig::for_testing();
 
@@ -107,7 +107,7 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
 
 /// A logged-in test client: holds the auth + CSRF cookies and builds
 /// authenticated requests the way the real admin/mentor frontends do.
-struct Client {
+pub(crate) struct Client {
     admin_token: String,
     csrf_token: String,
 }
@@ -115,7 +115,7 @@ struct Client {
 impl Client {
     /// Bootstraps or logs in, then makes one GET to pick up a fresh CSRF
     /// cookie (mirrors the real frontend: any page load re-issues one).
-    async fn login(app: &axum::Router, username: &str, password: &str) -> Self {
+    pub(crate) async fn login(app: &axum::Router, username: &str, password: &str) -> Self {
         let response = app
             .clone()
             .oneshot(
@@ -181,7 +181,7 @@ impl Client {
         (status, json_body(response).await)
     }
 
-    async fn mutate(
+    pub(crate) async fn mutate(
         &self,
         app: &axum::Router,
         method: &str,
@@ -256,7 +256,7 @@ fn unique(prefix: &str) -> String {
 /// test database, so only one test can safely exercise that endpoint's
 /// bootstrap path without racing every other test that also wants a
 /// super_admin to log in as (see `register_bootstraps_super_admin_then_locks_itself`).
-async fn seed_admin(
+pub(crate) async fn seed_admin(
     pool: &sqlx::PgPool,
     username: &str,
     email: &str,

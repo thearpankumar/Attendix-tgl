@@ -324,6 +324,7 @@ mod export_session_ownership_tests {
             rotation_count: 0,
             totp_secret: None,
             created_at: Utc::now(),
+            recurring_rule_id: None,
         };
 
         // Session should have created_by field

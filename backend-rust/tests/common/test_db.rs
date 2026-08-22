@@ -194,7 +194,8 @@ pub async fn cleanup_test_db(pool: &sqlx::PgPool) {
         let _ = sqlx::query(
             "TRUNCATE TABLE admins, locations, batches, students, sessions, attendances, \
              devices, device_fingerprints, flags, photo_hashes, short_links, system_configs, \
-             webauthn_challenges, webauthn_credentials, webauthn_reenrollment_logs \
+             webauthn_challenges, webauthn_credentials, webauthn_reenrollment_logs, \
+             recurring_session_rules \
              RESTART IDENTITY CASCADE",
         )
         .execute(&pool)

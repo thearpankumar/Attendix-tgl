@@ -1,0 +1,109 @@
+use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringSessionRule {
+    #[serde(rename = "_id")]
+    pub id: Uuid,
+    pub location_id: Uuid,
+    pub batch_id: Option<Uuid>,
+    pub description: Option<String>,
+    pub duration_minutes: i32,
+    pub run_times_local: Vec<NaiveTime>,
+    pub timezone: String,
+    /// 0=Sunday..6=Saturday, matching `chrono::Weekday::num_days_from_sunday`.
+    pub days_of_week: Vec<i16>,
+    pub is_active: bool,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub locked_short_code: Option<String>,
+    pub next_run_at: DateTime<Utc>,
+    pub last_generated_at: Option<DateTime<Utc>>,
+    pub last_generated_session_id: Option<Uuid>,
+    pub claimed_by: Option<String>,
+    pub claimed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub consecutive_failures: i32,
+    pub last_error: Option<String>,
+}
+
+/// A rule is auto-paused once it fails this many generation attempts in a
+/// row (e.g. its location was deleted out from under it), so a broken rule
+/// doesn't burn a query every scheduler tick forever.
+pub const RECURRING_RULE_MAX_CONSECUTIVE_FAILURES: i32 = 3;
+
+impl RecurringSessionRule {
+    pub fn table_name() -> &'static str {
+        "recurring_session_rules"
+    }
+
+    /// Computes the next UTC instant strictly after `after` that matches
+    /// this rule's `days_of_week` + `run_times_local`, interpreted in
+    /// `timezone`. Always looks forward from `after` (never from the rule's
+    /// original schedule) -- this is what makes a missed window (e.g. the
+    /// whole fleet was down at the scheduled time) simply skip to the next
+    /// future slot instead of backfilling.
+    ///
+    /// Scans up to 8 days ahead -- a week plus one day of slack -- so it
+    /// always finds a match even when every allowed day's times for the
+    /// current week have already passed.
+    pub fn next_occurrence_after(&self, after: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
+        Self::compute_next_run_at(
+            &self.days_of_week,
+            &self.run_times_local,
+            &self.timezone,
+            after,
+        )
+    }
+
+    /// Free-function form of the above, usable before a `RecurringSessionRule`
+    /// row exists yet (e.g. computing the initial `next_run_at` when a rule
+    /// is first created).
+    pub fn compute_next_run_at(
+        days_of_week: &[i16],
+        run_times_local: &[NaiveTime],
+        timezone: &str,
+        after: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>, String> {
+        let tz: chrono_tz::Tz = timezone
+            .parse()
+            .map_err(|_| format!("Unknown timezone: {}", timezone))?;
+
+        let start_date = after.with_timezone(&tz).date_naive();
+        let mut candidates: Vec<DateTime<Utc>> = Vec::new();
+
+        for day_offset in 0..8i64 {
+            let candidate_date = start_date + Duration::days(day_offset);
+            let weekday_num = candidate_date.weekday().num_days_from_sunday() as i16;
+            if !days_of_week.contains(&weekday_num) {
+                continue;
+            }
+            for &time in run_times_local {
+                let naive = candidate_date.and_time(time);
+                let candidate_utc = match tz.from_local_datetime(&naive) {
+                    chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+                    // "Fall back" DST ambiguity (this local time occurs
+                    // twice) -- deterministically take the earlier instant.
+                    chrono::LocalResult::Ambiguous(earlier, _later) => earlier.with_timezone(&Utc),
+                    // "Spring forward" DST gap (this local time never
+                    // happens on this date) -- skip it rather than guessing.
+                    chrono::LocalResult::None => continue,
+                };
+                if candidate_utc > after {
+                    candidates.push(candidate_utc);
+                }
+            }
+        }
+
+        candidates.into_iter().min().ok_or_else(|| {
+            format!(
+                "Could not find a next occurrence within 8 days \
+                 (days_of_week={:?}, run_times_local={:?}, timezone={})",
+                days_of_week, run_times_local, timezone
+            )
+        })
+    }
+}

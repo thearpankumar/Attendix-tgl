@@ -155,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     spawn_webauthn_challenge_cleanup(state.db.clone());
+    attendance_geotag_backend::services::spawn_recurring_session_scheduler(state.db.clone());
 
     // Fail closed: every configured origin must parse. Previously this used
     // `filter_map(..ok())`, so a single typo silently emptied the list and the

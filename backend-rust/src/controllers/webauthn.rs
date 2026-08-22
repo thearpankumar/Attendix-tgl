@@ -421,7 +421,47 @@ pub async fn get_webauthn_stats(
 #[cfg(test)]
 mod payload_tests {
 
+    use super::{ResetCredentialRequest, SuspendCredentialRequest, UnsuspendCredentialRequest};
     use serde_json::json;
+
+    // Regression tests for the "missing field student_id" bug: the admin
+    // frontend (WebAuthnCredentials.tsx) used to send `{ rollNumber, reason }`
+    // while these three request structs required `student_id`, so every
+    // reset/suspend/unsuspend request failed deserialization outright. The
+    // fix was on the frontend (send `student_id`), but pinning the contract
+    // here means a future frontend change back to the wrong key name is
+    // caught by a failing test instead of a live 400 in production.
+
+    #[test]
+    fn reset_credential_request_requires_student_id_key() {
+        let body = json!({ "student_id": "CS101", "reason": "lost device" });
+        let parsed: ResetCredentialRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(parsed.student_id, "CS101");
+        assert_eq!(parsed.reason.as_deref(), Some("lost device"));
+    }
+
+    #[test]
+    fn reset_credential_request_rejects_the_old_rollnumber_key() {
+        let body = json!({ "rollNumber": "CS101", "reason": "lost device" });
+        assert!(
+            serde_json::from_value::<ResetCredentialRequest>(body).is_err(),
+            "a payload keyed by rollNumber must fail to deserialize -- this is exactly the bug that was fixed"
+        );
+    }
+
+    #[test]
+    fn suspend_credential_request_requires_student_id_key() {
+        let body = json!({ "student_id": "CS102", "reason": "suspicious activity" });
+        let parsed: SuspendCredentialRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(parsed.student_id, "CS102");
+    }
+
+    #[test]
+    fn unsuspend_credential_request_requires_student_id_key() {
+        let body = json!({ "student_id": "CS103", "reason": "cleared" });
+        let parsed: UnsuspendCredentialRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(parsed.student_id, "CS103");
+    }
 
     #[test]
     fn test_get_credentials_payload_structure() {
