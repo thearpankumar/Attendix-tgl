@@ -118,3 +118,8 @@ public/models/blaze_face_short_range.tflite
 cargo-timing.html
 .cargo/config.toml.local
 
+#Agent files
+CLAUDE.md
+AGENTS.md
+DESIGN.md
+.claude/

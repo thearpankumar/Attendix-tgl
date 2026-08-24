@@ -35,8 +35,9 @@ pub struct WebAuthnStatusResponse {
 }
 
 /// Loads the active short link + its (active, unexpired) session for a scan flow.
-/// Shared by every endpoint below that starts from a `short_code`.
-async fn load_active_short_link_and_session(
+/// Shared by every endpoint below that starts from a `short_code`, and by
+/// `controllers::telemetry::ingest_telemetry` (hence `pub(crate)`).
+pub(crate) async fn load_active_short_link_and_session(
     pool: &sqlx::PgPool,
     short_code: &str,
 ) -> Result<(ShortLink, Session)> {
@@ -89,31 +90,45 @@ async fn insert_webauthn_challenge(
     Ok(())
 }
 
-/// Consumes a pending ceremony, enforcing single use and binding to the short
-/// code the request arrived on.
+/// Consumes a pending ceremony by its own primary key, enforcing single use
+/// and binding to the short code the request arrived on.
 ///
-/// The old implementation matched on the challenge string alone, with no
-/// `short_code` or `session_id` predicate, so a challenge issued for one
-/// session could be replayed against another. It also let the request body's
-/// roll number override the challenge's own subject.
+/// The old implementation picked the single most-recently-created, unused
+/// challenge row for a given `short_code` + `challenge_type` with no
+/// per-ceremony correlation (`ORDER BY created_at DESC LIMIT 1`). If two
+/// ceremonies were in flight on the same short_code at once (e.g. two
+/// students authenticating near-simultaneously), whichever finished second
+/// could consume the wrong challenge — the one meant for the other ceremony
+/// — and fail with a confusing "Biometric verification failed", or worse,
+/// silently attribute one ceremony's result to the wrong subject. The
+/// `start_*` endpoints now hand the challenge's own `id` back to the client
+/// as `challengeId`, and the `finish_*` endpoints must return it here for a
+/// direct primary-key lookup — an unambiguous correlation with no identity
+/// semantics of its own (it is not, and must never become, a substitute for
+/// resolving the subject from the matched row's own `student_id`).
+///
+/// A plain `UPDATE ... WHERE id = $1 AND used = false ...` is already
+/// atomic against a concurrent double-finish of the *same* challenge_id:
+/// Postgres locks the row for the first transaction to reach it; the second
+/// blocks until the first commits, then re-evaluates the WHERE clause
+/// against the now-committed row (`used = true`) and matches zero rows. No
+/// `FOR UPDATE SKIP LOCKED` is needed — that was only required by the old
+/// "pick a candidate from many rows" query to avoid blocking on rows a
+/// concurrent ceremony was already holding; a single row addressed by
+/// primary key has nothing to skip.
 async fn take_pending_challenge(
     pool: &sqlx::PgPool,
+    challenge_id: Uuid,
     short_code: &str,
     challenge_type: WebAuthnChallengeType,
 ) -> Result<Option<WebAuthnChallenge>> {
-    // `FOR UPDATE SKIP LOCKED` + the `used` flip in one statement makes
-    // consumption atomic, so two concurrent finishes cannot both succeed.
     let challenge: Option<WebAuthnChallenge> = sqlx::query_as(
         "UPDATE webauthn_challenges SET used = true \
-         WHERE id = ( \
-             SELECT id FROM webauthn_challenges \
-             WHERE short_code = $1 AND challenge_type = $2 \
-               AND used = false AND expires_at > now() AND state IS NOT NULL \
-             ORDER BY created_at DESC \
-             LIMIT 1 FOR UPDATE SKIP LOCKED \
-         ) \
+         WHERE id = $1 AND short_code = $2 AND challenge_type = $3 \
+           AND used = false AND expires_at > now() AND state IS NOT NULL \
          RETURNING *",
     )
+    .bind(challenge_id)
     .bind(short_code.to_lowercase())
     .bind(&challenge_type)
     .fetch_optional(pool)
@@ -181,6 +196,19 @@ pub async fn get_webauthn_status(
 pub struct RegistrationStartRequest {
     pub roll_number: String,
     pub student_name: String,
+}
+
+/// Flattens webauthn-rs's `PublicKeyCredentialCreationOptions` (matching the
+/// old @simplewebauthn/server flat-options contract the frontend expects —
+/// see `start_registration`'s comment) and adds the ceremony's own row id so
+/// `finish_registration` can be told, unambiguously, which pending challenge
+/// this ceremony belongs to instead of guessing the most recent one.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistrationStartResponse {
+    #[serde(flatten)]
+    options: webauthn_rs_proto::PublicKeyCredentialCreationOptions,
+    challenge_id: Uuid,
 }
 
 pub async fn start_registration(
@@ -276,6 +304,7 @@ pub async fn start_registration(
         created_at: Utc::now(),
     };
 
+    let challenge_id = webauthn_challenge.id;
     insert_webauthn_challenge(&state.db, &webauthn_challenge).await?;
 
     tracing::info!(
@@ -289,7 +318,10 @@ pub async fn start_registration(
     // CredentialCreationOptions shape. The frontend expects the flat options
     // object directly (matching the old @simplewebauthn/server contract), so
     // unwrap it here rather than at every call site.
-    Ok(Json(creation_challenge.public_key))
+    Ok(Json(RegistrationStartResponse {
+        options: creation_challenge.public_key,
+        challenge_id,
+    }))
 }
 
 // =================== Registration Finish ===================
@@ -300,6 +332,11 @@ pub struct RegistrationFinishRequest {
     /// Parsed and verified by `webauthn-rs`. The roll number is deliberately
     /// not accepted here — it is taken from the server-issued challenge.
     pub credential: webauthn_rs::prelude::RegisterPublicKeyCredential,
+    /// The `challengeId` `start_registration` returned. Required — this is
+    /// what correlates this finish call with its own pending challenge row
+    /// instead of guessing the most recently created one. See
+    /// `take_pending_challenge`'s doc comment for why that guess was unsafe.
+    pub challenge_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -315,12 +352,14 @@ pub async fn finish_registration(
     Path(short_code): Path<String>,
     Json(payload): Json<RegistrationFinishRequest>,
 ) -> Result<impl IntoResponse> {
-    let stored_challenge =
-        take_pending_challenge(&state.db, &short_code, WebAuthnChallengeType::Registration)
-            .await?
-            .ok_or_else(|| {
-                AppError::BadRequest("No valid registration challenge found".to_string())
-            })?;
+    let stored_challenge = take_pending_challenge(
+        &state.db,
+        payload.challenge_id,
+        &short_code,
+        WebAuthnChallengeType::Registration,
+    )
+    .await?
+    .ok_or_else(|| AppError::BadRequest("No valid registration challenge found".to_string()))?;
 
     // The subject comes from the challenge the server issued, never from the
     // request body. Previously the body's roll number took precedence, so a
@@ -399,6 +438,17 @@ pub struct AuthenticationStartRequest {
     pub roll_number: String,
 }
 
+/// Flattens webauthn-rs's `PublicKeyCredentialRequestOptions` and adds the
+/// ceremony's own row id — see `RegistrationStartResponse`'s comment. Shared
+/// by `start_authentication` and `start_conditional_authentication`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticationStartResponse {
+    #[serde(flatten)]
+    options: webauthn_rs_proto::PublicKeyCredentialRequestOptions,
+    challenge_id: Uuid,
+}
+
 pub async fn start_authentication(
     State(state): State<Arc<AppState>>,
     Path(short_code): Path<String>,
@@ -450,11 +500,15 @@ pub async fn start_authentication(
         created_at: Utc::now(),
     };
 
+    let challenge_id = webauthn_challenge.id;
     insert_webauthn_challenge(&state.db, &webauthn_challenge).await?;
 
     // See start_registration's comment: unwrap webauthn-rs's `publicKey`
     // envelope to match the flat options shape the frontend expects.
-    Ok(Json(request_challenge.public_key))
+    Ok(Json(AuthenticationStartResponse {
+        options: request_challenge.public_key,
+        challenge_id,
+    }))
 }
 
 // =================== Conditional Authentication ===================
@@ -493,9 +547,13 @@ pub async fn start_conditional_authentication(
         created_at: Utc::now(),
     };
 
+    let challenge_id = webauthn_challenge.id;
     insert_webauthn_challenge(&state.db, &webauthn_challenge).await?;
 
-    Ok(Json(request_challenge.public_key))
+    Ok(Json(AuthenticationStartResponse {
+        options: request_challenge.public_key,
+        challenge_id,
+    }))
 }
 
 /// Base64url-encodes without padding, matching the WebAuthn wire format.
@@ -532,6 +590,140 @@ fn transport_labels(credential: &webauthn_rs::prelude::RegisterPublicKeyCredenti
         .unwrap_or_default()
 }
 
+// =================== Shared assertion verification ===================
+// The two functions below are the entire "verify a signed passkey assertion"
+// core, factored out so `finish_authentication` (attendance submission) and
+// `controllers::extension_pairing::finish_pairing_authentication` (Phase 3
+// device pairing) share one implementation of the actual WebAuthn crypto
+// rather than each doing its own. Everything downstream of a successful
+// verification (GPS/photo/attendance-row-creation for the former,
+// pairing-request completion for the latter) stays specific to each caller.
+
+/// Consumes the pending authentication challenge for `short_code` and
+/// resolves which student it belongs to — either fixed (a targeted
+/// ceremony) or derived from the assertion's user handle (a discoverable /
+/// "conditional UI" ceremony).
+pub(crate) async fn resolve_authentication_subject(
+    state: &AppState,
+    short_code: &str,
+    challenge_id: Uuid,
+    credential: &webauthn_rs::prelude::PublicKeyCredential,
+) -> Result<(String, WebAuthnChallenge)> {
+    let stored_challenge = take_pending_challenge(
+        &state.db,
+        challenge_id,
+        short_code,
+        WebAuthnChallengeType::Authentication,
+    )
+    .await?
+    .ok_or_else(|| AppError::BadRequest("No valid authentication challenge found".to_string()))?;
+
+    let roll_upper = if stored_challenge.student_id.is_empty() {
+        let (user_handle, _cred_id) = state
+            .webauthn
+            .identify_discoverable_authentication(credential)
+            .map_err(|e| {
+                tracing::warn!("Discoverable authentication could not be identified: {e}");
+                AppError::BadRequest("Passkey could not be identified".to_string())
+            })?;
+
+        sqlx::query_scalar::<_, String>(
+            "SELECT student_id FROM webauthn_credentials WHERE user_handle = $1",
+        )
+        .bind(user_handle)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?
+    } else {
+        stored_challenge.student_id.clone()
+    }
+    .to_uppercase();
+
+    Ok((roll_upper, stored_challenge))
+}
+
+/// Verifies the signed assertion against `roll_upper`'s stored credential,
+/// enforces user-verification, and records the successful ceremony (counter,
+/// `last_used_at`, `last_session_id`). Returns the credential row and the
+/// authenticator's reported signature counter (callers that persist their
+/// own record of "which counter did we see" — e.g. the attendance row — read
+/// it from here rather than re-deriving it).
+pub(crate) async fn verify_passkey_assertion(
+    state: &AppState,
+    roll_upper: &str,
+    stored_challenge: &WebAuthnChallenge,
+    credential: &webauthn_rs::prelude::PublicKeyCredential,
+    session_id: Uuid,
+) -> Result<(WebAuthnCredential, u32)> {
+    let stored_credential: WebAuthnCredential =
+        sqlx::query_as("SELECT * FROM webauthn_credentials WHERE student_id = $1")
+            .bind(roll_upper)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?;
+
+    if stored_credential.is_suspended {
+        return Err(AppError::BadRequest("Credential is suspended".to_string()));
+    }
+
+    let passkey = decode_passkey(&stored_credential)?;
+
+    let auth_result = if stored_challenge.student_id.is_empty() {
+        let auth_state: webauthn_rs::prelude::DiscoverableAuthentication =
+            ceremony_state(stored_challenge)?;
+        let discoverable_key = webauthn_rs::prelude::DiscoverableKey::from(&passkey);
+        state.webauthn.finish_discoverable_authentication(
+            credential,
+            auth_state,
+            &[discoverable_key],
+        )
+    } else {
+        let auth_state: webauthn_rs::prelude::PasskeyAuthentication =
+            ceremony_state(stored_challenge)?;
+        state
+            .webauthn
+            .finish_passkey_authentication(credential, &auth_state)
+    }
+    .map_err(|e| {
+        tracing::warn!(
+            roll_number = %roll_upper,
+            session_id = %session_id,
+            "WebAuthn assertion rejected: {e}"
+        );
+        AppError::Unauthorized("Biometric verification failed".to_string())
+    })?;
+
+    if !auth_result.user_verified() {
+        return Err(AppError::Unauthorized(
+            "Biometric verification required. Please use Face ID, Touch ID, or device PIN."
+                .to_string(),
+        ));
+    }
+
+    // webauthn-rs raises this when the authenticator's signature counter went
+    // backwards, which means the credential has been cloned.
+    if auth_result.needs_update() && auth_result.counter() > 0 {
+        tracing::info!(
+            roll_number = %roll_upper,
+            "WebAuthn credential counter advanced; state will be refreshed"
+        );
+    }
+
+    let counter = auth_result.counter();
+    sqlx::query(
+        "UPDATE webauthn_credentials \
+         SET counter = $1, last_used_at = now(), last_session_id = $2, sign_count = sign_count + 1 \
+         WHERE id = $3",
+    )
+    .bind(i64::from(counter))
+    .bind(session_id)
+    .bind(stored_credential.id)
+    .execute(&state.db)
+    .await?;
+
+    Ok((stored_credential, counter))
+}
+
 // =================== Authentication Finish ===================
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +731,10 @@ fn transport_labels(credential: &webauthn_rs::prelude::RegisterPublicKeyCredenti
 pub struct AuthenticationFinishRequest {
     pub roll_number: Option<String>,
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
+    /// The `challengeId` `start_authentication`/`start_conditional_authentication`
+    /// returned. Required — correlates this finish call with its own pending
+    /// challenge row. See `take_pending_challenge`'s doc comment.
+    pub challenge_id: Uuid,
     pub student_name: Option<String>,
     // `photoUrl` is deliberately absent: the stored URL is derived from the
     // validated object key. It used to be accepted verbatim and rendered in
@@ -608,42 +804,18 @@ pub async fn finish_authentication(
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
     let session_id = session.id;
 
-    // Consume the ceremony this short code issued. Bound to the short code and
-    // single-use; the challenge string in the request body is never trusted to
-    // select it.
-    let stored_challenge = take_pending_challenge(
-        &state.db,
+    // Consume the ceremony this short code issued and resolve its subject.
+    // Bound to the short code and single-use; the challenge string in the
+    // request body is never trusted to select it, and the subject never
+    // comes from a roll number in the request body — that override is what
+    // let a challenge issued for student A mark student B present.
+    let (roll_upper, stored_challenge) = resolve_authentication_subject(
+        &state,
         &short_code,
-        WebAuthnChallengeType::Authentication,
+        payload.challenge_id,
+        &payload.credential,
     )
-    .await?
-    .ok_or_else(|| AppError::BadRequest("No valid authentication challenge found".to_string()))?;
-
-    // Resolve the subject. For a targeted ceremony it is fixed by the
-    // challenge; for a discoverable ("conditional UI") ceremony it comes from
-    // the user handle inside the signed assertion. Either way, never from a
-    // roll number in the request body — that override is what let a challenge
-    // issued for student A mark student B present.
-    let roll_upper = if stored_challenge.student_id.is_empty() {
-        let (user_handle, _cred_id) = state
-            .webauthn
-            .identify_discoverable_authentication(&payload.credential)
-            .map_err(|e| {
-                tracing::warn!("Discoverable authentication could not be identified: {e}");
-                AppError::BadRequest("Passkey could not be identified".to_string())
-            })?;
-
-        sqlx::query_scalar::<_, String>(
-            "SELECT student_id FROM webauthn_credentials WHERE user_handle = $1",
-        )
-        .bind(user_handle)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?
-    } else {
-        stored_challenge.student_id.clone()
-    }
-    .to_uppercase();
+    .await?;
 
     // Per-identity caps in addition to the router's per-IP student limiter —
     // see the identical rationale in controllers/attendance.rs::submit_attendance.
@@ -679,66 +851,19 @@ pub async fn finish_authentication(
         }
     }
 
-    // Get credential
-    let stored_credential: WebAuthnCredential =
-        sqlx::query_as("SELECT * FROM webauthn_credentials WHERE student_id = $1")
-            .bind(&roll_upper)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?;
-
-    if stored_credential.is_suspended {
-        return Err(AppError::BadRequest("Credential is suspended".to_string()));
-    }
-
-    // The actual cryptographic check. This verifies the assertion signature
-    // against the enrolled public key, the challenge against the stored
-    // ceremony state, the origin, the rpIdHash, the user-verification flag and
-    // the signature counter. None of this happened before: `signature` was
-    // parsed into a struct field and never read, and the enrolled public key
-    // was never loaded back out of the database.
-    let passkey = decode_passkey(&stored_credential)?;
-
-    let auth_result = if stored_challenge.student_id.is_empty() {
-        let auth_state: webauthn_rs::prelude::DiscoverableAuthentication =
-            ceremony_state(&stored_challenge)?;
-        let discoverable_key = webauthn_rs::prelude::DiscoverableKey::from(&passkey);
-        state.webauthn.finish_discoverable_authentication(
-            &payload.credential,
-            auth_state,
-            &[discoverable_key],
-        )
-    } else {
-        let auth_state: webauthn_rs::prelude::PasskeyAuthentication =
-            ceremony_state(&stored_challenge)?;
-        state
-            .webauthn
-            .finish_passkey_authentication(&payload.credential, &auth_state)
-    }
-    .map_err(|e| {
-        tracing::warn!(
-            roll_number = %roll_upper,
-            session_id = %session_id,
-            "WebAuthn assertion rejected: {e}"
-        );
-        AppError::Unauthorized("Biometric verification failed".to_string())
-    })?;
-
-    if !auth_result.user_verified() {
-        return Err(AppError::Unauthorized(
-            "Biometric verification required. Please use Face ID, Touch ID, or device PIN."
-                .to_string(),
-        ));
-    }
-
-    // webauthn-rs raises this when the authenticator's signature counter went
-    // backwards, which means the credential has been cloned.
-    if auth_result.needs_update() && auth_result.counter() > 0 {
-        tracing::info!(
-            roll_number = %roll_upper,
-            "WebAuthn credential counter advanced; state will be refreshed"
-        );
-    }
+    // The actual cryptographic check happens inside the shared helper: it
+    // verifies the assertion signature against the enrolled public key, the
+    // challenge against the stored ceremony state, the origin, the rpIdHash,
+    // the user-verification flag and the signature counter, then records the
+    // successful ceremony (counter/last_used_at/last_session_id).
+    let (stored_credential, counter) = verify_passkey_assertion(
+        &state,
+        &roll_upper,
+        &stored_challenge,
+        &payload.credential,
+        session_id,
+    )
+    .await?;
 
     // Check for existing attendance
     let already_submitted: bool = sqlx::query_scalar(
@@ -754,11 +879,6 @@ pub async fn finish_authentication(
             "Attendance already submitted".to_string(),
         ));
     }
-
-    // Counter, user-verification and clone detection are all handled by
-    // `finish_passkey_authentication` above. The counter is recorded here only
-    // so the admin views keep showing it.
-    let counter_i64 = i64::from(auth_result.counter());
 
     // Get location
     let location: Location = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
@@ -976,7 +1096,7 @@ pub async fn finish_authentication(
     .bind(true) // 25 webauthn_verified
     .bind(Some(crate::models::WebAuthnDeviceType::Unknown)) // 26 webauthn_device_type
     .bind(Some(crate::models::WebAuthnAttachment::CrossPlatform)) // 27 webauthn_authenticator_attachment
-    .bind(Some(auth_result.counter() as i32)) // 28 webauthn_counter
+    .bind(Some(counter as i32)) // 28 webauthn_counter
     .bind(false) // 29 webauthn_replay_attack (rejected outright above)
     .bind(false) // 30 flag_reviewed
     .bind(Option::<Uuid>::None) // 31 flag_reviewed_by
@@ -1007,23 +1127,9 @@ pub async fn finish_authentication(
     .fetch_one(&state.db)
     .await?;
 
-    // Update credential counter and last used
-    sqlx::query(
-        "UPDATE webauthn_credentials \
-         SET counter = $1, last_used_at = now(), last_session_id = $2, sign_count = sign_count + 1 \
-         WHERE id = $3",
-    )
-    .bind(counter_i64)
-    .bind(session_id)
-    .bind(stored_credential.id)
-    .execute(&state.db)
-    .await?;
-
-    // Mark challenge as used
-    sqlx::query("UPDATE webauthn_challenges SET used = true WHERE id = $1")
-        .bind(stored_challenge.id)
-        .execute(&state.db)
-        .await?;
+    // Credential counter/last_used/last_session_id and challenge consumption
+    // were already recorded by `verify_passkey_assertion`/
+    // `resolve_authentication_subject` above — nothing left to do here.
 
     Ok(Json(AuthenticationFinishResponse {
         message: "Attendance submitted successfully".to_string(),
@@ -1140,6 +1246,7 @@ mod contract_tests {
     fn authentication_finish_request_deserializes_gps_metadata_and_face_detected() {
         let payload: AuthenticationFinishRequest = serde_json::from_value(serde_json::json!({
             "rollNumber": "CS101",
+            "challengeId": Uuid::new_v4().to_string(),
             "credential": {
                 "id": "cred-id",
                 "rawId": "e30=",

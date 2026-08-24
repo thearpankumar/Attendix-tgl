@@ -325,6 +325,10 @@ mod export_session_ownership_tests {
             totp_secret: None,
             created_at: Utc::now(),
             recurring_rule_id: None,
+            monitoring_enabled: false,
+            class_duration_minutes: None,
+            monitoring_ends_at: None,
+            session_kind: "attendance".to_string(),
         };
 
         // Session should have created_by field

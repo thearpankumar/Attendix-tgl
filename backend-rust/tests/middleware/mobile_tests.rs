@@ -573,8 +573,12 @@ mod tests {
             let info = check_mobile(ua);
             // Should not be mobile/tablet/bot
             assert!(!info.is_bot, "Desktop UA should not be bot: {}", ua);
-            // Desktop OS passes through for frontend hardware checks
-            // (handled by middleware via DESKTOP_OS_REGEX)
+            // Desktop OS passes through for frontend hardware checks. Note:
+            // as of the touch-evidence fix, `is_mobile_or_masquerading` (not
+            // tested here — this test only exercises `check_mobile`) also
+            // requires the X-Attendix-Touch-Points/X-Attendix-Coarse-Pointer
+            // headers before granting the Mac/Linux masquerading allowance,
+            // and no longer honors Windows/ChromeOS UAs at all.
         }
     }
 }

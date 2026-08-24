@@ -159,6 +159,156 @@ describe('StudentScan', () => {
     });
   });
 
+  it('intern-monitoring session skips onboarding/GPS entirely and goes straight to a registration-only roll-number step', async () => {
+    (globalThis.fetch as any) = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            session: {
+              locationName: null,
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              isActive: true,
+              sessionKind: 'intern_monitoring',
+            },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    renderComponent();
+
+    // No "Before You Begin" onboarding screen (no GPS/camera consent needed) —
+    // straight to the roll-number step with intern-specific copy.
+    await waitFor(() =>
+      expect(screen.getByText(/Register for Monitoring/i)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Before You Begin/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/e.g. 21CS042/i)).toBeInTheDocument();
+  });
+
+  it('intern-monitoring session has no manual-verification fallback when biometrics are unsupported', async () => {
+    (globalThis.fetch as any) = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            session: {
+              locationName: null,
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              isActive: true,
+              sessionKind: 'intern_monitoring',
+            },
+          }),
+        });
+      }
+      if (url.includes('/webauthn/status/')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ enrolled: false, suspended: false, alreadySubmitted: false }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+    Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true });
+
+    renderComponent();
+    await waitFor(() =>
+      expect(screen.getByText(/Register for Monitoring/i)).toBeInTheDocument()
+    );
+
+    // No manual-verification fallback for intern sessions — unsupported
+    // biometrics just tells the intern to use a passkey-capable device.
+    expect(screen.queryByText(/Continue without biometric/i)).not.toBeInTheDocument();
+  });
+
+  it('a monitored ordinary session shown on desktop gets pairing instructions, not the generic "mobile required" screen', async () => {
+    vi.mocked(useIsMobileModule.useMobileVerification).mockReturnValue({
+      isMobile: false,
+      isEmulation: false,
+      inconsistencies: [],
+      checking: false,
+      metrics: {} as any,
+      recheck: vi.fn(),
+    });
+    (globalThis.fetch as any) = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            session: {
+              locationName: 'Room 101',
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              isActive: true,
+              sessionKind: 'attendance',
+              monitoringEnabled: true,
+            },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    renderComponent();
+
+    // The desktop gate excludes the 'permissions' step (it shows onboarding
+    // first regardless of device), so it only kicks in once the student
+    // clicks through it — same as real behavior.
+    await waitFor(() =>
+      expect(screen.getByText(/Before You Begin/i)).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByRole('button', { name: /I Understand/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Keep This Page/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/Monitoring is on for this session/i)).toBeInTheDocument();
+    // Neither the generic desktop-blocked copy nor the intern-only copy.
+    expect(screen.queryByText(/For security and GPS verification/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/register your passkey for the first time/i)).not.toBeInTheDocument();
+  });
+
+  it('an ordinary, unmonitored session shown on desktop still gets the generic "mobile required" screen', async () => {
+    vi.mocked(useIsMobileModule.useMobileVerification).mockReturnValue({
+      isMobile: false,
+      isEmulation: false,
+      inconsistencies: [],
+      checking: false,
+      metrics: {} as any,
+      recheck: vi.fn(),
+    });
+    (globalThis.fetch as any) = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            session: {
+              locationName: 'Room 101',
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              isActive: true,
+              sessionKind: 'attendance',
+              monitoringEnabled: false,
+            },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    renderComponent();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Before You Begin/i)).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByRole('button', { name: /I Understand/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Mobile Access/i)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Monitoring is on for this session/i)).not.toBeInTheDocument();
+  });
+
   it('should handle location denial', async () => {
     const mockGeolocation = {
       getCurrentPosition: vi.fn().mockImplementation((_, error) => 

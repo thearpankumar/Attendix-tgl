@@ -93,6 +93,12 @@ mod tests {
     static CHROMIUM_REGEX: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)(chrome|chromium|edg|opera|brave)").unwrap());
 
+    // NOTE: this is a local stub, independent of
+    // `src/middleware/mobile_check.rs`'s real `MASQUERADE_OS_REGEX`, which
+    // this file does not import. It was not updated by the touch-evidence
+    // masquerading fix and no longer reflects production behavior (the real
+    // regex dropped windows/cros and gating now also requires touch-evidence
+    // headers) — out of scope here.
     static DESKTOP_OS_REGEX: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)(macintosh|windows|linux|x11|cros)").unwrap());
 

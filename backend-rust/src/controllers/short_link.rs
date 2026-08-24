@@ -456,11 +456,20 @@ pub async fn get_short_link_session(
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // An intern-monitoring session has no location at all (see
+    // `Session::session_kind`) — only look one up when there's an id to
+    // look up, rather than treating a location-less session as an error.
+    let location_name: Option<String> = match session.location_id {
+        Some(location_id) => {
+            let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+                .bind(location_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+            Some(location.name)
+        }
+        None => None,
+    };
 
     let sys_config = state.get_system_config().await;
     let dev_bypass_enabled = sys_config.dev_bypass_enabled
@@ -471,10 +480,12 @@ pub async fn get_short_link_session(
         "session": {
             "sessionId": session.id.to_string(),
             "locationId": session.location_id.map(|id| id.to_string()),
-            "locationName": location.name,
+            "locationName": location_name,
             "description": session.description,
             "expiresAt": session.expires_at,
             "isActive": session.is_active,
+            "sessionKind": session.session_kind,
+            "monitoringEnabled": session.monitoring_enabled,
         },
         "devBypassEnabled": dev_bypass_enabled,
     })))

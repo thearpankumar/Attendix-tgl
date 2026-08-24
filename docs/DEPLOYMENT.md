@@ -720,8 +720,8 @@ docker-compose up -d --scale backend=5
 | `POSTGRES_DB` | attendance_geotag | Postgres database name |
 | `POSTGRES_USER` | postgres | Postgres user |
 | `POSTGRES_PASSWORD` | - | Postgres password |
-| `PG_MAX_POOL_SIZE` | 300 | Connection pool max |
-| `PG_MIN_POOL_SIZE` | 20 | Connection pool min |
+| `PG_MAX_POOL_SIZE` | 30 | Connection pool max (per backend replica — connections are held for query duration, not per-request, so this doesn't need to scale with concurrent users) |
+| `PG_MIN_POOL_SIZE` | 5 | Connection pool min |
 | `BACKUP_CRON_SCHEDULE` | `0 2 * * *` | pg-backup cron schedule |
 | `BACKUP_RETENTION_DAYS` | 30 | Local dump retention inside the pg-backup container |
 | `REDIS_URL` | redis://redis:6379 | Redis connection |

@@ -19,7 +19,10 @@ use crate::{
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRecurringRuleRequest {
-    pub location_id: String,
+    /// Required unless `sessionKind` is `"intern_monitoring"` — validated in
+    /// the handler, not by the type, since which is true depends on another
+    /// field (the same shape as `CreateSessionRequest`'s exam-vs-normal split).
+    pub location_id: Option<String>,
     pub batch_id: Option<String>,
     pub description: Option<String>,
     pub duration_minutes: i32,
@@ -32,6 +35,24 @@ pub struct CreateRecurringRuleRequest {
     pub shortlink_mode: Option<String>,
     pub custom_short_code: Option<String>,
     pub existing_short_code: Option<String>,
+    #[serde(default)]
+    pub monitoring_enabled: bool,
+    pub class_duration_minutes: Option<i32>,
+    /// `"attendance"` (default) or `"intern_monitoring"`.
+    pub session_kind: Option<String>,
+}
+
+const SESSION_KIND_ATTENDANCE: &str = "attendance";
+const SESSION_KIND_INTERN_MONITORING: &str = "intern_monitoring";
+
+fn validate_session_kind(kind: &str) -> Result<()> {
+    if kind != SESSION_KIND_ATTENDANCE && kind != SESSION_KIND_INTERN_MONITORING {
+        return Err(AppError::BadRequest(format!(
+            "Unknown sessionKind '{}'",
+            kind
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +65,8 @@ pub struct UpdateRecurringRuleRequest {
     pub run_times_local: Option<Vec<String>>,
     pub timezone: Option<String>,
     pub days_of_week: Option<Vec<i16>>,
+    pub monitoring_enabled: Option<bool>,
+    pub class_duration_minutes: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,7 +74,7 @@ pub struct UpdateRecurringRuleRequest {
 pub struct RecurringRuleResponse {
     #[serde(rename = "_id")]
     pub id: String,
-    pub location_id: String,
+    pub location_id: Option<String>,
     pub batch_id: Option<String>,
     pub description: Option<String>,
     pub duration_minutes: i32,
@@ -66,13 +89,16 @@ pub struct RecurringRuleResponse {
     pub consecutive_failures: i32,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub monitoring_enabled: bool,
+    pub class_duration_minutes: Option<i32>,
+    pub session_kind: String,
 }
 
 impl From<RecurringSessionRule> for RecurringRuleResponse {
     fn from(r: RecurringSessionRule) -> Self {
         Self {
             id: r.id.to_string(),
-            location_id: r.location_id.to_string(),
+            location_id: r.location_id.map(|id| id.to_string()),
             batch_id: r.batch_id.map(|b| b.to_string()),
             description: r.description,
             duration_minutes: r.duration_minutes,
@@ -91,6 +117,9 @@ impl From<RecurringSessionRule> for RecurringRuleResponse {
             consecutive_failures: r.consecutive_failures,
             last_error: r.last_error,
             created_at: r.created_at,
+            monitoring_enabled: r.monitoring_enabled,
+            class_duration_minutes: r.class_duration_minutes,
+            session_kind: r.session_kind,
         }
     }
 }
@@ -145,8 +174,24 @@ pub async fn create_recurring_rule(
 ) -> Result<impl IntoResponse> {
     auth.require_role(ROLE_SUPER_ADMIN)?;
 
-    let location_id = Uuid::parse_str(&payload.location_id)
-        .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
+    let session_kind = payload
+        .session_kind
+        .clone()
+        .unwrap_or_else(|| SESSION_KIND_ATTENDANCE.to_string());
+    validate_session_kind(&session_kind)?;
+    let is_intern_monitoring = session_kind == SESSION_KIND_INTERN_MONITORING;
+
+    // An attendance rule still requires a real location (enforced again at
+    // the DB level by migration 0008's CHECK); an intern-monitoring rule
+    // has none — no geofence, no QR display, nothing to point a location at.
+    let location_id = if is_intern_monitoring {
+        None
+    } else {
+        Some(
+            Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
+                .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?,
+        )
+    };
     let batch_id = payload
         .batch_id
         .as_deref()
@@ -159,8 +204,31 @@ pub async fn create_recurring_rule(
     let run_times_local = parse_run_times(&payload.run_times_local)?;
     validate_days_of_week(&payload.days_of_week)?;
     validate_timezone(&payload.timezone)?;
+    // Intern-monitoring rules always have monitoring on — that's the entire
+    // point of the kind — and therefore always need a class duration, which
+    // becomes the tracked work-hours span for each generated occurrence.
+    if is_intern_monitoring && !payload.monitoring_enabled {
+        return Err(AppError::BadRequest(
+            "Intern monitoring rules must have monitoring enabled".to_string(),
+        ));
+    }
+    if payload.monitoring_enabled {
+        let minutes = payload.class_duration_minutes.ok_or_else(|| {
+            AppError::BadRequest(
+                "Full class duration is required when monitoring is enabled".to_string(),
+            )
+        })?;
+        validate_duration(minutes)?;
+    }
 
-    let mode = payload.shortlink_mode.as_deref().unwrap_or("none");
+    // Intern-monitoring rules need a real locked short link too — see the
+    // matching comment in `controllers::session::create_session`. Force
+    // "auto" regardless of what the request sent.
+    let mode = if is_intern_monitoring {
+        "auto"
+    } else {
+        payload.shortlink_mode.as_deref().unwrap_or("none")
+    };
     let locked_short_code = match mode {
         "none" => None,
         "custom" => {
@@ -290,8 +358,9 @@ pub async fn create_recurring_rule(
     let rule: RecurringSessionRule = sqlx::query_as(
         "INSERT INTO recurring_session_rules \
          (id, location_id, batch_id, description, duration_minutes, run_times_local, timezone, days_of_week, \
-          is_active, created_by, created_at, updated_at, locked_short_code, next_run_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11) \
+          is_active, created_by, created_at, updated_at, locked_short_code, next_run_at, \
+          monitoring_enabled, class_duration_minutes, session_kind) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11, $12, $13, $14) \
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -305,6 +374,9 @@ pub async fn create_recurring_rule(
     .bind(auth.id)
     .bind(&locked_short_code)
     .bind(next_run_at)
+    .bind(payload.monitoring_enabled)
+    .bind(payload.class_duration_minutes)
+    .bind(&session_kind)
     .fetch_one(&state.db)
     .await?;
 
@@ -358,11 +430,22 @@ pub async fn update_recurring_rule(
 
     let existing = find_rule_for_admin(&state.db, rule_id, &auth).await?;
 
+    // `session_kind` is immutable after creation (not accepted by this
+    // request type at all), so an intern-monitoring rule's location stays
+    // None across edits the same way it started.
     let location_id = match &payload.location_id {
-        Some(s) => Uuid::parse_str(s)
-            .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?,
+        Some(s) if !s.is_empty() => Some(
+            Uuid::parse_str(s)
+                .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?,
+        ),
+        Some(_) => None,
         None => existing.location_id,
     };
+    if existing.session_kind == SESSION_KIND_ATTENDANCE && location_id.is_none() {
+        return Err(AppError::BadRequest(
+            "location_id is required for an attendance rule".to_string(),
+        ));
+    }
     let batch_id = match &payload.batch_id {
         Some(s) if !s.is_empty() => Some(
             Uuid::parse_str(s)
@@ -404,11 +487,27 @@ pub async fn update_recurring_rule(
 
     let description = payload.description.clone().or(existing.description.clone());
 
+    let monitoring_enabled = payload
+        .monitoring_enabled
+        .unwrap_or(existing.monitoring_enabled);
+    let class_duration_minutes = payload
+        .class_duration_minutes
+        .or(existing.class_duration_minutes);
+    if monitoring_enabled {
+        let minutes = class_duration_minutes.ok_or_else(|| {
+            AppError::BadRequest(
+                "Full class duration is required when monitoring is enabled".to_string(),
+            )
+        })?;
+        validate_duration(minutes)?;
+    }
+
     let updated: RecurringSessionRule = sqlx::query_as(
         "UPDATE recurring_session_rules \
          SET location_id = $1, batch_id = $2, description = $3, duration_minutes = $4, \
-             run_times_local = $5, timezone = $6, days_of_week = $7, next_run_at = $8, updated_at = now() \
-         WHERE id = $9 \
+             run_times_local = $5, timezone = $6, days_of_week = $7, next_run_at = $8, updated_at = now(), \
+             monitoring_enabled = $9, class_duration_minutes = $10 \
+         WHERE id = $11 \
          RETURNING *",
     )
     .bind(location_id)
@@ -419,6 +518,8 @@ pub async fn update_recurring_rule(
     .bind(&timezone)
     .bind(&days_of_week)
     .bind(next_run_at)
+    .bind(monitoring_enabled)
+    .bind(class_duration_minutes)
     .bind(rule_id)
     .fetch_one(&state.db)
     .await?;

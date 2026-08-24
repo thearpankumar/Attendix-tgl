@@ -260,7 +260,8 @@ impl LocationCreateRequest {
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct SessionCreateRequest {
     /// Required for a normal self-service session (geofenced); irrelevant
-    /// for an exam session, which is marked manually and has no location.
+    /// for an exam session (marked manually) or an intern-monitoring session
+    /// (browser-extension-only) — neither has a location.
     pub location_id: Option<String>,
 
     #[validate(range(min = 5, max = 480, message = "Duration must be 5-480 minutes"))]
@@ -275,6 +276,12 @@ pub struct SessionCreateRequest {
     pub starts_at: Option<String>,
 
     pub description: Option<String>,
+
+    /// A standing, location-less/link-less session tracked purely via the
+    /// paired browser extension (no geofenced check-in) — see
+    /// `Session::session_kind`. Mutually exclusive with an exam session.
+    #[serde(default)]
+    pub is_intern_monitoring: bool,
 }
 
 impl SessionCreateRequest {
@@ -299,7 +306,14 @@ impl SessionCreateRequest {
             }
         }
 
-        if self.is_exam_session() {
+        if self.is_exam_session() && self.is_intern_monitoring {
+            errors.push(FieldError {
+                field: "is_intern_monitoring".to_string(),
+                message:
+                    "A session cannot be both an exam session and an intern-monitoring session"
+                        .to_string(),
+            });
+        } else if self.is_exam_session() {
             // Exam session: batch/mentors/college/start-time are required
             // together; location does not apply (manual attendance, no
             // geofencing) so it is never validated here.
@@ -362,6 +376,18 @@ impl SessionCreateRequest {
                     field: "starts_at".to_string(),
                     message: "Start time is required for an exam session".to_string(),
                 });
+            }
+        } else if self.is_intern_monitoring {
+            // Intern monitoring: no location, no geofencing, no check-in
+            // link — purely browser-extension pairing. Batch stays optional,
+            // same as a normal session.
+            if let Some(ref batch_id) = self.batch_id {
+                if !batch_id.is_empty() && !is_valid_objectid(batch_id) {
+                    errors.push(FieldError {
+                        field: "batch_id".to_string(),
+                        message: "Valid batch ID required".to_string(),
+                    });
+                }
             }
         } else {
             // Normal session: location is mandatory (geofenced check-in).
@@ -672,6 +698,7 @@ mod tests {
             college_name: None,
             starts_at: None,
             description: None,
+            is_intern_monitoring: false,
         };
         assert!(!normal_no_batch.is_exam_session());
         assert!(
@@ -702,6 +729,7 @@ mod tests {
             college_name: None,
             starts_at: None,
             description: None,
+            is_intern_monitoring: false,
         };
         assert!(invalid_location.validate_with_objectids().is_err());
 
@@ -724,6 +752,7 @@ mod tests {
             college_name: None,
             starts_at: None,
             description: None,
+            is_intern_monitoring: false,
         };
         assert!(invalid_duration.validate_with_objectids().is_err());
 
@@ -737,6 +766,7 @@ mod tests {
             college_name: Some("Example College".to_string()),
             starts_at: Some("2026-08-14T09:00:00Z".to_string()),
             description: None,
+            is_intern_monitoring: false,
         };
         assert!(valid_exam.is_exam_session());
         assert!(
@@ -810,6 +840,44 @@ mod tests {
             ..valid_exam.clone()
         };
         assert!(exam_missing_starts_at.validate_with_objectids().is_err());
+
+        // ── Intern monitoring: no location required, batch stays optional,
+        // mutually exclusive with an exam session ──
+        let intern_no_batch = SessionCreateRequest {
+            location_id: None,
+            duration_minutes: Some(480),
+            batch_id: None,
+            assigned_admin_ids: vec![],
+            college_name: None,
+            starts_at: None,
+            description: None,
+            is_intern_monitoring: true,
+        };
+        assert!(
+            intern_no_batch.validate_with_objectids().is_ok(),
+            "intern monitoring session needs no location"
+        );
+
+        let intern_with_invalid_batch = SessionCreateRequest {
+            batch_id: Some("invalid".to_string()),
+            ..intern_no_batch.clone()
+        };
+        assert!(
+            intern_with_invalid_batch.validate_with_objectids().is_err(),
+            "intern monitoring session should still reject a malformed batch id"
+        );
+
+        let intern_and_exam = SessionCreateRequest {
+            assigned_admin_ids: vec!["550e8400-e29b-41d4-a716-446655440002".to_string()],
+            batch_id: Some("550e8400-e29b-41d4-a716-446655440001".to_string()),
+            college_name: Some("Example College".to_string()),
+            starts_at: Some("2026-08-14T09:00:00Z".to_string()),
+            ..intern_no_batch.clone()
+        };
+        assert!(
+            intern_and_exam.validate_with_objectids().is_err(),
+            "a session cannot be both an exam session and an intern-monitoring session"
+        );
     }
 
     #[test]

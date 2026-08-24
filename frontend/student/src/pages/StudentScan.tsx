@@ -19,7 +19,7 @@ const detectPrivacyOs = (): boolean => {
   return /GrapheneOS|LineageOS|CalyxOS|DivestOS|microG/i.test(ua);
 };
 
-interface SessionInfo { locationName: string; expiresAt: string; }
+interface SessionInfo { locationName: string | null; expiresAt: string; sessionKind: string; monitoringEnabled: boolean; }
 interface StorageInfo { provider: string; supportsDirectUpload: boolean; }
 
 
@@ -42,6 +42,12 @@ interface RegistrationOptionsResponse {
   timeout?: number;
   authenticatorSelection?: AuthenticatorSelectionCriteria;
   attestation?: AttestationConveyancePreference;
+  /** Correlates this ceremony with its own pending challenge row server-side
+   *  — must be sent back unchanged in the matching `finish` request body. See
+   *  backend `take_pending_challenge`'s doc comment for why this replaced a
+   *  "most recently created" guess that could consume the wrong ceremony's
+   *  challenge under concurrent scans. */
+  challengeId: string;
 }
 
 interface AuthenticationOptionsResponse {
@@ -50,6 +56,8 @@ interface AuthenticationOptionsResponse {
   rpId?: string;
   allowCredentials?: { id: string; type: 'public-key'; transports?: AuthenticatorTransport[] }[];
   userVerification?: UserVerificationRequirement;
+  /** See RegistrationOptionsResponse.challengeId. */
+  challengeId: string;
 }
 
 const Spinner = () => (
@@ -113,6 +121,22 @@ const AppleIcon = ({ size = 14, style }: { size?: number; style?: React.CSSPrope
   </svg>
 );
 
+/** Same technique as useDeviceVerification.ts's detectEmulation(), sent as
+ *  headers so the server-side mobile_check_middleware gate (which never
+ *  sees the request body on GETs, and only sees it as `deviceMetrics` JSON
+ *  on submit/authenticate-finish) can use it uniformly on every scan-flow
+ *  request. `any-pointer` (not `pointer`) is used deliberately here — an
+ *  iPad with an attached mouse/trackpad should still count as a touch
+ *  device, whereas useDeviceVerification's own client-side gate uses the
+ *  stricter primary-pointer `pointer: coarse` for a different purpose. */
+function deviceEvidenceHeaders(): Record<string, string> {
+  return {
+    'X-Attendix-Touch-Points': String(navigator.maxTouchPoints || 0),
+    'X-Attendix-Coarse-Pointer':
+      (typeof window.matchMedia === 'function' && window.matchMedia('(any-pointer: coarse)').matches) ? '1' : '0',
+  };
+}
+
 export default function StudentScan() {
   const { shortCode } = useParams<{ shortCode: string }>();
   const API = window.location.origin;
@@ -123,6 +147,18 @@ export default function StudentScan() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [devBypassEnabled, setDevBypassEnabled] = useState(false);
+  // Intern-monitoring sessions have no location, no photo, no attendance row
+  // — this page only registers/verifies a passkey (identity+device binding
+  // for the paired browser extension), so every GPS/camera/photo-submit
+  // branch below is skipped for them. See backend Session::session_kind.
+  const internMode = session?.sessionKind === 'intern_monitoring';
+  // An ordinary session with the separate "Monitoring" toggle on — GPS/photo
+  // attendance still happens normally (see internMode above for the case
+  // where it doesn't), but there's a second step afterwards: pairing the
+  // browser extension on a laptop, same mechanism as internMode, just not
+  // the only step. See the 'success' step and the `MobileDeviceRequired`
+  // branch below.
+  const monitoringMode = !internMode && session?.monitoringEnabled === true;
   const { isMobile, isEmulation, inconsistencies, checking } = useMobileVerification();
   const { ready: faceReady, detectFace } = useFaceDetection();
   const { metrics: deviceMetrics } = useDeviceVerification();
@@ -169,6 +205,11 @@ export default function StudentScan() {
   const faceDetectedRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
   const credentialRef = useRef<object | null>(null);
+  // The `challengeId` the matching `start` call returned — must round-trip
+  // unchanged into the `finish` request body so the server can resolve THIS
+  // ceremony's own pending challenge row instead of guessing. See
+  // RegistrationOptionsResponse.challengeId's comment.
+  const challengeIdRef = useRef('');
   const rollRef = useRef('');
   const fingerRef = useRef('unknown');
   const conditionalUiAbortRef = useRef<AbortController | null>(null);
@@ -181,7 +222,7 @@ export default function StudentScan() {
 
   const loadCaptcha = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/s/${shortCode}/captcha`);
+      const res = await fetch(`${API}/s/${shortCode}/captcha`, { headers: deviceEvidenceHeaders() });
       const data = await res.json();
       setCaptchaId(data.captchaId);
       setCaptchaAnswer('');
@@ -201,19 +242,31 @@ export default function StudentScan() {
       try {
         const [storRes, sessRes] = await Promise.all([
           fetch(`${API}/api/storage-info`, { signal: ac.signal }),
-          fetch(`${API}/s/${shortCode}/session`, { signal: ac.signal }),
+          fetch(`${API}/s/${shortCode}/session`, { signal: ac.signal, headers: deviceEvidenceHeaders() }),
         ]);
         const stor: StorageInfo = await storRes.json();
         if (!sessRes.ok) throw new Error('Session not found or inactive');
         const data = await sessRes.json();
         if (ac.signal.aborted) return;
         setStorageInfo(stor);
-        setSession({ locationName: data.session.locationName, expiresAt: data.session.expiresAt });
+        setSession({
+          locationName: data.session.locationName,
+          expiresAt: data.session.expiresAt,
+          sessionKind: data.session.sessionKind,
+          monitoringEnabled: !!data.session.monitoringEnabled,
+        });
         const bypass = !!data.devBypassEnabled;
         setDevBypassEnabled(bypass);
         devBypassEnabledRef.current = bypass;
-        // Show onboarding screen — camera/captcha/fingerprint deferred to handleAcknowledge
-        setStep('permissions');
+        if (data.session.sessionKind === 'intern_monitoring') {
+          // No GPS/camera/photo consent needed — skip the onboarding screen
+          // and its camera/captcha/fingerprint init entirely, straight to
+          // roll-number entry for passkey registration/verification.
+          setStep('rollInput');
+        } else {
+          // Show onboarding screen — camera/captcha/fingerprint deferred to handleAcknowledge
+          setStep('permissions');
+        }
       } catch (err) {
         if (!ac.signal.aborted) {
           setErrMsg((err as Error).message);
@@ -434,7 +487,7 @@ export default function StudentScan() {
 
     rollRef.current = roll;
     try {
-      const res = await fetch(`${API}/s/${shortCode}/webauthn/status/${roll}`);
+      const res = await fetch(`${API}/s/${shortCode}/webauthn/status/${roll}`, { headers: deviceEvidenceHeaders() });
       const data = await res.json();
       if (data.alreadySubmitted) { flash(data.message || 'Attendance already submitted', true); return; }
       setIsEnrolled(data.enrolled);
@@ -463,7 +516,7 @@ export default function StudentScan() {
     flash('Identity bypassed in DEV mode!', true);
     setLocStatus('pending');
     setLocErrMsg('');
-    setStep('form');
+    setStep(internMode ? 'success' : 'form');
   };
 
   const register = async () => {
@@ -475,13 +528,21 @@ export default function StudentScan() {
     try {
       flash('Starting registration...');
       const startRes = await fetch(`${API}/s/${shortCode}/webauthn/register/start`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() },
         body: JSON.stringify({ rollNumber: rollRef.current, studentName: name }),
       });
       if (!startRes.ok) { const e = await startRes.json(); throw new Error(e.message); }
       const opts: RegistrationOptionsResponse = await startRes.json();
+      challengeIdRef.current = opts.challengeId;
+      // Built explicitly from only the real WebAuthn fields, excluding
+      // `challengeId` — it isn't part of the PublicKeyCredentialCreationOptions
+      // dictionary the browser expects.
       const publicKey: PublicKeyCredentialCreationOptions = {
-        ...opts,
+        rp: opts.rp,
+        pubKeyCredParams: opts.pubKeyCredParams,
+        timeout: opts.timeout,
+        authenticatorSelection: opts.authenticatorSelection,
+        attestation: opts.attestation,
         challenge: fromB64url(opts.challenge),
         user: { ...opts.user, id: fromB64url(opts.user.id) },
       };
@@ -491,9 +552,10 @@ export default function StudentScan() {
 
       flash('Verifying registration...');
       const finishRes = await fetch(`${API}/s/${shortCode}/webauthn/register/finish`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() },
         body: JSON.stringify({
           rollNumber: rollRef.current,
+          challengeId: challengeIdRef.current,
           credential: {
             id: credential.id,
             rawId: toB64url(credential.rawId),
@@ -512,7 +574,7 @@ export default function StudentScan() {
       flash('Device enrolled!', true);
       setLocStatus('pending');
       setLocErrMsg('');
-      setStep('form');
+      setStep(internMode ? 'success' : 'form');
     } catch (err) {
       flash('Registration failed: ' + (err as Error).message);
     }
@@ -522,13 +584,19 @@ export default function StudentScan() {
     try {
       flash('Starting authentication...');
       const startRes = await fetch(`${API}/s/${shortCode}/webauthn/authenticate/start`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() },
         body: JSON.stringify({ rollNumber: rollRef.current }),
       });
       if (!startRes.ok) { const e = await startRes.json(); throw new Error(e.message); }
       const opts: AuthenticationOptionsResponse = await startRes.json();
+      challengeIdRef.current = opts.challengeId;
+      // Built explicitly from only the real WebAuthn fields, excluding
+      // `challengeId` — it isn't part of the PublicKeyCredentialRequestOptions
+      // dictionary the browser expects.
       const publicKey: PublicKeyCredentialRequestOptions = {
-        ...opts,
+        timeout: opts.timeout,
+        rpId: opts.rpId,
+        userVerification: opts.userVerification,
         challenge: fromB64url(opts.challenge),
         allowCredentials: opts.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
       };
@@ -555,7 +623,7 @@ export default function StudentScan() {
       flash('Identity verified!', true);
       setLocStatus('pending');
       setLocErrMsg('');
-      setStep('form');
+      setStep(internMode ? 'success' : 'form');
     } catch (err) {
       const e = err as { name?: string; message?: string };
       if (e.name === 'NotAllowedError') flash('Authentication cancelled. Please try again.');
@@ -571,12 +639,17 @@ export default function StudentScan() {
       
       const startRes = await fetch(`${API}/s/${shortCode}/webauthn/authenticate/conditional`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() },
       });
       if (!startRes.ok) return;
       const opts: AuthenticationOptionsResponse = await startRes.json();
+      challengeIdRef.current = opts.challengeId;
+      // Built explicitly from only the real WebAuthn fields, excluding
+      // `challengeId` — see authenticate()'s identical comment.
       const publicKey: PublicKeyCredentialRequestOptions = {
-        ...opts,
+        timeout: opts.timeout,
+        rpId: opts.rpId,
+        userVerification: opts.userVerification,
         challenge: fromB64url(opts.challenge),
         allowCredentials: opts.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
       };
@@ -620,7 +693,7 @@ export default function StudentScan() {
       flash('Identity verified with passkey!', true);
       setLocStatus('pending');
       setLocErrMsg('');
-      setStep('form');
+      setStep(internMode ? 'success' : 'form');
     } catch (err) {
       const e = err as { name?: string; message?: string };
       // Ignore background errors for conditional UI
@@ -685,7 +758,7 @@ export default function StudentScan() {
       let finalBody: Record<string, unknown>;
 
       if (photoDataRef.current && storageInfo?.provider === 's3' && storageInfo.supportsDirectUpload && !usedDevBypassCamera) {
-        const urlRes = await fetch(`${API}/s/${shortCode}/upload-url`);
+        const urlRes = await fetch(`${API}/s/${shortCode}/upload-url`, { headers: deviceEvidenceHeaders() });
         const urlData = await urlRes.json();
         if (!urlRes.ok) throw new Error(urlData.message || 'Failed to get upload URL');
         
@@ -739,9 +812,16 @@ export default function StudentScan() {
         };
       }
       
-      if (credentialRef.current) finalBody.credential = credentialRef.current;
+      if (credentialRef.current) {
+        finalBody.credential = credentialRef.current;
+        // Required by the backend now — see RegistrationOptionsResponse.challengeId's
+        // comment. Always set by this point: authenticate()/startConditionalUI()
+        // both set challengeIdRef.current before credentialRef.current can ever
+        // become truthy.
+        finalBody.challengeId = challengeIdRef.current;
+      }
 
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(finalBody) });
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() }, body: JSON.stringify(finalBody) });
       const result = await res.json();
       if (!res.ok) throw new Error(result.message || 'Failed to submit');
       setStep('success');
@@ -807,7 +887,14 @@ export default function StudentScan() {
   }
 
   if (!isMobile && !devBypassEnabled && step !== 'loading' && step !== 'error' && step !== 'permissions') {
-    return <MobileDeviceRequired isEmulation={isEmulation} inconsistencies={inconsistencies} />;
+    return (
+      <MobileDeviceRequired
+        isEmulation={isEmulation}
+        inconsistencies={inconsistencies}
+        internMode={internMode}
+        monitoringMode={monitoringMode}
+      />
+    );
   }
 
   return (
@@ -818,7 +905,7 @@ export default function StudentScan() {
     {/* ── Permission Onboarding Screen ── */}
     {step === 'permissions' && session && (
       <PermissionOnboarding
-        locationName={session.locationName}
+        locationName={session.locationName ?? ''}
         onAcknowledge={handleAcknowledge}
         isPrivacyOs={isPrivacyOs}
       />
@@ -845,15 +932,26 @@ export default function StudentScan() {
             <div className="attend-form-pane">
               {step === 'rollInput' && (
                 <>
-                  <h2>Mark Attendance</h2>
-                  <p className="sub" style={{ marginBottom: 20 }}>Enter your roll number to begin</p>
+                  <h2>{internMode ? 'Register for Monitoring' : 'Mark Attendance'}</h2>
+                  <p className="sub" style={{ marginBottom: 20 }}>
+                    {internMode
+                      ? 'Enter your roll number to register your passkey for this work-hours session'
+                      : 'Enter your roll number to begin'}
+                  </p>
                   {!webauthnSupported && (
                     <div className="attend-status warn">
-                      <span>
-                        <strong>Biometric not supported</strong>
-                        <div className="detail">You can still submit, but it will be flagged. </div>
-                        <button onClick={handleFallback} className="attend-btn-ghost" style={{ width: 'auto', padding: 0, marginTop: 4 }}>Continue without biometric</button>
-                      </span>
+                      {internMode ? (
+                        <span>
+                          <strong>Biometric not supported</strong>
+                          <div className="detail">This browser can't create a passkey. Please open this link on a device that supports passkeys (most modern phones).</div>
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>Biometric not supported</strong>
+                          <div className="detail">You can still submit, but it will be flagged. </div>
+                          <button onClick={handleFallback} className="attend-btn-ghost" style={{ width: 'auto', padding: 0, marginTop: 4 }}>Continue without biometric</button>
+                        </span>
+                      )}
                     </div>
                   )}
                   <div className="attend-field">
@@ -932,8 +1030,19 @@ export default function StudentScan() {
                       }
                     `}
                   </style>
-                  <h3 style={{ fontSize: 20, fontWeight: 700, color: '#027a48', marginBottom: '8px' }}>Attendance Recorded!</h3>
-                  <p style={{ fontSize: 14, color: '#667085' }}>Your attendance has been successfully submitted.</p>
+                  <h3 style={{ fontSize: 20, fontWeight: 700, color: '#027a48', marginBottom: '8px' }}>
+                    {internMode ? 'Device Registered!' : 'Attendance Recorded!'}
+                  </h3>
+                  <p style={{ fontSize: 14, color: '#667085' }}>
+                    {internMode
+                      ? "You're all set. Now open the Attendix browser extension on the laptop you'd like monitored and tap Pair to begin."
+                      : 'Your attendance has been successfully submitted.'}
+                  </p>
+                  {monitoringMode && (
+                    <p style={{ fontSize: 13, color: '#667085', marginTop: 12, padding: '10px 14px', background: '#f9fafb', borderRadius: 8, textAlign: 'left' }}>
+                      <strong>Monitoring is on for this session.</strong> Open this same link on the laptop you'd like monitored, then use the Attendix browser extension's popup to tap Pair.
+                    </p>
+                  )}
                 </div>
               )}
             </div>

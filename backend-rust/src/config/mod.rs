@@ -27,6 +27,11 @@ const PLACEHOLDER_MARKERS: &[&str] = &[
 pub struct AppConfig {
     pub port: u16,
     pub database_url: String,
+    /// A separate database from `database_url` — only session-monitoring
+    /// telemetry (the `telemetry_events` TimescaleDB hypertable) lives here;
+    /// every other table stays on the main database. See
+    /// `migrations_timescale/` vs. `migrations/`.
+    pub timescale_database_url: String,
     pub pg_max_pool_size: u32,
     pub pg_min_pool_size: u32,
     pub jwt_secret: String,
@@ -199,6 +204,7 @@ impl AppConfig {
                 .parse()
                 .context("PORT must be a number")?,
             database_url: require_env("DATABASE_URL")?,
+            timescale_database_url: require_env("TIMESCALE_DATABASE_URL")?,
             pg_max_pool_size: env::var("PG_MAX_POOL_SIZE")
                 .unwrap_or_else(|_| "50".to_string())
                 .parse()
@@ -242,6 +248,9 @@ impl AppConfig {
         AppConfig {
             port: 5000,
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://postgres:postgres@localhost:5432/attendance_geotag_test".to_string()
+            }),
+            timescale_database_url: env::var("TIMESCALE_DATABASE_URL").unwrap_or_else(|_| {
                 "postgres://postgres:postgres@localhost:5432/attendance_geotag_test".to_string()
             }),
             pg_max_pool_size: 5,

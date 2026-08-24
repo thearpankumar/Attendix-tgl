@@ -32,8 +32,11 @@ pub struct TestEnvironment {
     pub postgres_container: testcontainers::ContainerAsync<Postgres>,
     #[allow(dead_code)]
     pub redis_container: testcontainers::ContainerAsync<Redis>,
+    #[allow(dead_code)]
+    pub timescaledb_container: testcontainers::ContainerAsync<testcontainers::GenericImage>,
     pub database_url: String,
     pub redis_uri: String,
+    pub timescale_database_url: String,
 }
 
 // `with_reuse(Always)` races across the ~7 separate test-binary processes
@@ -117,6 +120,48 @@ impl TestEnvironment {
             )
         });
 
+        // TimescaleDB's image ships no dedicated testcontainers-modules
+        // wrapper, so this is a GenericImage configured to match the same
+        // startup-log wait strategy the Postgres module above uses (the
+        // TimescaleDB image is a superset of the official Postgres image and
+        // logs identically on boot).
+        use testcontainers::{core::WaitFor, GenericImage};
+        let mut last_err = None;
+        let mut timescaledb_container = None;
+        for attempt in 0..CONTAINER_START_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(CONTAINER_START_RETRY_DELAY).await;
+            }
+            match GenericImage::new("timescale/timescaledb", "latest-pg17")
+                .with_exposed_port(5432.into())
+                .with_wait_for(WaitFor::message_on_stderr(
+                    "database system is ready to accept connections",
+                ))
+                .with_wait_for(WaitFor::message_on_stdout(
+                    "database system is ready to accept connections",
+                ))
+                .with_env_var("POSTGRES_DB", "postgres")
+                .with_env_var("POSTGRES_USER", "postgres")
+                .with_env_var("POSTGRES_PASSWORD", "postgres")
+                .with_container_name("backend-rust-test-timescaledb")
+                .with_reuse(ReuseDirective::Always)
+                .start()
+                .await
+            {
+                Ok(c) => {
+                    timescaledb_container = Some(c);
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let timescaledb_container = timescaledb_container.unwrap_or_else(|| {
+            panic!(
+                "Failed to start TimescaleDB container after {CONTAINER_START_RETRIES} attempts: {:?}",
+                last_err
+            )
+        });
+
         let postgres_port = postgres_container
             .get_host_port_ipv4(5432)
             .await
@@ -127,17 +172,28 @@ impl TestEnvironment {
             .await
             .expect("Failed to get Redis port");
 
+        let timescaledb_port = timescaledb_container
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get TimescaleDB port");
+
         let database_url = format!(
             "postgres://postgres:postgres@localhost:{}/postgres",
             postgres_port
         );
         let redis_uri = format!("redis://localhost:{}", redis_port);
+        let timescale_database_url = format!(
+            "postgres://postgres:postgres@localhost:{}/postgres",
+            timescaledb_port
+        );
 
         Self {
             postgres_container,
             redis_container,
+            timescaledb_container,
             database_url,
             redis_uri,
+            timescale_database_url,
         }
     }
 
@@ -147,6 +203,10 @@ impl TestEnvironment {
 
     pub fn redis_uri(&self) -> &str {
         &self.redis_uri
+    }
+
+    pub fn timescale_database_url(&self) -> &str {
+        &self.timescale_database_url
     }
 }
 
@@ -176,6 +236,26 @@ pub async fn get_test_database() -> sqlx::PgPool {
     pool
 }
 
+/// Same as `get_test_database`, but against the separate TimescaleDB
+/// container (see `AppState::timescale_db`) with its own migration set.
+#[allow(dead_code)]
+pub async fn get_test_timescale_database() -> sqlx::PgPool {
+    let env = get_test_environment().await;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(env.timescale_database_url())
+        .await
+        .expect("Failed to connect to test TimescaleDB database");
+
+    sqlx::migrate!("./migrations_timescale")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations against test TimescaleDB database");
+
+    pool
+}
+
 #[allow(dead_code)]
 pub async fn get_test_redis() -> redis::Connection {
     let env = get_test_environment().await;
@@ -195,7 +275,7 @@ pub async fn cleanup_test_db(pool: &sqlx::PgPool) {
             "TRUNCATE TABLE admins, locations, batches, students, sessions, attendances, \
              devices, device_fingerprints, flags, photo_hashes, short_links, system_configs, \
              webauthn_challenges, webauthn_credentials, webauthn_reenrollment_logs, \
-             recurring_session_rules \
+             recurring_session_rules, extension_installations, session_device_locks \
              RESTART IDENTITY CASCADE",
         )
         .execute(&pool)

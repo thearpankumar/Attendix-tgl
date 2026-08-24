@@ -1,7 +1,7 @@
-.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile mobile-start mobile-web mobile-android mobile-ios test-backend build-backend deps-backend dev-backend lint-backend restart-backend clean-orphan-containers
+.PHONY: all help test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile mobile-start mobile-web mobile-android mobile-ios test-extension build-extension test-backend build-backend deps-backend dev-backend lint-backend restart-backend clean-orphan-containers
 
 # Run all checks and builds
-all: test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile test-backend build-backend
+all: test-admin build-admin test-home build-home test-student build-student test-mobile build-mobile test-extension build-extension test-backend build-backend
 
 help:
 	@echo "Available commands:"
@@ -18,6 +18,8 @@ help:
 	@echo "  mobile-web     - Open the mobile app's UI directly in a browser on this PC (no phone/emulator needed)"
 	@echo "  mobile-android - Build and run the mobile app on a connected Android device/emulator"
 	@echo "  mobile-ios     - Trigger an EAS cloud build for iOS (Linux can't build/run iOS locally — needs Xcode)"
+	@echo "  test-extension  - Run lint, typecheck, and tests for the browser extension"
+	@echo "  build-extension - Build the browser extension for Chrome (mv3) and Firefox (mv2) — extension/.output/{chrome-mv3,firefox-mv2}/"
 	@echo "  deps-backend   - Fetch/build Rust backend dependencies"
 	@echo "  test-backend   - Run tests for the Rust backend (--all-features, matches CI)"
 	@echo "  lint-backend   - Run clippy and fmt --check for the Rust backend (matches CI)"
@@ -123,6 +125,23 @@ mobile-ios:
 	@echo "EAS cloud build instead. First run needs 'npx eas login' and, for"
 	@echo "device installs, 'eas credentials -p ios' once (see mobile/README.md)."
 	cd mobile && npx eas build --platform ios --profile development
+
+test-extension:
+	@echo "==============================="
+	@echo "   Running Extension Tests     "
+	@echo "==============================="
+	cd extension && npm run lint
+	cd extension && npm run typecheck
+	cd extension && npm run test
+
+build-extension:
+	@echo "==============================="
+	@echo "   Building Browser Extension  "
+	@echo "==============================="
+	@echo "Chrome (MV3) -> extension/.output/chrome-mv3/"
+	cd extension && npm run build
+	@echo "Firefox (MV2) -> extension/.output/firefox-mv2/"
+	cd extension && npm run build:firefox
 
 deps-backend:
 	@echo "==============================="

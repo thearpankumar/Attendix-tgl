@@ -3,11 +3,26 @@ import React from 'react';
 interface MobileDeviceRequiredProps {
   isEmulation?: boolean;
   inconsistencies?: string[];
+  /** Intern-monitoring session — the non-emulation copy below is wrong for
+   *  this case (there's no GPS/attendance involved, and desktop access here
+   *  is actually required for the extension to pair, not a mistake to
+   *  correct). Emulation detection still applies either way. */
+  internMode?: boolean;
+  /** An ordinary session with the separate "Monitoring" toggle on — desktop
+   *  access here is conditionally correct: right if attendance was already
+   *  marked from a phone and this laptop is now pairing the extension,
+   *  wrong if attendance hasn't happened yet. Unlike `internMode`, this page
+   *  can't tell which case it's looking at (no roll number in scope), so
+   *  the copy below covers both. Mutually exclusive with `internMode` in
+   *  practice — StudentScan only sets one. */
+  monitoringMode?: boolean;
 }
 
-const MobileDeviceRequired: React.FC<MobileDeviceRequiredProps> = ({ 
-  isEmulation = false, 
-  inconsistencies = [] 
+const MobileDeviceRequired: React.FC<MobileDeviceRequiredProps> = ({
+  isEmulation = false,
+  inconsistencies = [],
+  internMode = false,
+  monitoringMode = false,
 }) => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-white to-orange-50 flex flex-col items-center justify-center p-4 sm:p-6 text-center overflow-hidden">
@@ -44,6 +59,10 @@ const MobileDeviceRequired: React.FC<MobileDeviceRequiredProps> = ({
           {isEmulation ? (
             <>
               Device Emulation <span className="text-orange-600">Detected</span>
+            </>
+          ) : internMode || monitoringMode ? (
+            <>
+              Keep This Page <span className="text-red-600">Open</span>
             </>
           ) : (
             <>
@@ -84,6 +103,14 @@ const MobileDeviceRequired: React.FC<MobileDeviceRequiredProps> = ({
               Please open this link directly on your smartphone to mark attendance.
             </p>
           </>
+        ) : internMode ? (
+          <p className="text-sm text-gray-500 mb-8 leading-relaxed max-w-xs">
+            This link pairs the Attendix browser extension on this computer — leave this tab open, then open the extension's popup and tap <strong>Pair</strong>. To register your passkey for the first time, open this same link on your phone instead.
+          </p>
+        ) : monitoringMode ? (
+          <p className="text-sm text-gray-500 mb-8 leading-relaxed max-w-xs">
+            Monitoring is on for this session. If you haven't marked attendance yet, do that from your phone first. Already have? Leave this tab open and open the Attendix browser extension's popup, then tap <strong>Pair</strong> to start monitoring this computer.
+          </p>
         ) : (
           <p className="text-sm text-gray-500 mb-8 leading-relaxed max-w-xs">
             For security and GPS verification, attendance can only be marked using a smartphone.

@@ -12,6 +12,10 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,
+        // Needed for the student-behavior live WebSocket
+        // (/api/admin/sessions/.../behavior/live) — without this, Vite's
+        // dev proxy only forwards plain HTTP and the upgrade handshake fails.
+        ws: true,
       },
     },
   },

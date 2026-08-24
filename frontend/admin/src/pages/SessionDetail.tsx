@@ -2,13 +2,16 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { AlertCircle, Calendar, CheckCircle, Clock, MapPin, Pencil, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
+import { Activity, AlertCircle, Calendar, CheckCircle, Clock, MapPin, Pencil, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import Badge from '../components/ui/Badge';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import Modal from '../components/ui/Modal';
 import MultiSelect from '../components/ui/MultiSelect';
 import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
 import AdminSecurityReview from '../components/SecurityReview';
+import StudentBehaviorDialog from '../components/StudentBehaviorDialog';
+import StudentMonitoringDashboard from '../components/StudentMonitoringDashboard';
 import { downloadBlob } from '../utils/downloadBlob';
 
 interface Session {
@@ -22,8 +25,12 @@ interface Session {
   description?: string;
   batchId?: { _id: string; name: string };
   createdAt?: string;
+  startsAt?: string;
   assignedAdminIds?: string[];
   assignedAdminNames?: string[];
+  monitoringEnabled: boolean;
+  classDurationMinutes?: number;
+  monitoringEndsAt?: string;
 }
 
 interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; }
@@ -93,6 +100,16 @@ const SessionDetail = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'rotate' | 'deactivate' | null>(null);
 
+  // ── Schedule / monitoring edit (same-day only, enforced server-side) ────
+  const [showScheduleEdit, setShowScheduleEdit] = useState(false);
+  const [scheduleMonitoringEnabled, setScheduleMonitoringEnabled] = useState(false);
+  const [scheduleClassDuration, setScheduleClassDuration] = useState(60);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+
+  // ── Student behavior viewer (Phase 4) ───────────────────
+  const [behaviorRoll, setBehaviorRoll] = useState<string | null>(null);
+  const [showMonitoringDashboard, setShowMonitoringDashboard] = useState(false);
+
   // ── Mentor assignment (add/remove) ──────────────────────
   const [mentors, setMentors] = useState<Mentor[]>([]);
   const [editingMentors, setEditingMentors] = useState(false);
@@ -116,6 +133,13 @@ const SessionDetail = () => {
   // ── Derived counts for tabs ─────────────────────────────
   const verifiedCount   = useMemo(() => attendance.filter(a => a.verified).length,  [attendance]);
   const unverifiedCount = useMemo(() => attendance.filter(a => !a.verified).length, [attendance]);
+
+  // ── Student picker for the monitoring dashboard ─────────
+  const monitoredStudents = useMemo(() => {
+    const byRoll = new Map<string, string>();
+    attendance.forEach((a) => { if (!byRoll.has(a.rollNumber)) byRoll.set(a.rollNumber, a.studentName); });
+    return Array.from(byRoll, ([rollNumber, studentName]) => ({ rollNumber, studentName }));
+  }, [attendance]);
 
   // ── Filtered rows for table ─────────────────────────────
   const filteredAttendance = useMemo(() => {
@@ -177,6 +201,35 @@ const SessionDetail = () => {
     try { await axios.post(`/api/admin/sessions/${id}/deactivate`); toast.success('Session deactivated'); fetchData(); }
     catch { toast.error('Failed to deactivate session'); }
     setConfirmAction(null);
+  };
+
+  // ── Schedule / monitoring edit ──────────────────────────
+  const openScheduleEdit = () => {
+    setScheduleMonitoringEnabled(session?.monitoringEnabled ?? false);
+    setScheduleClassDuration(session?.classDurationMinutes ?? 60);
+    setShowScheduleEdit(true);
+  };
+
+  const saveSchedule = async () => {
+    if (scheduleMonitoringEnabled && (isNaN(scheduleClassDuration) || scheduleClassDuration < 5 || scheduleClassDuration > 480)) {
+      toast.error('Full class duration must be between 5 and 480 minutes');
+      return;
+    }
+    setSavingSchedule(true);
+    try {
+      await axios.patch(`/api/admin/sessions/${id}/schedule`, {
+        monitoringEnabled: scheduleMonitoringEnabled,
+        classDurationMinutes: scheduleMonitoringEnabled ? scheduleClassDuration : undefined,
+      });
+      toast.success('Session schedule updated');
+      setShowScheduleEdit(false);
+      fetchData();
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to update session schedule');
+    } finally {
+      setSavingSchedule(false);
+    }
   };
 
   const handleExportExcel = async () => {
@@ -420,6 +473,12 @@ const SessionDetail = () => {
   const isExpired = new Date(session.expiresAt) < new Date();
   const statusTone = !session.isActive ? 'danger' : isExpired ? 'warning' : 'success';
   const statusLabel = !session.isActive ? 'Inactive' : isExpired ? 'Expired' : 'Active';
+  // Mirrors the backend's same-day-only guard on PATCH .../schedule (in the
+  // browser's local timezone — a reasonable approximation of the backend's
+  // UTC/rule-timezone check for a same-day edit window). Anchored on
+  // startsAt when set, createdAt otherwise, same as the server.
+  const scheduleAnchor = new Date(session.startsAt || session.createdAt || Date.now());
+  const isScheduleEditableToday = scheduleAnchor.toDateString() === new Date().toDateString();
 
   return (
     <div className="container">
@@ -468,6 +527,26 @@ const SessionDetail = () => {
                 <RefreshCw size={14} /> Rotations:
               </span>
               <span className="detail-value">{session.rotationCount}</span>
+            </div>
+            <div className="session-detail-item">
+              <span className="detail-label">
+                <ShieldCheck size={14} /> Monitoring:
+              </span>
+              <span className="detail-value">
+                {session.monitoringEnabled ? (
+                  <>
+                    <span className="status-pill status-success"><span className="status-dot"></span>Enabled</span>
+                    {session.classDurationMinutes != null && (
+                      <span style={{ marginLeft: 8, color: 'var(--color-muted)' }}>
+                        {session.classDurationMinutes} min class
+                        {session.monitoringEndsAt && ` (through ${new Date(session.monitoringEndsAt).toLocaleTimeString()})`}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span style={{ color: 'var(--color-muted)' }}>Off</span>
+                )}
+              </span>
             </div>
             {session.batchId && (
               <div className="session-detail-item">
@@ -539,6 +618,19 @@ const SessionDetail = () => {
             >
               <RefreshCw size={14} className="rotate-icon" /> Rotate Token
             </button>
+            <button
+              className="btn btn-secondary"
+              onClick={openScheduleEdit}
+              disabled={!isScheduleEditableToday}
+              title={isScheduleEditableToday ? 'Edit this session\'s schedule and monitoring' : 'A session\'s schedule can only be edited on the same day it starts'}
+            >
+              <Pencil size={14} /> Edit Schedule
+            </button>
+            {session.monitoringEnabled && (
+              <button className="btn btn-secondary" onClick={() => setShowMonitoringDashboard(true)}>
+                <Activity size={14} /> Monitoring
+              </button>
+            )}
             {session.totpEnabled && (
               <Link to={`/sessions/${id}/qr`} className="btn btn-qr-display">
                 <QrCode size={14} /> View QR Display
@@ -874,6 +966,17 @@ const SessionDetail = () => {
                                 Mark as Unverified
                               </button>
                             )}
+                            {session.monitoringEnabled && (
+                              <button
+                                id={`view-behavior-${record._id}`}
+                                className="kebab-item"
+                                role="menuitem"
+                                onClick={() => { setOpenMenuId(null); setBehaviorRoll(record.rollNumber); }}
+                              >
+                                <Activity size={14} />
+                                View Behavior
+                              </button>
+                            )}
                           </div>
                         )}
                       </td>
@@ -894,6 +997,64 @@ const SessionDetail = () => {
         onConfirm={confirmAction === 'rotate' ? handleRotateToken : handleDeactivate}
         onCancel={() => setConfirmAction(null)}
       />
+
+      <Modal open={showScheduleEdit} onClose={() => setShowScheduleEdit(false)} title="Edit Session Schedule">
+        <div className="form-group">
+          <label>Monitoring</label>
+          <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
+            {([false, true] as const).map((enabled) => (
+              <label key={String(enabled)} style={{
+                flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
+                borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                border: `1.5px solid ${scheduleMonitoringEnabled === enabled ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'}`,
+                background: scheduleMonitoringEnabled === enabled ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                color: scheduleMonitoringEnabled === enabled ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                userSelect: 'none',
+              }}>
+                <input type="radio" name="scheduleMonitoringEnabled" value={String(enabled)}
+                  checked={scheduleMonitoringEnabled === enabled}
+                  onChange={() => setScheduleMonitoringEnabled(enabled)}
+                  style={{ display: 'none' }} />
+                {enabled ? 'Enable monitoring' : 'No monitoring'}
+              </label>
+            ))}
+          </div>
+        </div>
+        {scheduleMonitoringEnabled && (
+          <div className="form-group">
+            <label htmlFor="schedule-class-duration">Full class duration (minutes)</label>
+            <input id="schedule-class-duration" type="number" value={scheduleClassDuration}
+              onChange={(e) => setScheduleClassDuration(parseInt(e.target.value))}
+              min="5" max="480" required />
+          </div>
+        )}
+        <div className="form-actions">
+          <button type="button" className="btn btn-success" onClick={saveSchedule} disabled={savingSchedule}>
+            {savingSchedule ? 'Saving…' : 'Save Changes'}
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => setShowScheduleEdit(false)} disabled={savingSchedule}>
+            Cancel
+          </button>
+        </div>
+      </Modal>
+
+      {session.monitoringEnabled && (
+        <>
+          <StudentBehaviorDialog
+            open={behaviorRoll !== null}
+            onClose={() => setBehaviorRoll(null)}
+            sessionId={id || ''}
+            rollNumber={behaviorRoll}
+            studentName={attendance.find((a) => a.rollNumber === behaviorRoll)?.studentName}
+          />
+          <StudentMonitoringDashboard
+            open={showMonitoringDashboard}
+            onClose={() => setShowMonitoringDashboard(false)}
+            sessionId={id || ''}
+            students={monitoredStudents}
+          />
+        </>
+      )}
     </div>
   );
 };

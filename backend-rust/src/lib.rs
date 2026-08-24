@@ -24,6 +24,9 @@ use tokio::sync::RwLock;
 pub struct AppState {
     pub config: AppConfig,
     pub db: sqlx::PgPool,
+    /// A separate pool from `db` — only session-monitoring telemetry lives
+    /// here (see `AppConfig::timescale_database_url`).
+    pub timescale_db: sqlx::PgPool,
     pub redis: redis::Client,
     pub rate_limiter: Arc<RateLimiter>,
     /// Tripwire deny-list: IPs that touched a honeypot path or the canary

@@ -28,6 +28,7 @@ use tokio::sync::RwLock;
 
 async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let db = crate::test_db::get_test_database().await;
+    let timescale_db = crate::test_db::get_test_timescale_database().await;
     let config = AppConfig::for_testing();
 
     let redis_env = crate::test_db::get_test_environment().await;
@@ -56,6 +57,7 @@ async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let state = Arc::new(AppState {
         config: config.clone(),
         db: db.clone(),
+        timescale_db,
         redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,
@@ -326,6 +328,13 @@ fn unique(prefix: &str) -> String {
 /// shared testcontainers database. Mirrors the same reset
 /// `exam_session_flow_tests::register_bootstraps_super_admin_then_locks_itself`
 /// already does for the same reason.
+///
+/// Every caller must ALSO hold `#[file_serial(admin_bootstrap, recurring_scheduler)]`
+/// (not just `admin_bootstrap`), not only for exact-count assertions: this
+/// `TRUNCATE ... sessions ... CASCADE` takes an AccessExclusiveLock on
+/// `sessions`, which deadlocks against `recurring_scheduler`-group tests'
+/// concurrent `SELECT ... FOR UPDATE SKIP LOCKED` claims/inserts on the same
+/// table if that group isn't also locked out for the duration.
 async fn reset_db(pool: &sqlx::PgPool) {
     sqlx::query(
         "TRUNCATE TABLE admins, locations, batches, students, sessions, attendances, \
@@ -370,9 +379,10 @@ fn sheet_count(bytes: &[u8]) -> usize {
 /// with an unmatched one), commit both, then exercise everything the
 /// mentor/export/mentor-management surface can do with the result —
 /// roster load, manual marking, mentor-format export content, bulk export
-/// sheet count, and add/remove mentors.
+/// sheet count, and add/remove mentors. Calls `reset_db` — see its doc
+/// comment for why this also locks `recurring_scheduler`.
 #[tokio::test]
-#[file_serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap, recurring_scheduler)]
 async fn excel_upload_parse_commit_and_full_session_lifecycle() {
     let (app, db) = create_test_app().await;
     reset_db(&db).await;
@@ -901,8 +911,10 @@ async fn excel_upload_parse_commit_and_full_session_lifecycle() {
 /// across pages, respect `limit`, and — critically for every caller that
 /// hasn't been updated to paginate (e.g. the Sessions page's batch-picker
 /// dropdowns) — omitting `limit` entirely must still return everything.
+/// Calls `reset_db` — see its doc comment for why this also locks
+/// `recurring_scheduler`.
 #[tokio::test]
-#[file_serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap, recurring_scheduler)]
 async fn list_endpoints_support_scroll_paging_without_gaps_or_duplicates() {
     let (app, db) = create_test_app().await;
     reset_db(&db).await;
@@ -1063,8 +1075,10 @@ async fn list_endpoints_support_scroll_paging_without_gaps_or_duplicates() {
 /// visibility, not a tenant scoped to `created_by`. A second super-admin
 /// must be able to list, read, and delete a batch/location created by the
 /// first — while a mentor (who only ever sees their own) still can't.
+/// Calls `reset_db` — see its doc comment for why this also locks
+/// `recurring_scheduler`.
 #[tokio::test]
-#[file_serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap, recurring_scheduler)]
 async fn second_super_admin_sees_and_manages_first_super_admins_batches_and_locations() {
     let (app, db) = create_test_app().await;
     reset_db(&db).await;

@@ -74,6 +74,24 @@ async fn main() -> anyhow::Result<()> {
 
     sqlx::migrate!("./migrations").run(&db).await?;
 
+    tracing::info!("Connecting to TimescaleDB (session-monitoring telemetry)...");
+
+    // A separate, smaller pool from `db` above — telemetry writes are
+    // batched (see controllers::telemetry) and this database has nothing
+    // else running against it, so it doesn't need the main pool's size.
+    let timescale_db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(20)
+        .min_connections(2)
+        .acquire_timeout(Duration::from_secs(10))
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
+        .connect(&config.timescale_database_url)
+        .await?;
+
+    sqlx::migrate!("./migrations_timescale")
+        .run(&timescale_db)
+        .await?;
+
     tracing::info!("Connecting to Redis...");
 
     // Rate limiting, the IP deny-list, session caching, and GPS anomaly
@@ -142,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
+        timescale_db,
         redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,
@@ -190,6 +209,10 @@ async fn main() -> anyhow::Result<()> {
             axum::http::header::AUTHORIZATION,
             axum::http::header::CONTENT_TYPE,
             axum::http::header::ACCEPT,
+            // Keep these string literals in sync with
+            // mobile_check::TOUCH_POINTS_HEADER / COARSE_POINTER_HEADER.
+            axum::http::HeaderName::from_static("x-attendix-touch-points"),
+            axum::http::HeaderName::from_static("x-attendix-coarse-pointer"),
         ]);
 
     let app = Router::new()

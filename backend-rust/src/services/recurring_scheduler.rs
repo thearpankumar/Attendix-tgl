@@ -106,6 +106,13 @@ async fn generate_occurrence(
     now: chrono::DateTime<Utc>,
 ) -> Result<()> {
     let expires_at = now + chrono::Duration::minutes(rule.duration_minutes as i64);
+    // Mirrors how `expires_at` is derived above, from the rule's own
+    // `class_duration_minutes` rather than its attendance-window
+    // `duration_minutes` -- see migration 0005_session_monitoring.
+    let monitoring_ends_at = rule
+        .class_duration_minutes
+        .filter(|_| rule.monitoring_enabled)
+        .map(|minutes| now + chrono::Duration::minutes(minutes as i64));
 
     let shortlink = match &rule.locked_short_code {
         Some(code) => ShortlinkDirective::Existing(code.clone()),
@@ -115,7 +122,7 @@ async fn generate_occurrence(
     let (session, _short_code, _token) = create_session_row(
         tx,
         SessionSpec {
-            location_id: Some(rule.location_id),
+            location_id: rule.location_id,
             batch_id: rule.batch_id,
             description: rule.description.clone(),
             created_by: rule.created_by,
@@ -124,6 +131,10 @@ async fn generate_occurrence(
             expires_at,
             recurring_rule_id: Some(rule.id),
             shortlink,
+            monitoring_enabled: rule.monitoring_enabled,
+            class_duration_minutes: rule.class_duration_minutes,
+            monitoring_ends_at,
+            session_kind: rule.session_kind.clone(),
         },
     )
     .await?;

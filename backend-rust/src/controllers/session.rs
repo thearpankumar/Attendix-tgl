@@ -47,6 +47,18 @@ pub struct CreateSessionRequest {
     pub shortlink_mode: Option<String>,
     pub custom_short_code: Option<String>,
     pub existing_short_code: Option<String>,
+    #[serde(default)]
+    pub monitoring_enabled: bool,
+    /// Full class duration in minutes; required when `monitoring_enabled` is
+    /// true, ignored otherwise. For an intern-monitoring session this is the
+    /// work-hours span and monitoring is always on regardless of this flag.
+    pub class_duration_minutes: Option<i32>,
+    /// A standing, location-less/link-less session tracked purely via the
+    /// paired browser extension — see `Session::session_kind`. Can be a
+    /// one-off (this endpoint) or recurring (`CreateRecurringRuleRequest`)
+    /// occurrence; cadence is independent of this flag.
+    #[serde(default)]
+    pub is_intern_monitoring: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +119,14 @@ pub struct SessionResponse {
     /// sessions list can badge it rather than treating it as manually created.
     #[serde(rename = "recurringRuleId")]
     pub recurring_rule_id: Option<String>,
+    #[serde(rename = "monitoringEnabled")]
+    pub monitoring_enabled: bool,
+    #[serde(rename = "classDurationMinutes")]
+    pub class_duration_minutes: Option<i32>,
+    #[serde(rename = "monitoringEndsAt")]
+    pub monitoring_ends_at: Option<DateTime<Utc>>,
+    #[serde(rename = "sessionKind")]
+    pub session_kind: String,
 }
 
 /// What short link (if any) a newly created session should get. Pre-validated
@@ -135,6 +155,11 @@ pub struct SessionSpec {
     /// for sessions created directly through the admin HTTP endpoint.
     pub recurring_rule_id: Option<Uuid>,
     pub shortlink: ShortlinkDirective,
+    pub monitoring_enabled: bool,
+    pub class_duration_minutes: Option<i32>,
+    pub monitoring_ends_at: Option<DateTime<Utc>>,
+    /// `"attendance"` or `"intern_monitoring"` -- see `Session::session_kind`.
+    pub session_kind: String,
 }
 
 /// Inserts one `sessions` row and attaches its short link per `spec.shortlink`,
@@ -153,8 +178,8 @@ pub async fn create_session_row(
     let token = Session::generate_token();
 
     let session: Session = sqlx::query_as(
-        "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, college_name, starts_at, is_active, expires_at, rotation_count, totp_secret, created_at, recurring_rule_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, 0, $11, now(), $12) \
+        "INSERT INTO sessions (id, location_id, batch_id, token_hash, token_prefix, description, created_by, college_name, starts_at, is_active, expires_at, rotation_count, totp_secret, created_at, recurring_rule_id, monitoring_enabled, class_duration_minutes, monitoring_ends_at, session_kind) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, 0, $11, now(), $12, $13, $14, $15, $16) \
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -169,6 +194,10 @@ pub async fn create_session_row(
     .bind(spec.expires_at)
     .bind(Session::generate_totp_secret())
     .bind(spec.recurring_rule_id)
+    .bind(spec.monitoring_enabled)
+    .bind(spec.class_duration_minutes)
+    .bind(spec.monitoring_ends_at)
+    .bind(&spec.session_kind)
     .fetch_one(&mut **tx)
     .await?;
 
@@ -312,6 +341,7 @@ pub async fn create_session(
         college_name: payload.college_name.clone(),
         starts_at: payload.starts_at.clone(),
         description: payload.description.clone(),
+        is_intern_monitoring: payload.is_intern_monitoring,
     };
     validate_request(&validation_req)?;
     validation_req
@@ -319,6 +349,7 @@ pub async fn create_session(
         .map_err(AppError::from)?;
 
     let is_exam_session = validation_req.is_exam_session();
+    let is_intern_monitoring = payload.is_intern_monitoring;
 
     // Exam session: mentors/college/start-time are all mandatory and
     // validated together (validate_with_objectids already guarantees they're
@@ -365,13 +396,27 @@ pub async fn create_session(
             payload.college_name.clone(),
             Some(starts_at),
         )
+    } else if is_intern_monitoring {
+        // No location, no geofencing — purely browser-extension pairing.
+        (Vec::new(), None, None, None)
     } else {
         let location_id = Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
             .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
         (Vec::new(), Some(location_id), None, None)
     };
 
-    let mode = payload.shortlink_mode.as_deref().unwrap_or("auto");
+    // Intern-monitoring sessions have no self-service GPS check-in flow, but
+    // they still need a real short link: the browser extension detects which
+    // session to pair by matching the short code in the tab's URL, and the
+    // student-frontend page it resolves to (`StudentScan`) is what registers
+    // the intern's passkey — see `get_short_link_session` and
+    // `StudentScan.tsx`'s `internMode` branch. Force "auto" (ignore whatever
+    // the request sent) rather than letting the admin manage it manually.
+    let mode = if is_intern_monitoring {
+        "auto"
+    } else {
+        payload.shortlink_mode.as_deref().unwrap_or("auto")
+    };
 
     // Pre-validate short link requirements before creating session
     let custom_code_to_use = if mode == "custom" {
@@ -456,8 +501,32 @@ pub async fn create_session(
     // silently eat into the exam's actual duration, closing well before the
     // scheduled end. A normal self-check-in session has no starts_at, so it
     // opens immediately as before.
-    let expires_at =
-        starts_at.unwrap_or_else(Utc::now) + chrono::Duration::minutes(duration_minutes);
+    let anchor = starts_at.unwrap_or_else(Utc::now);
+    let expires_at = anchor + chrono::Duration::minutes(duration_minutes);
+
+    // Monitoring is independent of the attendance window above: it needs its
+    // own explicit full-class-duration figure, validated the same way the
+    // recurring-rule controller validates its duration field. Intern
+    // monitoring always has monitoring on — that's the entire point of the
+    // kind — regardless of what the request sent.
+    let monitoring_enabled = payload.monitoring_enabled || is_intern_monitoring;
+    let class_duration_minutes = if monitoring_enabled {
+        let minutes = payload.class_duration_minutes.ok_or_else(|| {
+            AppError::BadRequest(
+                "Full class duration is required when monitoring is enabled".to_string(),
+            )
+        })?;
+        if !(5..=480).contains(&minutes) {
+            return Err(AppError::BadRequest(
+                "Full class duration must be between 5 and 480 minutes".to_string(),
+            ));
+        }
+        Some(minutes)
+    } else {
+        None
+    };
+    let monitoring_ends_at =
+        class_duration_minutes.map(|minutes| anchor + chrono::Duration::minutes(minutes as i64));
 
     let shortlink = match mode {
         "none" => ShortlinkDirective::None,
@@ -480,6 +549,15 @@ pub async fn create_session(
             expires_at,
             recurring_rule_id: None,
             shortlink,
+            monitoring_enabled,
+            class_duration_minutes,
+            monitoring_ends_at,
+            session_kind: if is_intern_monitoring {
+                "intern_monitoring"
+            } else {
+                "attendance"
+            }
+            .to_string(),
         },
     )
     .await?;
@@ -549,6 +627,10 @@ pub async fn create_session(
             marked_count: None,
             attendance_percent: None,
             recurring_rule_id: None,
+            monitoring_enabled: session.monitoring_enabled,
+            class_duration_minutes: session.class_duration_minutes,
+            monitoring_ends_at: session.monitoring_ends_at,
+            session_kind: session.session_kind,
         }),
     ))
 }
@@ -644,6 +726,10 @@ pub async fn get_sessions(
             marked_count: (record.roster_size > 0).then_some(record.marked_count),
             attendance_percent: record.attendance_percent(),
             recurring_rule_id: session.recurring_rule_id.map(|id| id.to_string()),
+            monitoring_enabled: session.monitoring_enabled,
+            class_duration_minutes: session.class_duration_minutes,
+            monitoring_ends_at: session.monitoring_ends_at,
+            session_kind: session.session_kind,
         });
     }
 
@@ -717,6 +803,10 @@ pub async fn get_session(
         marked_count: (record.roster_size > 0).then_some(record.marked_count),
         attendance_percent: record.attendance_percent(),
         recurring_rule_id: session.recurring_rule_id.map(|id| id.to_string()),
+        monitoring_enabled: session.monitoring_enabled,
+        class_duration_minutes: session.class_duration_minutes,
+        monitoring_ends_at: session.monitoring_ends_at,
+        session_kind: session.session_kind,
     }))
 }
 
@@ -742,6 +832,132 @@ pub async fn deactivate_session(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// True when `anchor` and "now" fall on the same calendar day, interpreted
+/// in `tz_name` if given (an unparseable/absent timezone falls back to
+/// UTC) — the guard behind the same-day-only schedule-edit rule below.
+fn is_same_calendar_day(anchor: DateTime<Utc>, tz_name: Option<&str>) -> bool {
+    let now = Utc::now();
+    match tz_name.and_then(|s| s.parse::<chrono_tz::Tz>().ok()) {
+        Some(tz) => anchor.with_timezone(&tz).date_naive() == now.with_timezone(&tz).date_naive(),
+        None => anchor.date_naive() == now.date_naive(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSessionScheduleRequest {
+    pub starts_at: Option<String>,
+    /// Attendance-window duration (mirrors `CreateSessionRequest`'s field of
+    /// the same underlying meaning) — omit to leave `expires_at` unchanged.
+    pub duration_minutes: Option<i32>,
+    pub monitoring_enabled: Option<bool>,
+    pub class_duration_minutes: Option<i32>,
+}
+
+/// Edits a session's schedule (`starts_at`, attendance-window duration, and
+/// the monitoring toggle/full-class-duration) — everything `create_session`
+/// accepts except location/batch/mentors, which aren't schedule fields.
+/// Restricted to the same calendar day as the session's `starts_at` (or, for
+/// a self-service session with no `starts_at`, its `created_at`): editing a
+/// rule's *template* has no such restriction (see `update_recurring_rule`),
+/// but editing an already-generated occurrence does, so a stale edit can't
+/// silently rewrite history for a class that already happened.
+pub async fn update_session_schedule(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateSessionScheduleRequest>,
+) -> Result<impl IntoResponse> {
+    let session_id = Uuid::parse_str(&id)
+        .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
+
+    let session = find_session_for_admin(&state.db, session_id, &auth).await?;
+
+    // A session generated from a recurring rule anchors its same-day check
+    // to the rule's timezone (the only timezone concept this schema has
+    // today); a one-off session has none, so UTC is the honest fallback.
+    let tz_name: Option<String> = match session.recurring_rule_id {
+        Some(rule_id) => {
+            sqlx::query_scalar("SELECT timezone FROM recurring_session_rules WHERE id = $1")
+                .bind(rule_id)
+                .fetch_optional(&state.db)
+                .await?
+        }
+        None => None,
+    };
+    let anchor = session.starts_at.unwrap_or(session.created_at);
+    if !is_same_calendar_day(anchor, tz_name.as_deref()) {
+        return Err(AppError::BadRequest(
+            "A session's schedule can only be edited on the same day it starts".to_string(),
+        ));
+    }
+
+    let starts_at = match &payload.starts_at {
+        Some(s) => Some(
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|e| AppError::BadRequest(format!("Invalid start time: {}", e)))?,
+        ),
+        None => session.starts_at,
+    };
+    let schedule_anchor = starts_at.unwrap_or(session.created_at);
+
+    let monitoring_enabled = payload
+        .monitoring_enabled
+        .unwrap_or(session.monitoring_enabled);
+    let class_duration_minutes = payload
+        .class_duration_minutes
+        .or(session.class_duration_minutes);
+    let monitoring_ends_at = if monitoring_enabled {
+        let minutes = class_duration_minutes.ok_or_else(|| {
+            AppError::BadRequest(
+                "Full class duration is required when monitoring is enabled".to_string(),
+            )
+        })?;
+        if !(5..=480).contains(&minutes) {
+            return Err(AppError::BadRequest(
+                "Full class duration must be between 5 and 480 minutes".to_string(),
+            ));
+        }
+        Some(schedule_anchor + chrono::Duration::minutes(minutes as i64))
+    } else {
+        None
+    };
+
+    let expires_at = match payload.duration_minutes {
+        Some(minutes) => {
+            if !(5..=480).contains(&minutes) {
+                return Err(AppError::BadRequest(
+                    "Attendance window duration must be between 5 and 480 minutes".to_string(),
+                ));
+            }
+            schedule_anchor + chrono::Duration::minutes(minutes as i64)
+        }
+        None => session.expires_at,
+    };
+
+    let updated: Session = sqlx::query_as(
+        "UPDATE sessions SET starts_at = $1, expires_at = $2, monitoring_enabled = $3, \
+         class_duration_minutes = $4, monitoring_ends_at = $5 WHERE id = $6 RETURNING *",
+    )
+    .bind(starts_at)
+    .bind(expires_at)
+    .bind(monitoring_enabled)
+    .bind(class_duration_minutes)
+    .bind(monitoring_ends_at)
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "startsAt": updated.starts_at,
+        "expiresAt": updated.expires_at,
+        "monitoringEnabled": updated.monitoring_enabled,
+        "classDurationMinutes": updated.class_duration_minutes,
+        "monitoringEndsAt": updated.monitoring_ends_at,
+    })))
 }
 
 /// Request body for deleting a session (requires password re-verification)

@@ -80,6 +80,10 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(crate::controllers::rotate_token),
         )
         .route(
+            "/sessions/{id}/schedule",
+            patch(crate::controllers::update_session_schedule),
+        )
+        .route(
             "/sessions/{id}/deactivate",
             post(crate::controllers::deactivate_session),
         )
@@ -98,6 +102,14 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/sessions/{id}/devices",
             get(crate::controllers::get_session_devices),
+        )
+        .route(
+            "/sessions/{id}/students/{rollNumber}/behavior",
+            get(crate::controllers::get_student_behavior),
+        )
+        .route(
+            "/sessions/{id}/students/{rollNumber}/behavior/live",
+            get(crate::controllers::student_behavior_live),
         )
         .route(
             "/sessions/{id}/export",

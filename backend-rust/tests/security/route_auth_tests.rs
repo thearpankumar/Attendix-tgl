@@ -24,6 +24,9 @@ async fn create_test_app() -> axum::Router {
     let db = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy(&config.database_url)
         .unwrap();
+    let timescale_db = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy(&config.timescale_database_url)
+        .unwrap();
 
     // RateLimiter/DenyList/SessionCache/GpsHistoryService are Redis-backed
     // only (no in-memory fallback), so this uses the shared testcontainers
@@ -57,6 +60,7 @@ async fn create_test_app() -> axum::Router {
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
+        timescale_db,
         redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,

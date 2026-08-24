@@ -11,8 +11,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 # sqlx::migrate! embeds these files into the binary at compile time, so they
 # must be present in the builder stage even though the final image never
-# reads this directory at runtime.
+# reads this directory at runtime. Two separate migration sets — main DB and
+# the dedicated TimescaleDB instance (see main.rs's two migrate! calls) —
+# both need to be present, or the build fails canonicalizing the missing one.
 COPY migrations ./migrations
+COPY migrations_timescale ./migrations_timescale
 
 # Compile application binary inside Docker environment (guarantees GLIBC compatibility)
 RUN RUSTFLAGS="-C link-arg=-lstdc++" cargo build --release

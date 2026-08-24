@@ -334,6 +334,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -357,6 +358,7 @@ mod tests {
                 college_name: None,
                 starts_at: None,
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -378,6 +380,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -395,6 +398,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -412,6 +416,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -429,6 +434,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -975,6 +981,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -995,6 +1002,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -1072,6 +1080,7 @@ mod tests {
                 college_name: Some("Test College".to_string()),
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
+                is_intern_monitoring: false,
             };
 
             let result = req.validate_with_objectids();
@@ -1094,6 +1103,7 @@ mod tests {
                 college_name: None,
                 starts_at: None,
                 description: None,
+                is_intern_monitoring: false,
             };
 
             assert!(!req.is_exam_session());

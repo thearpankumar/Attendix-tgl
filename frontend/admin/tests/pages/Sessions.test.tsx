@@ -1,8 +1,27 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Sessions from '../../src/pages/Sessions';
+import Sessions, { timeRangeSpanMinutes } from '../../src/pages/Sessions';
 import axios from 'axios';
 import { MemoryRouter } from 'react-router';
+
+describe('timeRangeSpanMinutes', () => {
+  it('computes a normal same-day span', () => {
+    expect(timeRangeSpanMinutes('09:00', '17:00')).toBe(480);
+  });
+
+  it('handles the exact 480-minute (8-hour) boundary without wrapping', () => {
+    expect(timeRangeSpanMinutes('00:00', '08:00')).toBe(480);
+  });
+
+  it('wraps past midnight for an overnight shift', () => {
+    // 22:00 -> 06:00 next day = 8 hours = 480 minutes.
+    expect(timeRangeSpanMinutes('22:00', '06:00')).toBe(480);
+  });
+
+  it('treats an identical start and end as a full 24-hour wrap, not a zero span', () => {
+    expect(timeRangeSpanMinutes('09:00', '09:00')).toBe(24 * 60);
+  });
+});
 
 const EMPTY_OVERVIEW = {
   totalRecords: 0, filteredRecords: 0, present: 0, absent: 0, attendancePercent: 0,
@@ -166,6 +185,37 @@ describe('Sessions', () => {
         locationId: 'loc1',
         batchId: undefined,
         shortlinkMode: 'auto',
+      }));
+    });
+  });
+
+  it('enabling monitoring reveals the class-duration field and submits both fields with the session', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    (axios.post as any).mockImplementation((url: string) => {
+      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'abc123' } });
+      return Promise.resolve({ data: {} });
+    });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
+
+    // Class-duration fields are hidden until monitoring is enabled.
+    expect(screen.queryByText('Full class duration')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Enable monitoring'));
+    await waitFor(() => expect(screen.getByText('Full class duration')).toBeInTheDocument());
+    // Defaults are 09:00-10:00 (60 minutes) — push the end time out to get 90.
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '10:30' } });
+
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        locationId: 'loc1',
+        monitoringEnabled: true,
+        classDurationMinutes: 90,
       }));
     });
   });
@@ -476,6 +526,115 @@ describe('Sessions', () => {
     });
     // The one-off session endpoint must not also be called.
     expect(axios.post).not.toHaveBeenCalledWith('/api/admin/sessions', expect.anything());
+  });
+
+  // ─── Intern monitoring (Phase 5) ───────────────────────────────────────────
+
+  it('Intern Monitoring is a button inside the Normal tab, not a separate top-level session type', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+
+    // Session Type only has two options now: Normal and Exam.
+    expect(screen.getByText('Normal (self check-in)')).toBeInTheDocument();
+    expect(screen.getByText('Exam (assign a mentor)')).toBeInTheDocument();
+
+    // Default tab is Normal, so the Intern Monitoring button is visible
+    // without any extra click, and starts untoggled.
+    const internButton = screen.getByRole('button', { name: 'Intern Monitoring' });
+    expect(internButton).toBeInTheDocument();
+    expect(internButton).toHaveAttribute('aria-pressed', 'false');
+
+    // Switching to Exam removes it entirely (and resets it, verified below).
+    fireEvent.click(screen.getByText('Exam (assign a mentor)'));
+    expect(screen.queryByRole('button', { name: /Intern Monitoring/ })).not.toBeInTheDocument();
+
+    // Switching back to Normal shows it again, and it's off (Exam reset it).
+    fireEvent.click(screen.getByText('Normal (self check-in)'));
+    expect(screen.getByRole('button', { name: 'Intern Monitoring' })).toHaveAttribute('aria-pressed', 'false');
+
+    // Toggling it on flips the visible label/pressed-state and shows the
+    // intern-only fields, matching the other tests below.
+    fireEvent.click(screen.getByRole('button', { name: 'Intern Monitoring' }));
+    expect(screen.getByRole('button', { name: '✓ Intern Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('intern monitoring mode hides location, batch, short link, and monitoring-toggle fields, and shows a work-hours start/end picker', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+
+    expect(screen.queryByLabelText(/^Location$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Batch/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Short Link$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Monitoring$/i)).not.toBeInTheDocument();
+    // Cadence is independent of intern monitoring — the selector is still
+    // shown, and recurrence stays at its default ('once'), so the cron-only
+    // Time(s)-of-day fields are NOT shown until the user opts into "Cron
+    // job (recurring)" themselves.
+    expect(screen.getByText('Cadence')).toBeInTheDocument();
+    expect(screen.queryByText(/Time\(s\) of day/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Work hours')).toBeInTheDocument();
+    expect(screen.getByLabelText('Start time')).toBeInTheDocument();
+    expect(screen.getByLabelText('End time')).toBeInTheDocument();
+  });
+
+  it('creates a one-off intern monitoring session (no cron) with isInternMonitoring true, no location, and a work-hours-derived duration', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.post as any).mockResolvedValue({ data: { _id: 's1' } });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+
+    // Defaults are 9:00 AM - 5:00 PM, an 8-hour (480-minute) span.
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        locationId: undefined,
+        batchId: undefined,
+        shortlinkMode: 'none',
+        isInternMonitoring: true,
+        monitoringEnabled: true,
+        classDurationMinutes: 480,
+        durationMinutes: 480,
+      }));
+    });
+    // The recurring-rules endpoint must not also be called.
+    expect(axios.post).not.toHaveBeenCalledWith('/api/admin/recurring-rules', expect.anything());
+  });
+
+  it('creates a recurring intern monitoring rule with sessionKind intern_monitoring when cadence is set to cron', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.post as any).mockResolvedValue({ data: RULE });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+    fireEvent.click(screen.getByText('Cron job (recurring)'));
+
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules', expect.objectContaining({
+        locationId: undefined,
+        batchId: undefined,
+        shortlinkMode: 'none',
+        sessionKind: 'intern_monitoring',
+        monitoringEnabled: true,
+        classDurationMinutes: 480,
+        durationMinutes: 480,
+      }));
+    });
   });
 
   it('renders the Recurring Rules panel with pause/resume/delete actions and calls the right endpoints', async () => {

@@ -46,6 +46,7 @@ PASSWORD_SECRETS=(
     POSTGRES_PASSWORD
     REDIS_PASSWORD
     GRAFANA_ADMIN_PASSWORD
+    TIMESCALE_PASSWORD
 )
 
 TOKEN_LENGTH=48
@@ -367,6 +368,18 @@ run_generate() {
     if [ -z "$(env_value POSTGRES_DB)" ]; then
         set_env_value POSTGRES_DB "attendance_geotag"
         ok "POSTGRES_DB set to 'attendance_geotag'"
+    fi
+
+    # Same as POSTGRES_USER/POSTGRES_DB above — not secrets, but left unset
+    # they'd fall through to compose defaults instead of the dedicated
+    # telemetry database/user.
+    if [ -z "$(env_value TIMESCALE_USER)" ]; then
+        set_env_value TIMESCALE_USER "attendix_telemetry"
+        ok "TIMESCALE_USER set to 'attendix_telemetry'"
+    fi
+    if [ -z "$(env_value TIMESCALE_DB)" ]; then
+        set_env_value TIMESCALE_DB "attendix_telemetry"
+        ok "TIMESCALE_DB set to 'attendix_telemetry'"
     fi
 
     sync_derived_urls

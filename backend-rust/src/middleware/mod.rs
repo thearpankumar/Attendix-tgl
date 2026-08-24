@@ -31,7 +31,10 @@ pub use gps_validation::{
     GpsAnomalyResult,
 };
 pub use metrics_auth::metrics_auth_middleware;
-pub use mobile_check::{check_mobile, detect_ua_spoofing, mobile_check_middleware, DeviceInfo};
+pub use mobile_check::{
+    check_mobile, detect_ua_spoofing, mobile_check_middleware, resolution_mobile_check_middleware,
+    DeviceInfo,
+};
 pub use rate_limit_middleware::{
     admin_rate_limit_middleware, client_log_rate_limit_middleware, login_rate_limit_middleware,
     registration_rate_limit_middleware, short_link_guess_rate_limit_middleware,

@@ -52,11 +52,15 @@ interface Session {
   batchId?: string;
   excelBatchId?: string;
   recurringRuleId?: string;
+  monitoringEnabled: boolean;
+  classDurationMinutes?: number;
+  monitoringEndsAt?: string;
+  sessionKind: 'attendance' | 'intern_monitoring';
 }
 
 interface RecurringRule {
   _id: string;
-  locationId: string;
+  locationId?: string;
   batchId?: string;
   description?: string;
   durationMinutes: number;
@@ -71,6 +75,9 @@ interface RecurringRule {
   consecutiveFailures: number;
   lastError?: string;
   createdAt: string;
+  monitoringEnabled: boolean;
+  classDurationMinutes?: number;
+  sessionKind: 'attendance' | 'intern_monitoring';
 }
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -89,7 +96,42 @@ const browserTimezone = (() => {
   catch { return 'UTC'; }
 })();
 
+/** "HH:MM" (24-hour, as returned by <input type="time">) -> minutes since midnight. */
+const parseHHMM = (t: string) => {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+};
+
+/** End minus start, wrapping past midnight if end <= start (e.g. a night shift). */
+export const timeRangeSpanMinutes = (start: string, end: string) => {
+  const span = parseHHMM(end) - parseHHMM(start);
+  return span <= 0 ? span + 24 * 60 : span;
+};
+
+/**
+ * Native <input type="time"> pair — the browser renders its own locale-aware
+ * AM/PM segment (see the reference UI this matches), returns a canonical
+ * "HH:MM" 24-hour value either way, and never wraps onto multiple lines the
+ * way a hand-rolled hour/minute/period <select> trio did.
+ */
+const TimeRangeFields = ({ idPrefix, startValue, endValue, onStartChange, onEndChange }: {
+  idPrefix: string; startValue: string; endValue: string;
+  onStartChange: (v: string) => void; onEndChange: (v: string) => void;
+}) => (
+  <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.375rem', flexWrap: 'wrap' }}>
+    <div style={{ flex: '1 1 140px' }}>
+      <label htmlFor={`${idPrefix}-start`} style={{ display: 'block', fontSize: '0.72rem', color: 'var(--color-muted)', marginBottom: '0.2rem' }}>Start time</label>
+      <input id={`${idPrefix}-start`} type="time" value={startValue} onChange={(e) => onStartChange(e.target.value)} required style={{ width: '100%' }} />
+    </div>
+    <div style={{ flex: '1 1 140px' }}>
+      <label htmlFor={`${idPrefix}-end`} style={{ display: 'block', fontSize: '0.72rem', color: 'var(--color-muted)', marginBottom: '0.2rem' }}>End time</label>
+      <input id={`${idPrefix}-end`} type="time" value={endValue} onChange={(e) => onEndChange(e.target.value)} required style={{ width: '100%' }} />
+    </div>
+  </div>
+);
+
 const getLocationName = (s: Session) => {
+  if (s.sessionKind === 'intern_monitoring') return 'Intern Monitoring';
   if (s.locationName) return s.locationName;
   if (typeof s.locationId === 'object' && s.locationId?.name) return s.locationId.name;
   return 'Unknown';
@@ -134,6 +176,13 @@ const Sessions = () => {
   const [showModal, setShowModal] = useState(false);
   const emptyFormData = {
     sessionType: 'normal' as 'normal' | 'exam',
+    // A toggle within the Normal tab (not a separate top-level session
+    // type) for a location-less, link-less session tracked purely via the
+    // paired browser extension (see backend Session::session_kind). Cadence
+    // (once vs. cron) is independent of this — an intern-monitoring session
+    // can be one-off or recurring, same as a normal session. Only ever true
+    // while sessionType === 'normal' — forced false when switching to 'exam'.
+    isInternMonitoring: false,
     locationId: '',
     durationMinutes: 30,
     description: '',
@@ -145,6 +194,20 @@ const Sessions = () => {
     collegeName: '',
     startsDate: '',
     startsTime: '',
+    // Monitoring: independent of the attendance window above — see
+    // "Full class duration" below. Applies to both one-off and cron sessions.
+    // Not used for intern monitoring — monitoring there is always on, and
+    // its duration comes from internStartTime/internEndTime below.
+    monitoringEnabled: false,
+    // "Full class duration", entered as a Start/End time pair (see
+    // TimeRangeFields) and converted to minutes via timeRangeSpanMinutes —
+    // default 9:00-10:00, a 60-minute span.
+    classStartTime: '09:00',
+    classEndTime: '10:00',
+    // Intern-monitoring work-hours window, same Start/End pattern. Default
+    // 9:00 AM - 5:00 PM, an 8-hour day.
+    internStartTime: '09:00',
+    internEndTime: '17:00',
     // Cron-job (recurring) fields — only used/shown when recurrence === 'cron'.
     recurrence: 'once' as 'once' | 'cron',
     runTimesLocal: ['09:00'] as string[],
@@ -324,16 +387,33 @@ const Sessions = () => {
   const handleCreateSubmit = async (e?: FormEvent, forceReassign = false) => {
     if (e) e.preventDefault();
     try {
-      const duration = parseInt(String(formData.durationMinutes));
-      if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
       const isExam = formData.sessionType === 'exam';
+      const isIntern = formData.isInternMonitoring;
       const isCron = !isExam && formData.recurrence === 'cron';
+
+      // Intern monitoring has no separate "check-in window" duration — there
+      // is no location/link at all — so the work-hours span computed from
+      // the Start/End pickers below doubles as both durationMinutes and
+      // classDurationMinutes.
+      let duration: number;
+      if (isIntern) {
+        const span = timeRangeSpanMinutes(formData.internStartTime, formData.internEndTime);
+        if (span < 5 || span > 480) {
+          toast.error('Work hours must span between 5 minutes and 8 hours (480 minutes)');
+          return;
+        }
+        duration = span;
+      } else {
+        duration = parseInt(String(formData.durationMinutes));
+        if (isNaN(duration) || duration < 5 || duration > 480) { toast.error('Duration must be between 5 and 480 minutes'); return; }
+      }
+
       if (isExam) {
         if (!formData.batchId) { toast.error('A batch is required for an exam session'); return; }
         if (formData.assignedAdminIds.length === 0) { toast.error('Assign at least one mentor to this exam session'); return; }
         if (!formData.collegeName.trim()) { toast.error('College name is required for an exam session'); return; }
         if (!formData.startsDate || !formData.startsTime) { toast.error('Start date and time are required for an exam session'); return; }
-      } else if (!formData.locationId) {
+      } else if (!isIntern && !formData.locationId) {
         toast.error('A location is required for a self check-in session');
         return;
       }
@@ -344,6 +424,18 @@ const Sessions = () => {
       if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
         toast.error('Please select an existing short link, or switch to a different mode.');
         return;
+      }
+      let classDuration: number | undefined;
+      if (isIntern) {
+        // Monitoring is always on for intern sessions, and its window is
+        // exactly the work-hours span computed above.
+        classDuration = duration;
+      } else if (formData.monitoringEnabled) {
+        classDuration = timeRangeSpanMinutes(formData.classStartTime, formData.classEndTime);
+        if (classDuration < 5 || classDuration > 480) {
+          toast.error('Full class duration must be between 5 minutes and 8 hours (480 minutes)');
+          return;
+        }
       }
 
       // Check for reassigning existing short link confirmation — cron rules
@@ -359,18 +451,23 @@ const Sessions = () => {
 
       if (isCron) {
         await axios.post('/api/admin/recurring-rules', {
-          locationId: formData.locationId,
-          batchId: formData.batchId || undefined,
+          locationId: isIntern ? undefined : formData.locationId,
+          batchId: isIntern ? undefined : (formData.batchId || undefined),
           description: formData.description,
           durationMinutes: duration,
           runTimesLocal: formData.runTimesLocal,
           timezone: formData.timezone,
           daysOfWeek: formData.daysOfWeek,
-          shortlinkMode: formData.shortlinkMode,
-          customShortCode: formData.customShortCode.trim() || undefined,
-          existingShortCode: formData.existingShortCode || undefined,
+          shortlinkMode: isIntern ? 'none' : formData.shortlinkMode,
+          customShortCode: isIntern ? undefined : (formData.customShortCode.trim() || undefined),
+          existingShortCode: isIntern ? undefined : (formData.existingShortCode || undefined),
+          monitoringEnabled: isIntern || formData.monitoringEnabled,
+          classDurationMinutes: classDuration,
+          sessionKind: isIntern ? 'intern_monitoring' : undefined,
         });
-        toast.success('Recurring session rule created — it will start generating sessions at its scheduled times.');
+        toast.success(isIntern
+          ? 'Intern monitoring schedule created — a monitoring session will be generated automatically for each scheduled work day.'
+          : 'Recurring session rule created — it will start generating sessions at its scheduled times.');
         setShowModal(false);
         setFormData(emptyFormData);
         setRulesExpanded(true);
@@ -379,8 +476,10 @@ const Sessions = () => {
       }
 
       const res = await axios.post<{ _id: string; shortCode?: string }>('/api/admin/sessions', {
-        // Exam sessions have no location — manual attendance, not geofenced.
-        locationId: isExam ? undefined : formData.locationId,
+        // Exam and intern-monitoring sessions have no location — exam is
+        // manual attendance, intern monitoring is purely browser-extension
+        // based, neither is geofenced.
+        locationId: isExam || isIntern ? undefined : formData.locationId,
         durationMinutes: duration,
         description: formData.description,
         // Normal sessions omit these entirely — an empty mentor list is
@@ -390,15 +489,20 @@ const Sessions = () => {
         assignedAdminIds: isExam ? formData.assignedAdminIds : undefined,
         collegeName: isExam ? formData.collegeName.trim() : undefined,
         startsAt: isExam ? new Date(`${formData.startsDate}T${formData.startsTime}`).toISOString() : undefined,
-        // Exam sessions have no self-service check-in flow, so there's
-        // nothing for a short link to point to.
-        shortlinkMode: isExam ? 'none' : formData.shortlinkMode,
-        customShortCode: isExam ? undefined : (formData.customShortCode.trim() || undefined),
-        existingShortCode: isExam ? undefined : (formData.existingShortCode || undefined),
+        // Exam and intern-monitoring sessions have no self-service check-in
+        // flow, so there's nothing for a short link to point to.
+        shortlinkMode: isExam || isIntern ? 'none' : formData.shortlinkMode,
+        customShortCode: isExam || isIntern ? undefined : (formData.customShortCode.trim() || undefined),
+        existingShortCode: isExam || isIntern ? undefined : (formData.existingShortCode || undefined),
+        monitoringEnabled: isIntern || formData.monitoringEnabled,
+        classDurationMinutes: classDuration,
+        isInternMonitoring: isIntern,
       });
 
       const { protocol, hostname } = window.location;
-      let successMessage = 'Session created successfully!';
+      let successMessage = isIntern
+        ? 'Intern monitoring session created — pair the browser extension to start tracking.'
+        : 'Session created successfully!';
 
       if (res.data.shortCode) {
         const link = `${protocol}//${hostname}/s/${res.data.shortCode}`;
@@ -638,7 +742,9 @@ const Sessions = () => {
               rowKey={(r) => r._id}
               rows={recurringRules}
               columns={[
-                { key: 'location', label: 'Location', width: '14%', render: (r) => locations.find((l) => l._id === r.locationId)?.name || 'Unknown' },
+                { key: 'location', label: 'Location', width: '14%', render: (r) => r.sessionKind === 'intern_monitoring'
+                  ? <Badge tone="neutral">Intern Monitoring</Badge>
+                  : locations.find((l) => l._id === r.locationId)?.name || 'Unknown' },
                 { key: 'times', label: 'Times', width: '16%', render: (r) => r.runTimesLocal.join(', ') },
                 { key: 'days', label: 'Days', width: '16%', render: (r) => r.daysOfWeek.length === 7 ? 'Every day' : r.daysOfWeek.map((d) => DAY_LABELS[d]).join(', ') },
                 { key: 'timezone', label: 'Timezone', width: '13%', render: (r) => r.timezone },
@@ -740,7 +846,13 @@ const Sessions = () => {
                 }}>
                   <input type="radio" name="sessionType" value={type}
                     checked={formData.sessionType === type}
-                    onChange={() => setFormData({ ...formData, sessionType: type })}
+                    onChange={() => setFormData({
+                      ...formData,
+                      sessionType: type,
+                      // Intern Monitoring only exists as a toggle within the
+                      // Normal tab — switching to Exam must turn it off.
+                      isInternMonitoring: type === 'exam' ? false : formData.isInternMonitoring,
+                    })}
                     style={{ display: 'none' }} />
                   {type === 'normal' ? 'Normal (self check-in)' : 'Exam (assign a mentor)'}
                 </label>
@@ -752,6 +864,29 @@ const Sessions = () => {
           </div>
 
           {formData.sessionType === 'normal' && (
+            <div className="form-group">
+              <button
+                type="button"
+                aria-pressed={formData.isInternMonitoring}
+                onClick={() => setFormData({ ...formData, isInternMonitoring: !formData.isInternMonitoring })}
+                className="btn btn-secondary btn-small"
+                style={{
+                  border: `1.5px solid ${formData.isInternMonitoring ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'}`,
+                  background: formData.isInternMonitoring ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                  color: formData.isInternMonitoring ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                }}
+              >
+                {formData.isInternMonitoring ? '✓ Intern Monitoring' : 'Intern Monitoring'}
+              </button>
+              <small style={{ display: 'block', marginTop: '0.375rem', color: 'var(--color-muted)' }}>
+                {formData.isInternMonitoring
+                  ? 'No location, batch, or check-in link — students just pair their browser extension and behavior data is accepted and saved automatically for the work-hours window below. Different from the "Monitoring" toggle further down, which layers extra tracking on top of a normal, location-based check-in session. Choose a cadence below like any other session — this does not have to be recurring.'
+                  : 'Toggle on for a session tracked purely via the paired browser extension — no location, batch, or check-in link, unlike the location-based session below.'}
+              </small>
+            </div>
+          )}
+
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && (
             <div className="form-group">
               <label htmlFor="session-location">Location</label>
               <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
@@ -790,7 +925,9 @@ const Sessions = () => {
               </div>
               {formData.recurrence === 'cron' && (
                 <small style={{ color: 'var(--color-muted)' }}>
-                  A new session for this location is created automatically at each time below, on the selected days.
+                  {formData.isInternMonitoring
+                    ? 'A fresh monitoring session is created automatically at each time below, on the selected days.'
+                    : 'A new session for this location is created automatically at each time below, on the selected days.'}
                 </small>
               )}
             </div>
@@ -844,15 +981,76 @@ const Sessions = () => {
             </>
           )}
 
+          {formData.isInternMonitoring ? (
+            <div className="form-group">
+              <label>Work hours</label>
+              <TimeRangeFields
+                idPrefix="intern-work-hours"
+                startValue={formData.internStartTime}
+                endValue={formData.internEndTime}
+                onStartChange={(v) => setFormData({ ...formData, internStartTime: v })}
+                onEndChange={(v) => setFormData({ ...formData, internEndTime: v })}
+              />
+              <small style={{ color: 'var(--color-muted)' }}>
+                How long each work day runs, e.g. 9:00 AM to 5:00 PM. Monitoring is always on for intern sessions — students just pair their browser extension for this window.
+              </small>
+            </div>
+          ) : (
           <div className="form-group">
             <label>Duration (minutes)</label>
             <input type="number" value={formData.durationMinutes} onChange={(e) => setFormData({ ...formData, durationMinutes: parseInt(e.target.value) })} min="5" max="480" required />
+            <small style={{ color: 'var(--color-muted)' }}>How long the attendance check-in link stays active — not the full class length.</small>
           </div>
+          )}
+
+          {!formData.isInternMonitoring && (
+          <div className="form-group">
+            <label>Monitoring</label>
+            <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
+              {([false, true] as const).map((enabled) => (
+                <label key={String(enabled)} style={{
+                  flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
+                  borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
+                  border: `1.5px solid ${
+                    formData.monitoringEnabled === enabled ? 'var(--color-primary, #4f46e5)' : 'var(--color-border, #e5e7eb)'
+                  }`,
+                  background: formData.monitoringEnabled === enabled ? 'var(--color-primary-subtle, #eef2ff)' : 'transparent',
+                  color: formData.monitoringEnabled === enabled ? 'var(--color-primary, #4f46e5)' : 'var(--color-muted)',
+                  transition: 'all 0.15s',
+                  userSelect: 'none',
+                }}>
+                  <input type="radio" name="monitoringEnabled" value={String(enabled)}
+                    checked={formData.monitoringEnabled === enabled}
+                    onChange={() => setFormData({ ...formData, monitoringEnabled: enabled })}
+                    style={{ display: 'none' }} />
+                  {enabled ? 'Enable monitoring' : 'No monitoring'}
+                </label>
+              ))}
+            </div>
+            <small style={{ color: 'var(--color-muted)' }}>Tracks student behavior for the full class, independent of the attendance window above.</small>
+          </div>
+          )}
+
+          {!formData.isInternMonitoring && formData.monitoringEnabled && (
+            <div className="form-group">
+              <label>Full class duration</label>
+              <TimeRangeFields
+                idPrefix="class-duration"
+                startValue={formData.classStartTime}
+                endValue={formData.classEndTime}
+                onStartChange={(v) => setFormData({ ...formData, classStartTime: v })}
+                onEndChange={(v) => setFormData({ ...formData, classEndTime: v })}
+              />
+              <small style={{ color: 'var(--color-muted)' }}>How long the class actually runs — this is the window monitoring stays active for.</small>
+            </div>
+          )}
+
           <div className="form-group">
             <label>Description (optional)</label>
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} placeholder="e.g., Morning attendance for CS101" />
           </div>
 
+          {!formData.isInternMonitoring && (
           <div className="form-group">
             <label htmlFor="session-batch">Batch{formData.sessionType === 'normal' ? ' (Optional)' : ''}</label>
             <select id="session-batch" value={formData.batchId} onChange={(e) => setFormData({ ...formData, batchId: e.target.value })} required={formData.sessionType === 'exam'}>
@@ -865,6 +1063,7 @@ const Sessions = () => {
               <small style={{ color: 'var(--color-danger)' }}>No batches found. <Link to="/batches">Create one first</Link>.</small>
             )}
           </div>
+          )}
 
           {formData.sessionType === 'exam' && (
             <>
@@ -903,7 +1102,7 @@ const Sessions = () => {
 
           {/* ── Short Link mode selector — exam sessions have no self-service
                check-in flow to link to, so this is normal-session only ── */}
-          {formData.sessionType === 'normal' && (
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && (
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <label>Short Link</label>
             <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
@@ -935,19 +1134,19 @@ const Sessions = () => {
           </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.recurrence === 'cron' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               This link will be locked to the rule — it always redirects to whichever occurrence is currently active, and can't be picked for another one-off session while the rule is active. Pausing or deleting the rule frees it again.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               A random 6-character link will be created and copied to your clipboard.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && formData.shortlinkMode === 'existing' && (
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.shortlinkMode === 'existing' && (
             <div className="form-group">
               {activeShortLinks.length === 0 ? (
                 <div style={{
@@ -976,7 +1175,7 @@ const Sessions = () => {
             </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.shortlinkMode === 'custom' && (
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.shortlinkMode === 'custom' && (
             <div className="form-group">
               <label>Custom Short Code</label>
               <input type="text" value={formData.customShortCode}
@@ -988,7 +1187,9 @@ const Sessions = () => {
           )}
           <div className="form-actions">
             <button type="submit" className="btn btn-success">
-              {formData.sessionType === 'normal' && formData.recurrence === 'cron' ? 'Create Recurring Rule' : 'Create Session'}
+              {formData.recurrence === 'cron'
+                ? (formData.isInternMonitoring ? 'Create Recurring Monitoring Schedule' : 'Create Recurring Rule')
+                : (formData.isInternMonitoring ? 'Create Monitoring Session' : 'Create Session')}
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
           </div>

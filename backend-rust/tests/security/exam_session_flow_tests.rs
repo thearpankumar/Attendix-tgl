@@ -38,6 +38,7 @@ use tokio::sync::RwLock;
 
 pub(crate) async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let db = crate::test_db::get_test_database().await;
+    let timescale_db = crate::test_db::get_test_timescale_database().await;
     let config = AppConfig::for_testing();
 
     let redis_env = crate::test_db::get_test_environment().await;
@@ -74,6 +75,7 @@ pub(crate) async fn create_test_app() -> (axum::Router, sqlx::PgPool) {
     let state = Arc::new(AppState {
         config: config.clone(),
         db: db.clone(),
+        timescale_db,
         redis: (*redis_client).clone(),
         rate_limiter,
         deny_list,
@@ -165,7 +167,11 @@ impl Client {
         )
     }
 
-    async fn get(&self, app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    pub(crate) async fn get(
+        &self,
+        app: &axum::Router,
+        uri: &str,
+    ) -> (StatusCode, serde_json::Value) {
         let response = app
             .clone()
             .oneshot(
@@ -290,8 +296,15 @@ pub(crate) async fn seed_admin(
 /// super_admin — serializing the whole group, plus the explicit DELETE
 /// below, makes this test's view of "no super_admin exists yet" reliable
 /// regardless of execution order.
+///
+/// Also locks `recurring_scheduler`: the `TRUNCATE ... sessions ... CASCADE`
+/// below takes an AccessExclusiveLock on `sessions`, which deadlocks against
+/// `recurring_scheduler`-group tests' concurrent `SELECT ... FOR UPDATE SKIP
+/// LOCKED` claims/inserts on the same table if that group isn't also locked
+/// out for the duration (see `excel_session_flow_tests::reset_db`'s doc
+/// comment for the same reasoning).
 #[tokio::test]
-#[file_serial(admin_bootstrap)]
+#[file_serial(admin_bootstrap, recurring_scheduler)]
 async fn register_bootstraps_super_admin_then_locks_itself() {
     let (app, db) = create_test_app().await;
     // The other tests in this `#[file_serial(admin_bootstrap)]` group each seed
