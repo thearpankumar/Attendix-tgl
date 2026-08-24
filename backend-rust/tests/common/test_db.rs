@@ -52,6 +52,52 @@ pub struct TestEnvironment {
 const CONTAINER_START_RETRIES: u32 = 15;
 const CONTAINER_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
+// The containers above are `with_reuse(Always)` and typically already
+// running by the time any given test binary calls `get_test_database` /
+// `get_test_timescale_database` — so this is a *different* race than the
+// container-start one: testcontainers' readiness strategy only waits for the
+// "database system is ready to accept connections" log line, which fires as
+// soon as Postgres starts listening, not once it can sustain the full
+// connection load this suite throws at it once every `[[test]]` binary
+// (unit/middleware/security/...) is hammering the same shared container
+// concurrently. Under CI's tighter CPU/network-stack limits than local dev,
+// a fresh TCP connect landing in that window (or during a burst of
+// simultaneous new pool connections queuing past Docker's userland-proxy /
+// kernel accept backlog) can come back as a bare `ConnectionReset` before
+// ever reaching a Postgres-level error. Retrying the initial connect a
+// handful of times with a short backoff — same shape as the container-start
+// retry above — absorbs that transient window without masking a real,
+// persistent connection failure (which will still exhaust the retries and
+// panic).
+const DB_CONNECT_RETRIES: u32 = 8;
+const DB_CONNECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Retries `sqlx::postgres::PgPoolOptions::connect` a few times with a short
+/// backoff, to absorb the transient "container's readiness log line fired
+/// but it can't yet sustain the full test-suite connection load" window
+/// described above. Panics with the label and last error if every attempt
+/// fails.
+async fn connect_with_retry(
+    options: sqlx::postgres::PgPoolOptions,
+    url: &str,
+    label: &str,
+) -> sqlx::PgPool {
+    let mut last_err = None;
+    for attempt in 0..DB_CONNECT_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(DB_CONNECT_RETRY_DELAY).await;
+        }
+        match options.clone().connect(url).await {
+            Ok(pool) => return pool,
+            Err(e) => last_err = Some(e),
+        }
+    }
+    panic!(
+        "Failed to connect to {label} after {DB_CONNECT_RETRIES} attempts: {:?}",
+        last_err
+    );
+}
+
 impl TestEnvironment {
     pub async fn new() -> Self {
         use testcontainers::{runners::AsyncRunner, ImageExt, ReuseDirective};
@@ -222,11 +268,12 @@ pub async fn get_test_environment() -> &'static TestEnvironment {
 pub async fn get_test_database() -> sqlx::PgPool {
     let env = get_test_environment().await;
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(env.database_url())
-        .await
-        .expect("Failed to connect to test Postgres database");
+    let pool = connect_with_retry(
+        sqlx::postgres::PgPoolOptions::new().max_connections(5),
+        env.database_url(),
+        "test Postgres database",
+    )
+    .await;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
@@ -242,11 +289,12 @@ pub async fn get_test_database() -> sqlx::PgPool {
 pub async fn get_test_timescale_database() -> sqlx::PgPool {
     let env = get_test_environment().await;
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(env.timescale_database_url())
-        .await
-        .expect("Failed to connect to test TimescaleDB database");
+    let pool = connect_with_retry(
+        sqlx::postgres::PgPoolOptions::new().max_connections(5),
+        env.timescale_database_url(),
+        "test TimescaleDB database",
+    )
+    .await;
 
     sqlx::migrate!("./migrations_timescale")
         .run(&pool)
