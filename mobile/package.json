@@ -57,6 +57,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "audit": "node scripts/audit.mjs",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",

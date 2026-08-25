@@ -358,38 +358,25 @@ jobs:
           npm audit --audit-level=high
         continue-on-error: false
 
-      # continue-on-error here (unlike every other audit step in this job):
-      # 17 high-severity findings remain, both dev-tooling-only (never in the
-      # shipped JS bundle a user's phone runs) and both empirically confirmed
-      # unfixable without breaking something real — don't "fix" either by
-      # forcing versions via package.json overrides without re-verifying with
-      # a real `expo export` / `eas --version`, not just a clean audit:
-      #   - image-size (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq), via
-      #     metro -> @expo/metro -> expo/react-native/reanimated. Every
-      #     image-size release npm knows about is still marked affected, and
-      #     the one available workaround (aliasing the package to a
-      #     differently-shaped fork via overrides) crashes Metro's real
-      #     bundler outright (confirmed via `expo export`).
-      #   - minimatch (GHSA-3ppc-4f35-3m26 / -7r86-cg39-jmmj / -23c5-xmqv-rm74),
-      #     via eas-cli's dependency tree, which contains multiple different
-      #     minimatch majors at different depths (an old vulnerable one AND
-      #     an already-patched newer one with a different export shape).
-      #     Overriding "minimatch" collapses both to one version and breaks
-      #     whichever consumer needed the other shape (confirmed via
-      #     `eas --version` crashing with "minimatch_1.minimatch is not a
-      #     function") — npm overrides can't target only the vulnerable
-      #     occurrence without also touching the safe one in this tree.
-      # (Several other eas-cli advisories — ajv, diff, joi, nanoid, tar,
-      # ts-deepmerge, yaml — plus a separate uuid advisory via
-      # xcode -> @expo/config-plugins, ARE fixed; see package.json's
-      # `overrides`.) Re-run without this continue-on-error once upstream
-      # ships fixes metro/eas-cli can actually pick up.
+      # Unlike a blanket continue-on-error, mobile/scripts/audit.mjs runs the
+      # same `npm audit` but only fails on a finding OTHER than five known,
+      # empirically-confirmed-unfixable advisories (image-size via
+      # metro -> @expo/metro -> expo/react-native/reanimated; minimatch via
+      # eas-cli's dependency tree, which contains multiple different
+      # minimatch majors at different depths) — see the script's header
+      # comment for the full investigation, including why an `overrides` pin
+      # doesn't help for either (confirmed via `expo export` / `eas
+      # --version` actually crashing, not just a clean-audit guess). Several
+      # other eas-cli advisories (ajv, diff, joi, nanoid, tar, ts-deepmerge,
+      # yaml) plus a separate uuid advisory ARE fixed; see package.json's
+      # `overrides`. A genuinely new high/critical finding anywhere in this
+      # workspace still fails this step normally.
       - name: Audit mobile dependencies
         run: |
           cd mobile
           echo "=== Mobile Security Audit ==="
-          npm audit --audit-level=high
-        continue-on-error: true
+          npm run audit
+        continue-on-error: false
 
       - name: Setup Bun for home audit
         uses: oven-sh/setup-bun@v2
@@ -403,25 +390,22 @@ jobs:
           bun audit --audit-level=high
         continue-on-error: false
 
-      # continue-on-error here (like the mobile job above, for the same
-      # reason): 4 high-severity findings (image-size's ICNS/JXL/HEIF DoS
-      # parsers, GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq) come from
-      # addons-linter, a transitive dependency of `web-ext` — itself a
-      # transitive/optional dependency of `wxt` (this extension's build tool)
-      # used only for `wxt zip`/`wxt submit`, never bundled into the built
-      # extension a browser actually loads. `npm audit fix` confirms the only
-      # available fix is downgrading wxt to 0.20.27 and web-ext to 5.5.0 —
-      # both semver-major regressions to the core build tool, not something
-      # to do to chase a dev-only lint dependency's transitive image parser.
-      # These packages were already present in this lockfile (via wxt) before
-      # this job existed; re-run without this continue-on-error once upstream
-      # ships a fix wxt can actually pick up.
+      # Unlike the mobile job above, this doesn't need continue-on-error:
+      # extension/scripts/audit.mjs runs the same `npm audit`, but only fails
+      # on a finding OTHER than the two known/unfixable image-size advisories
+      # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — both list "Patched
+      # versions: None", transitive through addons-linter -> web-ext -> wxt,
+      # this extension's build tool, never bundled into what a browser
+      # loads; see the script's header comment for the full investigation,
+      # including why an `overrides` pin doesn't help). A genuinely new
+      # high/critical finding anywhere in this workspace still fails this
+      # step normally.
       - name: Audit extension dependencies
         run: |
           cd extension
           echo "=== Extension Security Audit ==="
-          npm audit --audit-level=high
-        continue-on-error: true
+          npm run audit
+        continue-on-error: false
 
   ci-status:
     name: CI Status Check

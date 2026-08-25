@@ -13,6 +13,7 @@
     "validate:firefox": "web-ext lint --source-dir=.output/firefox-mv2",
     "validate": "node scripts/validate-chrome.mjs",
     "validate:raw": "web-ext lint --source-dir=.output/chrome-mv3",
+    "audit": "node scripts/audit.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
