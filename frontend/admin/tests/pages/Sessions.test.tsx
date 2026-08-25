@@ -560,7 +560,7 @@ describe('Sessions', () => {
     expect(screen.getByRole('button', { name: '✓ Intern Monitoring' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('intern monitoring mode hides location, batch, short link, and monitoring-toggle fields, and shows a work-hours start/end picker', async () => {
+  it('intern monitoring mode hides location and monitoring-toggle fields, keeps batch and short link optional, and shows a work-hours start/end picker', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
     renderComponent();
     await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
@@ -569,8 +569,10 @@ describe('Sessions', () => {
     fireEvent.click(screen.getByText('Intern Monitoring'));
 
     expect(screen.queryByLabelText(/^Location$/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/^Batch/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Short Link$/i)).not.toBeInTheDocument();
+    // Batch and short link are now available for intern sessions too (both
+    // optional, same as a normal session).
+    expect(screen.getByLabelText(/^Batch/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Short Link$/i)).toBeInTheDocument();
     expect(screen.queryByText(/^Monitoring$/i)).not.toBeInTheDocument();
     // Cadence is independent of intern monitoring — the selector is still
     // shown, and recurrence stays at its default ('once'), so the cron-only
@@ -600,7 +602,7 @@ describe('Sessions', () => {
       expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
         locationId: undefined,
         batchId: undefined,
-        shortlinkMode: 'none',
+        shortlinkMode: 'auto',
         isInternMonitoring: true,
         monitoringEnabled: true,
         classDurationMinutes: 480,
@@ -628,11 +630,91 @@ describe('Sessions', () => {
       expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules', expect.objectContaining({
         locationId: undefined,
         batchId: undefined,
-        shortlinkMode: 'none',
+        shortlinkMode: 'auto',
         sessionKind: 'intern_monitoring',
         monitoringEnabled: true,
         classDurationMinutes: 480,
         durationMinutes: 480,
+      }));
+    });
+  });
+
+  it('creates an intern monitoring session with an optional batch attached', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    (axios.post as any).mockResolvedValue({ data: { _id: 's1' } });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+    fireEvent.change(screen.getByLabelText(/^Batch/i), { target: { value: 'batch1' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        batchId: 'batch1',
+        isInternMonitoring: true,
+      }));
+    });
+  });
+
+  it('creates an intern monitoring session with a custom short code', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.post as any).mockResolvedValue({ data: { _id: 's1', shortCode: 'intern1' } });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+    fireEvent.click(screen.getByText(/Custom code/i));
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\., CS101/i), { target: { value: 'intern1' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        shortlinkMode: 'custom',
+        customShortCode: 'intern1',
+        isInternMonitoring: true,
+      }));
+    });
+  });
+
+  it('attach existing mode: annotates a rule-locked link and reassigns it with confirmation for an intern session', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({
+      locations: [LOCATION],
+      shortLinks: [{ ...FREE_LINK, sessionId: null, lockedByRuleId: 'rule1', lockedByRuleDescription: 'Morning check-in' }],
+    }));
+    (axios.post as any).mockImplementation((url: string) => {
+      if (url.includes('/sessions')) return Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'cs101' } });
+      return Promise.resolve({ data: {} });
+    });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText('Intern Monitoring'));
+    fireEvent.click(screen.getByText(/Attach existing/i));
+
+    await waitFor(() => expect(screen.getByText(/\/s\/cs101 \(Locked to rule: Morning check-in\)/)).toBeInTheDocument());
+
+    const linkSelect = screen.getByDisplayValue('Pick a short link…');
+    fireEvent.change(linkSelect, { target: { value: 'cs101' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => expect(screen.getByText(/Short Link Locked To A Recurring Rule/i)).toBeInTheDocument());
+    expect(screen.getAllByText(/Morning check-in/i).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText(/Reassign & Create/i));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        shortlinkMode: 'existing',
+        existingShortCode: 'cs101',
+        forceReassign: true,
+        isInternMonitoring: true,
       }));
     });
   });

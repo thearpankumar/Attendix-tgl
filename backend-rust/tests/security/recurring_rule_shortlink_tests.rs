@@ -172,3 +172,233 @@ async fn create_recurring_rule_rejects_a_genuinely_unknown_shortlink_mode() {
         "a genuinely unknown mode should still 400: {body:?}"
     );
 }
+
+/// Regression coverage for reassigning a short code that's already locked to
+/// an active recurring rule. Previously this was a hard, unrecoverable 400
+/// everywhere — `get_short_links` hid such codes from the admin picker
+/// entirely, and both creation endpoints rejected reusing one outright. Now
+/// the picker surfaces them (annotated with the owning rule) and an explicit
+/// `forceReassign: true` lets an admin confirm taking the code back, which
+/// clears the old rule's lock (same effect as pausing it) and hands the code
+/// to the new session/rule.
+mod reassignment {
+    use super::*;
+
+    async fn create_locked_rule(
+        app: &axum::Router,
+        client: &Client,
+        location_id: Uuid,
+        code: &str,
+    ) -> Uuid {
+        let mut payload = base_payload(location_id);
+        payload["shortlinkMode"] = serde_json::json!("custom");
+        payload["customShortCode"] = serde_json::json!(code);
+        let (status, body) = client
+            .mutate(app, "POST", "/api/admin/recurring-rules", payload)
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "response body: {body:?}");
+        assert_eq!(body["lockedShortCode"], serde_json::json!(code));
+        Uuid::parse_str(body["_id"].as_str().expect("rule id")).unwrap()
+    }
+
+    #[tokio::test]
+    #[file_serial(admin_bootstrap)]
+    async fn get_short_links_annotates_a_rule_locked_code_instead_of_hiding_it() {
+        let (app, db) = create_test_app().await;
+        let username = format!("rrule-admin-{}", Uuid::new_v4().simple());
+        let email = format!("{username}@example.com");
+        seed_admin(&db, &username, &email, "correct-horse-battery-staple", "super_admin").await;
+        let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+        let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+            .bind(&username)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let location_id = seed_location(&db, admin_id).await;
+
+        let code = format!("locked-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        create_locked_rule(&app, &client, location_id, &code).await;
+
+        let (status, body) = client.get(&app, "/api/admin/shortlinks?limit=200").await;
+        assert_eq!(status, StatusCode::OK, "response body: {body:?}");
+        let links = body["shortLinks"].as_array().expect("shortLinks array");
+        let entry = links
+            .iter()
+            .find(|l| l["shortCode"] == serde_json::json!(code))
+            .unwrap_or_else(|| panic!("locked code missing from list entirely: {links:?}"));
+        assert!(
+            entry["lockedByRuleId"].is_string(),
+            "a rule-locked code must be annotated, not omitted: {entry:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[file_serial(admin_bootstrap)]
+    async fn one_off_session_cannot_steal_a_rule_locked_code_without_force_reassign() {
+        let (app, db) = create_test_app().await;
+        let username = format!("rrule-admin-{}", Uuid::new_v4().simple());
+        let email = format!("{username}@example.com");
+        seed_admin(&db, &username, &email, "correct-horse-battery-staple", "super_admin").await;
+        let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+        let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+            .bind(&username)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let location_id = seed_location(&db, admin_id).await;
+
+        let code = format!("locked-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        create_locked_rule(&app, &client, location_id, &code).await;
+
+        let (status, body) = client
+            .mutate(
+                &app,
+                "POST",
+                "/api/admin/sessions",
+                serde_json::json!({
+                    "locationId": location_id.to_string(),
+                    "durationMinutes": 30,
+                    "shortlinkMode": "existing",
+                    "existingShortCode": code,
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "without force_reassign, stealing a rule-locked code must still fail: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[file_serial(admin_bootstrap)]
+    async fn one_off_session_reassigns_a_rule_locked_code_with_force_reassign() {
+        let (app, db) = create_test_app().await;
+        let username = format!("rrule-admin-{}", Uuid::new_v4().simple());
+        let email = format!("{username}@example.com");
+        seed_admin(&db, &username, &email, "correct-horse-battery-staple", "super_admin").await;
+        let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+        let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+            .bind(&username)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let location_id = seed_location(&db, admin_id).await;
+
+        let code = format!("locked-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let rule_id = create_locked_rule(&app, &client, location_id, &code).await;
+
+        let (status, body) = client
+            .mutate(
+                &app,
+                "POST",
+                "/api/admin/sessions",
+                serde_json::json!({
+                    "locationId": location_id.to_string(),
+                    "durationMinutes": 30,
+                    "shortlinkMode": "existing",
+                    "existingShortCode": code,
+                    "forceReassign": true,
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "with force_reassign, stealing a rule-locked code must succeed: {body:?}"
+        );
+        assert_eq!(body["shortCode"], serde_json::json!(code));
+
+        let locked_short_code: Option<String> = sqlx::query_scalar(
+            "SELECT locked_short_code FROM recurring_session_rules WHERE id = $1",
+        )
+        .bind(rule_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            locked_short_code.is_none(),
+            "the old rule must lose its lock once the code is reassigned away from it"
+        );
+    }
+
+    #[tokio::test]
+    #[file_serial(admin_bootstrap)]
+    async fn recurring_rule_cannot_steal_another_rules_locked_code_without_force_reassign() {
+        let (app, db) = create_test_app().await;
+        let username = format!("rrule-admin-{}", Uuid::new_v4().simple());
+        let email = format!("{username}@example.com");
+        seed_admin(&db, &username, &email, "correct-horse-battery-staple", "super_admin").await;
+        let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+        let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+            .bind(&username)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let location_id = seed_location(&db, admin_id).await;
+
+        let code = format!("locked-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        create_locked_rule(&app, &client, location_id, &code).await;
+
+        let mut payload = base_payload(location_id);
+        payload["shortlinkMode"] = serde_json::json!("existing");
+        payload["existingShortCode"] = serde_json::json!(code);
+        let (status, body) = client
+            .mutate(&app, "POST", "/api/admin/recurring-rules", payload)
+            .await;
+
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "without force_reassign, a second rule stealing another rule's locked code must still fail: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[file_serial(admin_bootstrap)]
+    async fn recurring_rule_reassigns_another_rules_locked_code_with_force_reassign() {
+        let (app, db) = create_test_app().await;
+        let username = format!("rrule-admin-{}", Uuid::new_v4().simple());
+        let email = format!("{username}@example.com");
+        seed_admin(&db, &username, &email, "correct-horse-battery-staple", "super_admin").await;
+        let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+        let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+            .bind(&username)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let location_id = seed_location(&db, admin_id).await;
+
+        let code = format!("locked-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let old_rule_id = create_locked_rule(&app, &client, location_id, &code).await;
+
+        let mut payload = base_payload(location_id);
+        payload["shortlinkMode"] = serde_json::json!("existing");
+        payload["existingShortCode"] = serde_json::json!(code);
+        payload["forceReassign"] = serde_json::json!(true);
+        let (status, body) = client
+            .mutate(&app, "POST", "/api/admin/recurring-rules", payload)
+            .await;
+
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "with force_reassign, a second rule stealing another rule's locked code must succeed: {body:?}"
+        );
+        assert_eq!(body["lockedShortCode"], serde_json::json!(code));
+
+        let old_locked_short_code: Option<String> = sqlx::query_scalar(
+            "SELECT locked_short_code FROM recurring_session_rules WHERE id = $1",
+        )
+        .bind(old_rule_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            old_locked_short_code.is_none(),
+            "the old rule must lose its lock once the code is reassigned to the new rule"
+        );
+    }
+}

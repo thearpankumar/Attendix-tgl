@@ -9,7 +9,10 @@
     "build:firefox": "wxt build -b firefox",
     "build:all": "npm run build && npm run build:firefox",
     "zip": "wxt zip",
-    "zip:firefox": "wxt zip -b firefox",
+    "zip:firefox": "wxt zip -b firefox && node scripts/make-xpi.mjs",
+    "validate:firefox": "web-ext lint --source-dir=.output/firefox-mv2",
+    "validate": "node scripts/validate-chrome.mjs",
+    "validate:raw": "web-ext lint --source-dir=.output/chrome-mv3",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -35,6 +38,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.4",
     "vitest": "^4.1.10",
+    "web-ext": "^10.6.0",
     "wxt": "^0.21.4"
   }
 }

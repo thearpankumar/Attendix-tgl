@@ -47,6 +47,12 @@ pub struct CreateSessionRequest {
     pub shortlink_mode: Option<String>,
     pub custom_short_code: Option<String>,
     pub existing_short_code: Option<String>,
+    /// When `shortlink_mode` is `"existing"` and the chosen code is locked to
+    /// another active recurring rule, the request 400s unless this is true —
+    /// in which case the old rule's lock is cleared (same effect as pausing
+    /// it) and the code is reused here instead. Has no effect otherwise.
+    #[serde(default)]
+    pub force_reassign: bool,
     #[serde(default)]
     pub monitoring_enabled: bool,
     /// Full class duration in minutes; required when `monitoring_enabled` is
@@ -410,12 +416,15 @@ pub async fn create_session(
     // session to pair by matching the short code in the tab's URL, and the
     // student-frontend page it resolves to (`StudentScan`) is what registers
     // the intern's passkey — see `get_short_link_session` and
-    // `StudentScan.tsx`'s `internMode` branch. Force "auto" (ignore whatever
-    // the request sent) rather than letting the admin manage it manually.
-    let mode = if is_intern_monitoring {
+    // `StudentScan.tsx`'s `internMode` branch. The admin can otherwise pick
+    // any mode same as a normal session; only fall back to "auto" when the
+    // request left it unset or explicitly asked for no link at all, since an
+    // intern session must never end up linkless.
+    let requested_mode = payload.shortlink_mode.as_deref().unwrap_or("auto");
+    let mode = if is_intern_monitoring && requested_mode == "none" {
         "auto"
     } else {
-        payload.shortlink_mode.as_deref().unwrap_or("auto")
+        requested_mode
     };
 
     // Pre-validate short link requirements before creating session
@@ -470,19 +479,28 @@ pub async fn create_session(
         }
         // A code locked to an active recurring rule is reserved — reusing it
         // here would silently steal it out from under the rule, breaking the
-        // stable link the rule's occurrences keep re-pointing to. Pausing or
-        // deleting the rule clears the lock and frees the code immediately.
+        // stable link the rule's occurrences keep re-pointing to. Allowed
+        // with an explicit `force_reassign`, which clears the old rule's
+        // lock (same effect as pausing it) before this session claims it.
         let locked_to_active_rule: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM recurring_session_rules WHERE locked_short_code = $1 AND is_active = true",
         )
         .bind(code)
         .fetch_optional(&state.db)
         .await?;
-        if locked_to_active_rule.is_some() {
-            return Err(AppError::BadRequest(format!(
-                "Short link '/s/{}' is reserved by an active recurring session rule and can't be reused for a one-off session. Pause or delete the rule first.",
-                code
-            )));
+        if let Some(rule_id) = locked_to_active_rule {
+            if !payload.force_reassign {
+                return Err(AppError::BadRequest(format!(
+                    "Short link '/s/{}' is reserved by an active recurring session rule and can't be reused for a one-off session. Pause or delete the rule first, or confirm reassignment.",
+                    code
+                )));
+            }
+            sqlx::query(
+                "UPDATE recurring_session_rules SET locked_short_code = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(rule_id)
+            .execute(&state.db)
+            .await?;
         }
         Some(code.to_string())
     } else {

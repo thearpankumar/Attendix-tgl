@@ -27,7 +27,7 @@ import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadB
 const PAGE_SIZE = 30;
 
 interface Location { _id: string; name: string; radiusMeters: number; }
-interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; }
+interface ShortLink { _id: string; shortCode: string; isActive: boolean; sessionId?: unknown; lockedByRuleId?: string; lockedByRuleDescription?: string; }
 interface Batch { _id: string; name: string; studentCount: number; type?: 'manual' | 'session'; }
 export interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; email?: string; }
 type ShortlinkMode = 'auto' | 'custom' | 'existing' | 'none';
@@ -220,7 +220,7 @@ const Sessions = () => {
   const [rulesExpanded, setRulesExpanded] = useState(false);
   const [ruleDeleteId, setRuleDeleteId] = useState<string | null>(null);
   const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
-  const [reassignConfirm, setReassignConfirm] = useState({ open: false, shortCode: '' });
+  const [reassignConfirm, setReassignConfirm] = useState<{ open: boolean; shortCode: string; reason: 'session' | 'rule'; ruleDescription: string }>({ open: false, shortCode: '', reason: 'session', ruleDescription: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, sessionId: '', attendanceCount: 0, locationName: '' });
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -438,13 +438,26 @@ const Sessions = () => {
         }
       }
 
-      // Check for reassigning existing short link confirmation — cron rules
-      // always reject an already-locked code server-side, so this
-      // reassignment flow only ever applies to the one-off path.
-      if (!isCron && formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
+      // Check for reassigning existing short link confirmation. Two cases:
+      // (1) the code is locked to another active *recurring rule* — applies
+      // to both one-off and cron creation, since either can now steal a
+      // rule-locked code (server clears the old rule's lock on confirm).
+      // (2) the code is attached to another active *session* — one-off path
+      // only; cron rules don't look at session_id server-side (a separate,
+      // pre-existing, out-of-scope gap in the cron path).
+      if (formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
         const selectedLink = activeShortLinks.find(l => l.shortCode === formData.existingShortCode);
-        if (selectedLink && selectedLink.sessionId) {
-          setReassignConfirm({ open: true, shortCode: formData.existingShortCode });
+        if (selectedLink?.lockedByRuleId) {
+          setReassignConfirm({
+            open: true,
+            shortCode: formData.existingShortCode,
+            reason: 'rule',
+            ruleDescription: selectedLink.lockedByRuleDescription || '',
+          });
+          return;
+        }
+        if (!isCron && selectedLink?.sessionId) {
+          setReassignConfirm({ open: true, shortCode: formData.existingShortCode, reason: 'session', ruleDescription: '' });
           return;
         }
       }
@@ -452,15 +465,16 @@ const Sessions = () => {
       if (isCron) {
         await axios.post('/api/admin/recurring-rules', {
           locationId: isIntern ? undefined : formData.locationId,
-          batchId: isIntern ? undefined : (formData.batchId || undefined),
+          batchId: formData.batchId || undefined,
           description: formData.description,
           durationMinutes: duration,
           runTimesLocal: formData.runTimesLocal,
           timezone: formData.timezone,
           daysOfWeek: formData.daysOfWeek,
-          shortlinkMode: isIntern ? 'none' : formData.shortlinkMode,
-          customShortCode: isIntern ? undefined : (formData.customShortCode.trim() || undefined),
-          existingShortCode: isIntern ? undefined : (formData.existingShortCode || undefined),
+          shortlinkMode: formData.shortlinkMode,
+          customShortCode: formData.customShortCode.trim() || undefined,
+          existingShortCode: formData.existingShortCode || undefined,
+          forceReassign: forceReassign || undefined,
           monitoringEnabled: isIntern || formData.monitoringEnabled,
           classDurationMinutes: classDuration,
           sessionKind: isIntern ? 'intern_monitoring' : undefined,
@@ -489,11 +503,14 @@ const Sessions = () => {
         assignedAdminIds: isExam ? formData.assignedAdminIds : undefined,
         collegeName: isExam ? formData.collegeName.trim() : undefined,
         startsAt: isExam ? new Date(`${formData.startsDate}T${formData.startsTime}`).toISOString() : undefined,
-        // Exam and intern-monitoring sessions have no self-service check-in
-        // flow, so there's nothing for a short link to point to.
-        shortlinkMode: isExam || isIntern ? 'none' : formData.shortlinkMode,
-        customShortCode: isExam || isIntern ? undefined : (formData.customShortCode.trim() || undefined),
-        existingShortCode: isExam || isIntern ? undefined : (formData.existingShortCode || undefined),
+        // Exam sessions have no self-service check-in flow, so there's
+        // nothing for a short link to point to. Intern-monitoring sessions
+        // DO need one — it's how the extension/passkey-registration flow
+        // finds the session.
+        shortlinkMode: isExam ? 'none' : formData.shortlinkMode,
+        customShortCode: isExam ? undefined : (formData.customShortCode.trim() || undefined),
+        existingShortCode: isExam ? undefined : (formData.existingShortCode || undefined),
+        forceReassign: forceReassign || undefined,
         monitoringEnabled: isIntern || formData.monitoringEnabled,
         classDurationMinutes: classDuration,
         isInternMonitoring: isIntern,
@@ -880,8 +897,8 @@ const Sessions = () => {
               </button>
               <small style={{ display: 'block', marginTop: '0.375rem', color: 'var(--color-muted)' }}>
                 {formData.isInternMonitoring
-                  ? 'No location, batch, or check-in link — students just pair their browser extension and behavior data is accepted and saved automatically for the work-hours window below. Different from the "Monitoring" toggle further down, which layers extra tracking on top of a normal, location-based check-in session. Choose a cadence below like any other session — this does not have to be recurring.'
-                  : 'Toggle on for a session tracked purely via the paired browser extension — no location, batch, or check-in link, unlike the location-based session below.'}
+                  ? 'No location — students just pair their browser extension and behavior data is accepted and saved automatically for the work-hours window below. Batch and short link stay optional, same as a normal session. Different from the "Monitoring" toggle further down, which layers extra tracking on top of a normal, location-based check-in session. Choose a cadence below like any other session — this does not have to be recurring.'
+                  : 'Toggle on for a session tracked purely via the paired browser extension — no location, unlike the location-based session below.'}
               </small>
             </div>
           )}
@@ -1050,7 +1067,6 @@ const Sessions = () => {
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} placeholder="e.g., Morning attendance for CS101" />
           </div>
 
-          {!formData.isInternMonitoring && (
           <div className="form-group">
             <label htmlFor="session-batch">Batch{formData.sessionType === 'normal' ? ' (Optional)' : ''}</label>
             <select id="session-batch" value={formData.batchId} onChange={(e) => setFormData({ ...formData, batchId: e.target.value })} required={formData.sessionType === 'exam'}>
@@ -1063,7 +1079,6 @@ const Sessions = () => {
               <small style={{ color: 'var(--color-danger)' }}>No batches found. <Link to="/batches">Create one first</Link>.</small>
             )}
           </div>
-          )}
 
           {formData.sessionType === 'exam' && (
             <>
@@ -1101,8 +1116,10 @@ const Sessions = () => {
           )}
 
           {/* ── Short Link mode selector — exam sessions have no self-service
-               check-in flow to link to, so this is normal-session only ── */}
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && (
+               check-in flow to link to, so this only applies to the normal
+               tab (plain session or intern monitoring — intern needs a link
+               too, for the extension pairing / passkey-registration flow) ── */}
+          {formData.sessionType === 'normal' && (
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <label>Short Link</label>
             <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
@@ -1134,19 +1151,19 @@ const Sessions = () => {
           </div>
           )}
 
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.recurrence === 'cron' && (
+          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               This link will be locked to the rule — it always redirects to whichever occurrence is currently active, and can't be picked for another one-off session while the rule is active. Pausing or deleting the rule frees it again.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
+          {formData.sessionType === 'normal' && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               A random 6-character link will be created and copied to your clipboard.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.shortlinkMode === 'existing' && (
+          {formData.sessionType === 'normal' && formData.shortlinkMode === 'existing' && (
             <div className="form-group">
               {activeShortLinks.length === 0 ? (
                 <div style={{
@@ -1165,17 +1182,19 @@ const Sessions = () => {
                     <option value="">Pick a short link…</option>
                     {activeShortLinks.map((l) => (
                       <option key={l.shortCode} value={l.shortCode}>
-                        /s/{l.shortCode} {l.sessionId ? '(In use)' : '(Available)'}
+                        /s/{l.shortCode} {l.lockedByRuleId
+                          ? `(Locked to rule: ${l.lockedByRuleDescription || 'recurring rule'})`
+                          : l.sessionId ? '(In use)' : '(Available)'}
                       </option>
                     ))}
                   </select>
-                  <small style={{ color: 'var(--color-muted)' }}>If the link is in use, you will be asked to confirm reassignment.</small>
+                  <small style={{ color: 'var(--color-muted)' }}>If the link is in use or locked to a recurring rule, you will be asked to confirm reassignment.</small>
                 </>
               )}
             </div>
           )}
 
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && formData.shortlinkMode === 'custom' && (
+          {formData.sessionType === 'normal' && formData.shortlinkMode === 'custom' && (
             <div className="form-group">
               <label>Custom Short Code</label>
               <input type="text" value={formData.customShortCode}
@@ -1257,10 +1276,10 @@ const Sessions = () => {
         onCancel={() => setRuleDeleteId(null)}
       />
 
-      <Modal open={reassignConfirm.open} onClose={() => setReassignConfirm({ open: false, shortCode: '' })} title="">
+      <Modal open={reassignConfirm.open} onClose={() => setReassignConfirm({ open: false, shortCode: '', reason: 'session', ruleDescription: '' })} title="">
         <div style={{ textAlign: 'center', padding: '1rem 0.5rem' }}>
-          <div style={{ 
-            width: '64px', height: '64px', borderRadius: '16px', 
+          <div style={{
+            width: '64px', height: '64px', borderRadius: '16px',
             background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.2))',
             border: '1px solid rgba(245, 158, 11, 0.3)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem',
@@ -1268,18 +1287,31 @@ const Sessions = () => {
           }}>
             <AlertTriangle size={32} color="#fbbf24" />
           </div>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: '#fff' }}>Short Link In Use</h3>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: '#fff' }}>
+            {reassignConfirm.reason === 'rule' ? 'Short Link Locked To A Recurring Rule' : 'Short Link In Use'}
+          </h3>
           <p style={{ color: 'var(--color-muted)', lineHeight: 1.6, marginBottom: '2rem' }}>
-            The short link <strong style={{ color: '#fff' }}>/s/{reassignConfirm.shortCode}</strong> is currently attached to another active session. 
-            <br/><br/>
-            If you continue, it will be forcefully reassigned to this new session, and the previous session will lose this link.
+            {reassignConfirm.reason === 'rule' ? (
+              <>
+                The short link <strong style={{ color: '#fff' }}>/s/{reassignConfirm.shortCode}</strong> is currently locked to
+                {reassignConfirm.ruleDescription ? <> the recurring rule <strong style={{ color: '#fff' }}>&quot;{reassignConfirm.ruleDescription}&quot;</strong></> : ' another active recurring rule'}.
+                <br/><br/>
+                If you continue, that rule will lose the link (its future occurrences won&apos;t have one, same as pausing it) and this link will move here instead.
+              </>
+            ) : (
+              <>
+                The short link <strong style={{ color: '#fff' }}>/s/{reassignConfirm.shortCode}</strong> is currently attached to another active session.
+                <br/><br/>
+                If you continue, it will be forcefully reassigned to this new session, and the previous session will lose this link.
+              </>
+            )}
           </p>
           <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setReassignConfirm({ open: false, shortCode: '' })}>
+            <button type="button" className="btn btn-secondary" onClick={() => setReassignConfirm({ open: false, shortCode: '', reason: 'session', ruleDescription: '' })}>
               Cancel
             </button>
-            <button type="button" 
-              onClick={() => { setReassignConfirm({ open: false, shortCode: '' }); handleCreateSubmit(undefined, true); }}
+            <button type="button"
+              onClick={() => { setReassignConfirm({ open: false, shortCode: '', reason: 'session', ruleDescription: '' }); handleCreateSubmit(undefined, true); }}
               style={{
                 background: 'linear-gradient(135deg, #f59e0b, #d97706)',
                 color: '#fff', border: 'none', padding: '10px 24px', borderRadius: 'var(--radius-sm)',

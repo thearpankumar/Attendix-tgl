@@ -253,6 +253,86 @@ async fn creates_a_one_off_intern_monitoring_session_with_no_location() {
     );
 }
 
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn intern_monitoring_session_honors_a_requested_custom_short_code() {
+    let (app, db) = create_test_app().await;
+    let (client, _admin_id) = login_super_admin(&app, &db).await;
+
+    let custom_code = format!("intern-{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let (status, body) = client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "isInternMonitoring": true,
+                "durationMinutes": 480,
+                "classDurationMinutes": 480,
+                "shortlinkMode": "custom",
+                "customShortCode": custom_code,
+            }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED, "response body: {body:?}");
+    assert_eq!(
+        body["shortCode"],
+        serde_json::json!(custom_code),
+        "an intern session's admin-chosen custom code must be honored, not silently overridden with an auto-generated one: {body:?}"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn intern_monitoring_session_still_falls_back_to_auto_when_mode_is_none() {
+    let (app, db) = create_test_app().await;
+    let (client, _admin_id) = login_super_admin(&app, &db).await;
+
+    let (status, body) = client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "isInternMonitoring": true,
+                "durationMinutes": 480,
+                "classDurationMinutes": 480,
+                "shortlinkMode": "none",
+            }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED, "response body: {body:?}");
+    assert!(
+        body["shortCode"].is_string(),
+        "an intern session explicitly requesting 'none' must still fall back to a real link, since the extension pairing flow depends on one: {body:?}"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn intern_monitoring_rule_honors_a_requested_custom_short_code() {
+    let (app, db) = create_test_app().await;
+    let (client, _admin_id) = login_super_admin(&app, &db).await;
+
+    let custom_code = format!("intern-rule-{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let mut payload = intern_payload();
+    payload["shortlinkMode"] = serde_json::json!("custom");
+    payload["customShortCode"] = serde_json::json!(custom_code);
+
+    let (status, body) = client
+        .mutate(&app, "POST", "/api/admin/recurring-rules", payload)
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED, "response body: {body:?}");
+    assert_eq!(
+        body["lockedShortCode"],
+        serde_json::json!(custom_code),
+        "an intern rule's admin-chosen custom code must be honored, not silently overridden with an auto-generated one: {body:?}"
+    );
+}
+
 /// The desktop allowance above isn't just for `intern_monitoring` sessions —
 /// an *ordinary* session with monitoring enabled needs it too, since pairing
 /// the extension is still a "leave this page open on the laptop" flow (see

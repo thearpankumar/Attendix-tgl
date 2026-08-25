@@ -40,6 +40,14 @@ pub struct ShortLinkResponse {
     pub click_count: i32,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    /// Id of the active recurring rule this code is currently locked to, if
+    /// any — lets the admin picker show it as reassignable (see
+    /// `force_reassign` in `create_session`/`create_recurring_rule`) instead
+    /// of silently omitting it.
+    #[serde(rename = "lockedByRuleId")]
+    pub locked_by_rule_id: Option<String>,
+    #[serde(rename = "lockedByRuleDescription")]
+    pub locked_by_rule_description: Option<String>,
 }
 
 /// Resolves the short code to use for a new short link: a trimmed, non-empty
@@ -130,6 +138,9 @@ pub async fn create_short_link(
             is_active: inserted.is_active,
             click_count: inserted.click_count,
             created_at: inserted.created_at.to_rfc3339(),
+            // Freshly created — can't already be locked to a rule.
+            locked_by_rule_id: None,
+            locked_by_rule_description: None,
         }),
     ))
 }
@@ -156,19 +167,11 @@ pub async fn get_short_links(
         .and_then(|s| Uuid::parse_str(s).ok());
     let is_active_filter = query.is_active.as_deref().map(|s| s == "true");
 
-    // Codes locked to an active recurring rule are excluded here so the
-    // admin's "existing short code" picker never offers one that would 400
-    // if selected (see the guard in controllers::session::create_session) —
-    // pausing or deleting the owning rule frees the code again immediately.
     let links = sqlx::query_as::<_, ShortLink>(
         "SELECT * FROM short_links \
          WHERE ($1 = 'super_admin' OR created_by = $2) \
            AND ($3::uuid IS NULL OR session_id = $3) \
            AND ($4::bool IS NULL OR is_active = $4) \
-           AND NOT EXISTS ( \
-                SELECT 1 FROM recurring_session_rules r \
-                WHERE r.locked_short_code = short_links.short_code AND r.is_active = true \
-           ) \
          ORDER BY created_at DESC \
          OFFSET $5 LIMIT $6",
     )
@@ -181,17 +184,35 @@ pub async fn get_short_links(
     .fetch_all(&state.db)
     .await?;
 
+    // Codes locked to an active recurring rule are no longer hidden — the
+    // admin picker shows them as reassignable instead (confirm-and-steal via
+    // `force_reassign`, see `create_session`/`create_recurring_rule`), so it
+    // needs to know which rule (if any) currently holds each code.
+    let locks: Vec<(String, Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT locked_short_code, id, description FROM recurring_session_rules \
+         WHERE is_active = true AND locked_short_code IS NOT NULL",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let lock_map: std::collections::HashMap<String, (Uuid, Option<String>)> =
+        locks.into_iter().map(|(code, id, desc)| (code, (id, desc))).collect();
+
     let response: Vec<ShortLinkResponse> = links
         .into_iter()
-        .map(|link| ShortLinkResponse {
-            id: link.id.to_string(),
-            short_code: link.short_code.clone(),
-            url: format!("{}/s/{}", state.config.public_base_url, link.short_code),
-            session_id: link.session_id.map(|id| id.to_string()),
-            expires_at: link.expires_at.map(|d| d.to_rfc3339()),
-            is_active: link.is_active,
-            click_count: link.click_count,
-            created_at: link.created_at.to_rfc3339(),
+        .map(|link| {
+            let lock = lock_map.get(&link.short_code);
+            ShortLinkResponse {
+                id: link.id.to_string(),
+                short_code: link.short_code.clone(),
+                url: format!("{}/s/{}", state.config.public_base_url, link.short_code),
+                session_id: link.session_id.map(|id| id.to_string()),
+                expires_at: link.expires_at.map(|d| d.to_rfc3339()),
+                is_active: link.is_active,
+                click_count: link.click_count,
+                created_at: link.created_at.to_rfc3339(),
+                locked_by_rule_id: lock.map(|(id, _)| id.to_string()),
+                locked_by_rule_description: lock.and_then(|(_, desc)| desc.clone()),
+            }
         })
         .collect();
 

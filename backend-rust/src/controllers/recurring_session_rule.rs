@@ -35,6 +35,12 @@ pub struct CreateRecurringRuleRequest {
     pub shortlink_mode: Option<String>,
     pub custom_short_code: Option<String>,
     pub existing_short_code: Option<String>,
+    /// When `shortlink_mode` is `"existing"` and the chosen code is locked to
+    /// another active recurring rule, the request 400s unless this is true —
+    /// in which case the other rule's lock is cleared (same effect as
+    /// pausing it) and the code is reused here instead.
+    #[serde(default)]
+    pub force_reassign: bool,
     #[serde(default)]
     pub monitoring_enabled: bool,
     pub class_duration_minutes: Option<i32>,
@@ -222,12 +228,15 @@ pub async fn create_recurring_rule(
     }
 
     // Intern-monitoring rules need a real locked short link too — see the
-    // matching comment in `controllers::session::create_session`. Force
-    // "auto" regardless of what the request sent.
-    let mode = if is_intern_monitoring {
+    // matching comment in `controllers::session::create_session`. The admin
+    // can otherwise pick any mode same as a normal rule; only fall back to
+    // "auto" when the request left it unset or explicitly asked for none,
+    // since an intern rule must never end up linkless.
+    let requested_mode = payload.shortlink_mode.as_deref().unwrap_or("none");
+    let mode = if is_intern_monitoring && requested_mode == "none" {
         "auto"
     } else {
-        payload.shortlink_mode.as_deref().unwrap_or("none")
+        requested_mode
     };
     let locked_short_code = match mode {
         "none" => None,
@@ -331,11 +340,19 @@ pub async fn create_recurring_rule(
             .bind(&code)
             .fetch_optional(&state.db)
             .await?;
-            if locked_to_active_rule.is_some() {
-                return Err(AppError::BadRequest(format!(
-                    "Short link '/s/{}' is already locked to another active recurring rule.",
-                    code
-                )));
+            if let Some(rule_id) = locked_to_active_rule {
+                if !payload.force_reassign {
+                    return Err(AppError::BadRequest(format!(
+                        "Short link '/s/{}' is already locked to another active recurring rule. Confirm reassignment to take it.",
+                        code
+                    )));
+                }
+                sqlx::query(
+                    "UPDATE recurring_session_rules SET locked_short_code = NULL, updated_at = now() WHERE id = $1",
+                )
+                .bind(rule_id)
+                .execute(&state.db)
+                .await?;
             }
             Some(code)
         }
