@@ -27,6 +27,17 @@ export default tseslint.config(
     },
   },
   {
+    // Node.js CLI helper scripts (run via `node scripts/*.mjs` from npm
+    // scripts, never bundled into the extension) — plain Node globals, not
+    // the browser/webextension ones above.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  {
     ignores: ['.wxt/**', '.output/**', 'node_modules/**'],
   },
 );
