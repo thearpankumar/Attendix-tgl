@@ -21,7 +21,14 @@ COPY --from=builder /app/.output ./
 # (Trivy caught HIGH-severity CVEs in libcap2/libssl3t64 with fixed versions
 # already published upstream) — pull those in explicitly rather than waiting
 # on an upstream image rebuild.
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+#
+# CACHEBUST changes on every CI build (see deploy-production.yml) so this
+# upgrade always re-fetches the latest published patches instead of reusing
+# a stale GHA layer cache — Trivy scans the result and fails the deploy on
+# any fixed-but-unpatched CVE. Defaults to a constant for local builds.
+ARG CACHEBUST=local
+RUN echo "cachebust ${CACHEBUST}" && \
+    apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Set the binary to run as an unprivileged user for security
 RUN useradd -m appuser && chown -R appuser /app

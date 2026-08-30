@@ -44,7 +44,15 @@ FROM ubuntu:24.04
 
 WORKDIR /app
 
-RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
+# CACHEBUST changes on every CI build (see deploy-production.yml) so the
+# security upgrade below always re-fetches the latest published patches
+# instead of reusing a stale GHA layer cache — Trivy scans the result and
+# fails the deploy on any fixed-but-unpatched CVE. Defaults to a constant
+# for local builds, which keeps the layer cacheable there.
+ARG CACHEBUST=local
+
+RUN echo "cachebust ${CACHEBUST}" && \
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates libssl3 libstdc++6 curl && \

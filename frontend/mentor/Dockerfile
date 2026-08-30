@@ -17,8 +17,14 @@ RUN npm run build
 # 8080 as the `nginx` user from the start, no root capabilities needed.
 FROM nginxinc/nginx-unprivileged:alpine
 
+# CACHEBUST changes on every CI build (see deploy-production.yml) so this
+# Alpine security upgrade always re-fetches the latest published patches
+# instead of reusing a stale GHA layer cache — Trivy scans the result and
+# fails the deploy on any fixed-but-unpatched CVE. Same rationale as
+# frontend/admin/Dockerfile. Defaults to a constant for local builds.
+ARG CACHEBUST=local
 USER root
-RUN apk update && apk upgrade --no-cache
+RUN echo "cachebust ${CACHEBUST}" && apk update && apk upgrade --no-cache
 USER nginx
 
 COPY --from=builder /app/dist /usr/share/nginx/html

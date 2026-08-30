@@ -25,8 +25,14 @@ FROM nginxinc/nginx-unprivileged:alpine
 # on an upstream image rebuild (same rationale as the other Dockerfiles'
 # apt-get upgrade step). Needs root; the base image itself already sets
 # USER nginx (uid 101) by default, restored below.
+#
+# CACHEBUST changes on every CI build (see deploy-production.yml) so this
+# upgrade always re-fetches the latest published patches instead of reusing
+# a stale GHA layer cache — Trivy scans the result and fails the deploy on
+# any fixed-but-unpatched CVE. Defaults to a constant for local builds.
+ARG CACHEBUST=local
 USER root
-RUN apk update && apk upgrade --no-cache
+RUN echo "cachebust ${CACHEBUST}" && apk update && apk upgrade --no-cache
 USER nginx
 
 COPY --from=build /app/dist /usr/share/nginx/html

@@ -87,6 +87,14 @@ jobs:
 
       # Built and loaded locally first (not pushed yet) so Trivy can scan the
       # exact image before it ever reaches the registry or a production host.
+      #
+      # CACHEBUST is a per-run value passed into every Dockerfile's runtime
+      # `ARG CACHEBUST` so the `apt-get upgrade` / `apk upgrade` layer is
+      # never served from the GHA layer cache. Without it that layer is keyed
+      # only on its (unchanging) instruction text, so a build days later
+      # reuses a stale layer that predates a newly-published CVE fix and
+      # Trivy fails the deploy. Everything above the upgrade step (the heavy
+      # compile / npm build stages) still caches normally.
       - name: Build image
         uses: docker/build-push-action@v7
         with:
@@ -95,7 +103,9 @@ jobs:
           push: false
           load: true
           platforms: linux/amd64
-          build-args: ${{ matrix.build-args }}
+          build-args: |
+            ${{ matrix.build-args }}
+            CACHEBUST=${{ github.run_id }}-${{ github.run_attempt }}
           tags: |
             local/${{ matrix.image }}:scan
           cache-from: type=gha,scope=${{ matrix.image }}
@@ -113,7 +123,9 @@ jobs:
       # Re-run through buildx (fully cache-hit off the scan build above, so
       # this doesn't recompile/rebuild anything) to push with SBOM and SLSA
       # provenance attestations attached — buildx can only attest at push
-      # time to a registry, not on a `--load`ed local image.
+      # time to a registry, not on a `--load`ed local image. CACHEBUST must
+      # match the scan build's value exactly or the upgrade layer misses the
+      # cache and rebuilds here.
       - name: Push image with attestations
         id: push
         uses: docker/build-push-action@v7
@@ -124,7 +136,9 @@ jobs:
           platforms: linux/amd64
           provenance: true
           sbom: true
-          build-args: ${{ matrix.build-args }}
+          build-args: |
+            ${{ matrix.build-args }}
+            CACHEBUST=${{ github.run_id }}-${{ github.run_attempt }}
           tags: |
             ${{ steps.ecr-login.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ matrix.image }}-${{ github.sha }}
             ${{ steps.ecr-login.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ matrix.image }}-latest
