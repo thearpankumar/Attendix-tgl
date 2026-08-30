@@ -32,11 +32,28 @@ function getWebGLInfo(): { renderer: string; vendor: string } {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
     if (!gl) return { renderer: 'unknown', vendor: 'unknown' };
-    
+
     const glContext = gl as WebGLRenderingContext;
-    const renderer = glContext.getParameter(glContext.RENDERER) || 'unknown';
-    const vendor = glContext.getParameter(glContext.VENDOR) || 'unknown';
-    return { renderer, vendor };
+
+    // WEBGL_debug_renderer_info exposes the *real* GPU string
+    // (e.g. "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)"). The plain
+    // RENDERER/VENDOR parameters are masked to "WebKit WebGL" / "WebKit" on
+    // many browsers, which defeats every renderer-based check below. Privacy
+    // builds (Brave, Firefox with resistFingerprinting, Tor, Safari 17+)
+    // withhold this extension or return a generic value — fall back to the
+    // masked parameters, then 'unknown', and never treat a withheld value as
+    // suspicious (see the software-renderer check, which only fires on an
+    // explicit software/VM string).
+    const dbg = glContext.getExtension('WEBGL_debug_renderer_info');
+    const renderer =
+      (dbg && glContext.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) ||
+      glContext.getParameter(glContext.RENDERER) ||
+      'unknown';
+    const vendor =
+      (dbg && glContext.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) ||
+      glContext.getParameter(glContext.VENDOR) ||
+      'unknown';
+    return { renderer: String(renderer), vendor: String(vendor) };
   } catch {
     return { renderer: 'unknown', vendor: 'unknown' };
   }
@@ -67,12 +84,38 @@ export function detectEmulation(): { isEmulation: boolean; inconsistencies: stri
   const isDesktopGPU = desktopGPUPatterns.test(webglInfo.renderer);
   const isMobileGPU = /Adreno|Mali|PowerVR|Apple GPU|Intel.* HD Graphics/i.test(webglInfo.renderer);
 
-  const emulatorGPUPatterns = /SwiftShader|llvmpipe|Mesa|Gallium|Software|Software Rasterizer|Microsoft Basic Render|VirGL|VMware|VirtualBox/i;
-  const isEmulatorGPU = emulatorGPUPatterns.test(webglInfo.renderer);
-  
-  if (isEmulatorGPU) {
-    inconsistencies.push(`Emulator GPU detected: ${webglInfo.renderer}`);
+  // Software / VM renderers. SwiftShader has never backed WebGL on a real
+  // phone (Chromium docs: "SwiftShader is not used on mobile") and Chrome is
+  // removing the desktop fallback too (deprecated M130, removed ~M137 — the
+  // context now just fails to create), so on this mobile-only flow an
+  // explicit software string means an emulator, a headless browser, or a VM
+  // — not a legitimate device.
+  //
+  // Deliberately NOT matched (these were false positives for real users):
+  //  - bare "Mesa": every real Linux/ChromeOS Chrome with Intel/AMD hardware
+  //    reports "ANGLE (Intel, Mesa Intel(R) UHD Graphics ...)" — only Mesa's
+  //    headless "Mesa OffScreen" surface is a software tell.
+  //  - bare "Gallium": appears as "Gallium 0.4 on llvmpipe" (caught by
+  //    llvmpipe) but also "Gallium 0.4 on AMD ..." on real hardware.
+  //  - bare "Software": too broad.
+  const softwareRendererPatterns =
+    /SwiftShader|Software Rasterizer|Microsoft Basic Render|Mesa OffScreen|\bllvmpipe\b|SwiftShader Device|Subzero|VirtualBox|VMware|VirGL|Android Emulator/i;
+  const isSoftwareRenderer = softwareRendererPatterns.test(webglInfo.renderer);
+
+  // "Google Inc. (Google)" as the unmasked vendor — i.e. no hardware vendor
+  // named — is the documented headless-Chrome signature. Real GPUs report
+  // "Google Inc. (Qualcomm)", "Google Inc. (ARM)", "Google Inc. (Apple)",
+  // "Apple GPU" (Safari), "Qualcomm", etc. Matched exactly, not as a
+  // substring: older Chrome returned a bare "Google Inc." even with real
+  // hardware, so that form must not count.
+  const vendorNamesNoHardware = webglInfo.vendor.trim() === 'Google Inc. (Google)';
+
+  if (isSoftwareRenderer) {
+    inconsistencies.push(`Software/VM renderer detected: ${webglInfo.renderer}`);
+  } else if (vendorNamesNoHardware && webglInfo.renderer !== 'unknown') {
+    inconsistencies.push(`WebGL reports no hardware GPU (vendor: ${webglInfo.vendor})`);
   }
+  const isEmulatorGPU = isSoftwareRenderer || vendorNamesNoHardware;
   
   if (claimsMobileUA && isDesktopGPU && !isMobileGPU) {
     inconsistencies.push('Desktop GPU detected with mobile User-Agent');
