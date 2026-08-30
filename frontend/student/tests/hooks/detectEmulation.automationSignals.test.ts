@@ -34,7 +34,11 @@ describe('detectEmulation — automation-signal defense-in-depth', () => {
     });
   });
 
-  it('flags a Chrome UA with zero plugins', () => {
+  // BUG FIX (2026-08-30): Chrome for Android intentionally returns
+  // navigator.plugins.length === 0 as a privacy measure (Chrome 57+, MDN-
+  // documented). Flagging it as emulation blocked every real Android Chrome
+  // user. The check has been removed from detectEmulation() entirely.
+  it('does NOT flag Chrome UA with zero plugins (real Android Chrome behaviour)', () => {
     setNavigatorProps({
       userAgent: ANDROID_CHROME_UA,
       maxTouchPoints: 5,
@@ -44,7 +48,7 @@ describe('detectEmulation — automation-signal defense-in-depth', () => {
     });
 
     const { inconsistencies } = detectEmulation();
-    expect(inconsistencies.some((i) => i.includes('zero plugins'))).toBe(true);
+    expect(inconsistencies.some((i) => i.includes('zero plugins'))).toBe(false);
   });
 
   it('does not flag zero plugins on a non-Chrome UA (e.g. Firefox)', () => {
@@ -73,7 +77,11 @@ describe('detectEmulation — automation-signal defense-in-depth', () => {
     expect(inconsistencies.some((i) => i.includes('zero plugins'))).toBe(false);
   });
 
-  it('flags empty navigator.languages', () => {
+  // BUG FIX (2026-08-30): navigator.languages.length === 0 was removed from
+  // the blocking inconsistencies[] because privacy-focused browsers legitimately
+  // suppress the languages list. The backend already excluded this from its
+  // hard-reject gate for the same reason.
+  it('does NOT flag empty navigator.languages (privacy browser behaviour)', () => {
     setNavigatorProps({
       userAgent: ANDROID_CHROME_UA,
       maxTouchPoints: 5,
@@ -83,7 +91,7 @@ describe('detectEmulation — automation-signal defense-in-depth', () => {
     });
 
     const { inconsistencies } = detectEmulation();
-    expect(inconsistencies.some((i) => i.includes('Empty navigator.languages'))).toBe(true);
+    expect(inconsistencies.some((i) => i.includes('Empty navigator.languages'))).toBe(false);
   });
 
   it('does not flag a real device with populated languages', () => {
