@@ -16,6 +16,12 @@ pub struct IpInfo {
     /// network-level geography too is much harder.
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    /// True if the IP-geolocation provider flagged this address as a known
+    /// VPN/proxy/Tor exit node or datacenter/hosting IP. `None` means the
+    /// provider didn't return an opinion (private IP, lookup failure), not
+    /// "confirmed not a proxy".
+    pub proxy: Option<bool>,
+    pub hosting: Option<bool>,
 }
 
 /// Look up IP information from an external API service.
@@ -34,13 +40,15 @@ pub async fn lookup_ip(client: &reqwest::Client, ip: &str) -> Result<IpInfo> {
             city: None,
             latitude: None,
             longitude: None,
+            proxy: None,
+            hosting: None,
         });
     }
 
     let api_url =
         std::env::var("IP_API_URL").unwrap_or_else(|_| "http://ip-api.com/json/".to_string());
     let url = format!(
-        "{}{}?fields=status,message,isp,org,country,regionName,city,lat,lon",
+        "{}{}?fields=status,message,isp,org,country,regionName,city,lat,lon,proxy,hosting",
         api_url, ip
     );
 
@@ -63,6 +71,8 @@ pub async fn lookup_ip(client: &reqwest::Client, ip: &str) -> Result<IpInfo> {
                                 city: data.city,
                                 latitude: data.lat,
                                 longitude: data.lon,
+                                proxy: data.proxy,
+                                hosting: data.hosting,
                             })
                         } else {
                             Ok(unknown())
@@ -87,6 +97,8 @@ fn unknown() -> IpInfo {
         city: None,
         latitude: None,
         longitude: None,
+        proxy: None,
+        hosting: None,
     }
 }
 
@@ -128,6 +140,10 @@ struct IpApiResponse {
     lat: Option<f64>,
     #[serde(default)]
     lon: Option<f64>,
+    #[serde(default)]
+    proxy: Option<bool>,
+    #[serde(default)]
+    hosting: Option<bool>,
 }
 
 pub struct IpLookupService;
@@ -159,5 +175,44 @@ mod tests {
         assert!(is_private_ip("10.0.0.1"));
         assert!(is_private_ip("172.16.0.1"));
         assert!(!is_private_ip("8.8.8.8"));
+    }
+
+    #[test]
+    fn test_ip_api_response_deserializes_proxy_and_hosting_fields() {
+        let body = r#"{
+            "status": "success",
+            "isp": "Some VPN Provider",
+            "org": "Some VPN Provider",
+            "country": "United States",
+            "regionName": "California",
+            "city": "Los Angeles",
+            "lat": 34.05,
+            "lon": -118.24,
+            "proxy": true,
+            "hosting": false
+        }"#;
+        let data: IpApiResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(data.proxy, Some(true));
+        assert_eq!(data.hosting, Some(false));
+    }
+
+    #[test]
+    fn test_ip_api_response_defaults_proxy_and_hosting_when_absent() {
+        // Older/free-tier responses that don't include the extended fields
+        // must still deserialize cleanly, with proxy/hosting as None rather
+        // than a hard parse failure.
+        let body = r#"{
+            "status": "success",
+            "isp": "Some ISP",
+            "org": "Some ISP",
+            "country": "United States",
+            "regionName": "California",
+            "city": "Los Angeles",
+            "lat": 34.05,
+            "lon": -118.24
+        }"#;
+        let data: IpApiResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(data.proxy, None);
+        assert_eq!(data.hosting, None);
     }
 }

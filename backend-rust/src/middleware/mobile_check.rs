@@ -52,6 +52,16 @@ static CROS_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)cros").unwrap());
 pub const TOUCH_POINTS_HEADER: &str = "x-attendix-touch-points";
 /// Client-reported `(any-pointer: coarse)` media-query match — "1" or "0".
 pub const COARSE_POINTER_HEADER: &str = "x-attendix-coarse-pointer";
+/// Comma-joined list of automation-tool tells the client detected in itself
+/// (`navigator.webdriver`, Selenium's injected `document.$cdc_*` markers —
+/// see `deviceEvidenceHeaders()` in `StudentScan.tsx`). A genuine mobile
+/// browser essentially never sets `navigator.webdriver`/carries these
+/// markers, so unlike the UA/Client-Hint checks above this is treated as a
+/// hard reject, not a soft signal — same class as `BOT_REGEX`. Still just a
+/// header a sufficiently determined attacker can suppress client-side before
+/// it's ever sent; raises the bar against curl/reqwest/Playwright-with-
+/// defaults, not a cryptographic guarantee.
+pub const AUTOMATION_SIGNALS_HEADER: &str = "x-attendix-automation-signals";
 
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
@@ -279,6 +289,33 @@ fn evaluate_bot_and_spoofing_checks(request: &Request) -> Result<Option<DeviceIn
         ));
     }
 
+    // Same class of reject as BOT_REGEX above (not the flag-only anomaly
+    // system): a genuine mobile browser never sets `navigator.webdriver` or
+    // carries Selenium's injected markers, so the false-positive risk for a
+    // real user is effectively zero. Closes the gap where a scripted client
+    // (Playwright/Puppeteer with default settings) sends a consistent,
+    // real-looking UA + Client-Hints and would otherwise sail through.
+    if has_automation_signal(request.headers()) {
+        tracing::debug!("Mobile check rejected an automation-tool signal (webdriver/CDC marker)");
+        return Err(AppError::Forbidden(
+            "Attendance must be marked from a real mobile browser.".to_string(),
+        ));
+    }
+
+    // Detect-and-log only, deliberately NOT a hard reject yet: unlike the
+    // webdriver/CDC check above (near-zero false-positive risk by
+    // construction), this heuristic could plausibly misfire on an
+    // uncommon/older real browser that skips Sec-Fetch-*/Client-Hints
+    // without being Safari. Ship one release observing real traffic through
+    // this log line before promoting it to a rejection.
+    if missing_expected_sec_fetch_headers(user_agent, request.headers()) {
+        tracing::warn!(
+            %user_agent,
+            "Mobile check: request has none of Sec-Fetch-Mode/Sec-CH-UA*/Safari-UA \
+             (would reject as likely-scripted once promoted past observation)"
+        );
+    }
+
     let device_info = check_mobile(user_agent);
 
     // Check Sec-CH-UA-Mobile header for Chromium browsers
@@ -387,6 +424,51 @@ fn has_touch_evidence(headers: &axum::http::HeaderMap) -> bool {
         .unwrap_or(false);
 
     touch_points > 0 || coarse_pointer
+}
+
+/// True if the client itself reported a hard automation tell —
+/// `navigator.webdriver === true` or a Selenium-injected `document.$cdc_*`/
+/// `$wdc_*` marker. Deliberately narrower than the full signal set
+/// `deviceEvidenceHeaders()` can compute (it also collects
+/// `no-plugins-chrome`/`empty-languages`, which have legitimate false-
+/// positive cases on hardened/privacy browsers and are sent for submit-time
+/// scoring instead, not this hard-reject gate — see `useDeviceVerification.ts`).
+fn has_automation_signal(headers: &axum::http::HeaderMap) -> bool {
+    let Some(value) = headers
+        .get(AUTOMATION_SIGNALS_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+
+    value
+        .split(',')
+        .any(|s| matches!(s.trim(), "webdriver" | "cdc-markers"))
+}
+
+/// True only when EVERY real-browser signal is simultaneously absent: no
+/// `Sec-Fetch-Mode` (auto-attached by `fetch()`/navigation in Chromium and
+/// modern Firefox) AND no `Sec-CH-UA*` client hints AND the UA isn't Safari/
+/// iOS (older Safari sends neither). A naive scripted client
+/// (`reqwest`/`curl`/`python requests` with defaults) sets none of these; a
+/// real browser — including older Safari, via the UA carve-out — always has
+/// at least one. Supporting evidence only, folded into the same hard-reject
+/// path as the other checks in `evaluate_bot_and_spoofing_checks` rather
+/// than the flag-only anomaly system, for the same reason as
+/// `has_automation_signal`: false-positive risk for genuine mobile traffic
+/// is intentionally kept near zero by requiring ALL signals absent at once.
+fn missing_expected_sec_fetch_headers(user_agent: &str, headers: &axum::http::HeaderMap) -> bool {
+    let has_sec_fetch = headers.contains_key("sec-fetch-mode");
+    let has_client_hints = headers.contains_key("sec-ch-ua")
+        || headers.contains_key("sec-ch-ua-mobile")
+        || headers.contains_key("sec-ch-ua-platform");
+
+    let ua_lower = user_agent.to_lowercase();
+    let is_safari_or_ios = (ua_lower.contains("safari") && !ua_lower.contains("chrome"))
+        || ua_lower.contains("iphone")
+        || ua_lower.contains("ipad");
+
+    !has_sec_fetch && !has_client_hints && !is_safari_or_ios
 }
 
 /// Build a 403 response for spoofing detection.
@@ -525,5 +607,92 @@ mod tests {
         let info = check_mobile(MAC_SAFARI_UA);
         let headers = headers_with_touch("5", "0");
         assert!(is_mobile_or_masquerading(MAC_SAFARI_UA, &info, &headers));
+    }
+
+    // ============ has_automation_signal ============
+
+    fn headers_with_automation_signal(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(AUTOMATION_SIGNALS_HEADER, HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    #[test]
+    fn webdriver_signal_is_detected() {
+        assert!(has_automation_signal(&headers_with_automation_signal("webdriver")));
+    }
+
+    #[test]
+    fn cdc_markers_signal_is_detected() {
+        assert!(has_automation_signal(&headers_with_automation_signal("cdc-markers")));
+    }
+
+    #[test]
+    fn combined_signals_still_detected() {
+        assert!(has_automation_signal(&headers_with_automation_signal(
+            "no-plugins-chrome,webdriver,empty-languages"
+        )));
+    }
+
+    #[test]
+    fn informational_only_signals_alone_are_not_a_hard_signal() {
+        // no-plugins-chrome / empty-languages are intentionally excluded from
+        // the hard-reject set (real false-positive cases exist for those on
+        // hardened/privacy browsers) — see the header's own doc comment.
+        assert!(!has_automation_signal(&headers_with_automation_signal(
+            "no-plugins-chrome,empty-languages"
+        )));
+    }
+
+    #[test]
+    fn no_header_at_all_is_not_a_signal() {
+        assert!(!has_automation_signal(&HeaderMap::new()));
+    }
+
+    // ============ missing_expected_sec_fetch_headers ============
+
+    #[test]
+    fn scripted_client_with_nothing_set_is_flagged() {
+        // A bare reqwest/curl/python-requests call with a spoofed mobile UA
+        // but none of the headers a real browser auto-attaches. Deliberately
+        // NOT an iPhone/Safari UA — those hit the carve-out below, which is
+        // exactly the point of that separate test.
+        const ANDROID_CHROME_UA: &str = "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36";
+        assert!(missing_expected_sec_fetch_headers(
+            ANDROID_CHROME_UA,
+            &HeaderMap::new()
+        ));
+    }
+
+    #[test]
+    fn sec_fetch_mode_alone_is_sufficient_evidence_of_a_real_browser() {
+        let mut h = HeaderMap::new();
+        h.insert("sec-fetch-mode", HeaderValue::from_static("navigate"));
+        assert!(!missing_expected_sec_fetch_headers(IPHONE_UA, &h));
+    }
+
+    #[test]
+    fn a_client_hint_alone_is_sufficient_evidence_of_a_real_browser() {
+        let mut h = HeaderMap::new();
+        h.insert("sec-ch-ua-mobile", HeaderValue::from_static("?1"));
+        assert!(!missing_expected_sec_fetch_headers(IPHONE_UA, &h));
+    }
+
+    #[test]
+    fn safari_ios_carve_out_applies_even_with_zero_headers() {
+        // Older Safari doesn't send Sec-Fetch-*/Client-Hints at all — must
+        // not be penalized for that.
+        assert!(!missing_expected_sec_fetch_headers(IPHONE_UA, &HeaderMap::new()));
+        assert!(!missing_expected_sec_fetch_headers(MAC_SAFARI_UA, &HeaderMap::new()));
+    }
+
+    #[test]
+    fn non_safari_desktop_ua_with_zero_headers_is_flagged() {
+        // Chrome-on-Windows always sends at least one of these in practice;
+        // a request claiming to be it with neither is suspicious.
+        assert!(missing_expected_sec_fetch_headers(
+            WINDOWS_CHROME_UA,
+            &HeaderMap::new()
+        ));
     }
 }

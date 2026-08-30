@@ -57,6 +57,16 @@ pub struct Attendance {
     pub flagged: bool,
     pub flag_reason: Option<String>,
     pub flag_details: Option<String>,
+    /// Max severity across `gps_anomalies`/`emulator_flags`/`device_flag` at
+    /// write time — a rollup so the unified review queue can sort/filter by
+    /// severity without unpacking the JSONB anomaly arrays on every read.
+    /// `None` for unflagged rows.
+    pub flag_severity: Option<Severity>,
+    /// What a reviewing admin wrote when approving/rejecting a flag — a
+    /// dedicated column, not reused from `flag_details` (the anomaly
+    /// summary) or silently discarded the way the legacy review endpoint
+    /// used to.
+    pub review_notes: Option<String>,
     pub captured_at: DateTime<Utc>,
     pub gps_accuracy: Option<f64>,
     pub gps_altitude: Option<f64>,
@@ -186,7 +196,7 @@ pub struct GpsAnomaly {
     pub detected_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GpsAnomalyType {
     #[serde(rename = "ACCURACY_SUSPICIOUS")]
     AccuracySuspicious,
@@ -206,6 +216,8 @@ pub enum GpsAnomalyType {
     ProviderMismatch,
     #[serde(rename = "IP_GEO_MISMATCH")]
     IpGeoMismatch,
+    #[serde(rename = "VPN_PROXY_DETECTED")]
+    VpnProxyDetected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +276,173 @@ impl Attendance {
     }
 }
 
+/// Builds a `VpnProxyDetected` anomaly from the IP-geolocation provider's
+/// `proxy`/`hosting` fields, shared by both submission paths
+/// (`controllers::attendance::submit_attendance` and
+/// `controllers::public_webauthn::finish_authentication`) so the logic is
+/// tested once here rather than duplicated inline in each. `None` when the
+/// provider didn't flag the request IP as either.
+pub fn vpn_proxy_anomaly_from_ip_info(ip_info: &crate::services::IpInfo) -> Option<GpsAnomaly> {
+    if ip_info.proxy != Some(true) && ip_info.hosting != Some(true) {
+        return None;
+    }
+
+    Some(GpsAnomaly {
+        anomaly_type: GpsAnomalyType::VpnProxyDetected,
+        severity: Severity::Medium,
+        details: Some(format!(
+            "Request IP flagged as {}",
+            match (ip_info.proxy, ip_info.hosting) {
+                (Some(true), Some(true)) => "VPN/proxy AND datacenter/hosting",
+                (Some(true), _) => "VPN/proxy",
+                _ => "datacenter/hosting",
+            }
+        )),
+        detected_at: Utc::now(),
+    })
+}
+
+#[cfg(test)]
+mod vpn_proxy_anomaly_tests {
+    use super::*;
+    use crate::services::IpInfo;
+
+    fn ip_info(proxy: Option<bool>, hosting: Option<bool>) -> IpInfo {
+        IpInfo {
+            isp: "Test ISP".to_string(),
+            org: "Test Org".to_string(),
+            country: Some("US".to_string()),
+            region: None,
+            city: None,
+            latitude: Some(34.05),
+            longitude: Some(-118.24),
+            proxy,
+            hosting,
+        }
+    }
+
+    #[test]
+    fn returns_none_when_neither_flag_is_set() {
+        assert!(vpn_proxy_anomaly_from_ip_info(&ip_info(None, None)).is_none());
+        assert!(vpn_proxy_anomaly_from_ip_info(&ip_info(Some(false), Some(false))).is_none());
+    }
+
+    #[test]
+    fn flags_proxy_true_as_vpn_proxy_detected() {
+        let anomaly = vpn_proxy_anomaly_from_ip_info(&ip_info(Some(true), Some(false))).unwrap();
+        assert_eq!(anomaly.anomaly_type, GpsAnomalyType::VpnProxyDetected);
+        assert_eq!(anomaly.severity, Severity::Medium);
+        assert!(anomaly.details.unwrap().contains("VPN/proxy"));
+    }
+
+    #[test]
+    fn flags_hosting_true_as_vpn_proxy_detected() {
+        let anomaly = vpn_proxy_anomaly_from_ip_info(&ip_info(Some(false), Some(true))).unwrap();
+        assert_eq!(anomaly.anomaly_type, GpsAnomalyType::VpnProxyDetected);
+        assert!(anomaly.details.unwrap().contains("datacenter/hosting"));
+    }
+
+    #[test]
+    fn flags_both_together_with_a_combined_message() {
+        let anomaly = vpn_proxy_anomaly_from_ip_info(&ip_info(Some(true), Some(true))).unwrap();
+        let details = anomaly.details.unwrap();
+        assert!(details.contains("VPN/proxy") && details.contains("datacenter/hosting"));
+    }
+}
+
+/// Rolls up the max severity across a submission's GPS anomalies, emulator
+/// flags, and legacy `device_flag`, for the unified review queue
+/// (`admin_security::get_flag_queue`) to sort/filter by without unpacking
+/// JSONB on every read. `None` means nothing was flagged at all — callers
+/// should only bind this when `should_flag`/`flagged` is true, matching how
+/// `flag_reason`/`flag_details` are already only populated on a flag.
+pub fn rollup_flag_severity(
+    gps_anomalies: &[GpsAnomaly],
+    emulator_flags: &[EmulatorFlag],
+    device_flag: &Option<AttendanceDeviceFlag>,
+) -> Option<Severity> {
+    fn rank(s: Severity) -> u8 {
+        match s {
+            Severity::High => 2,
+            Severity::Medium => 1,
+            Severity::Low => 0,
+        }
+    }
+
+    let mut max: Option<Severity> = None;
+    let mut consider = |s: Severity| {
+        if max.map(|m| rank(s) > rank(m)).unwrap_or(true) {
+            max = Some(s);
+        }
+    };
+
+    for a in gps_anomalies {
+        consider(a.severity);
+    }
+    for f in emulator_flags {
+        consider(f.severity);
+    }
+    // The legacy device_flag enum carries no severity of its own; anything
+    // it flags is treated as at least Medium so it still surfaces in a
+    // severity-sorted queue rather than sorting as if nothing were wrong.
+    if device_flag.is_some() {
+        consider(Severity::Medium);
+    }
+
+    max
+}
+
+#[cfg(test)]
+mod flag_severity_rollup_tests {
+    use super::*;
+
+    #[test]
+    fn returns_none_when_nothing_is_flagged() {
+        assert_eq!(rollup_flag_severity(&[], &[], &None), None);
+    }
+
+    #[test]
+    fn takes_the_max_severity_across_gps_and_emulator_signals() {
+        let gps = vec![GpsAnomaly {
+            anomaly_type: GpsAnomalyType::AccuracySuspicious,
+            severity: Severity::Low,
+            details: None,
+            detected_at: Utc::now(),
+        }];
+        let emulator = vec![EmulatorFlag {
+            flag_type: EmulatorFlagType::WebglRendererEmulator,
+            severity: Severity::High,
+            details: None,
+        }];
+        assert_eq!(
+            rollup_flag_severity(&gps, &emulator, &None),
+            Some(Severity::High)
+        );
+    }
+
+    #[test]
+    fn legacy_device_flag_alone_counts_as_at_least_medium() {
+        assert_eq!(
+            rollup_flag_severity(&[], &[], &Some(AttendanceDeviceFlag::EmulatorDetected)),
+            Some(Severity::Medium)
+        );
+    }
+
+    #[test]
+    fn a_high_gps_anomaly_still_wins_over_a_medium_only_device_flag() {
+        let gps = vec![GpsAnomaly {
+            anomaly_type: GpsAnomalyType::PositionJump,
+            severity: Severity::High,
+            details: None,
+            detected_at: Utc::now(),
+        }];
+        assert_eq!(
+            rollup_flag_severity(&gps, &[], &Some(AttendanceDeviceFlag::EmulatorDetected)),
+            Some(Severity::High)
+        );
+    }
+}
+
 #[cfg(test)]
 mod serialization_tests {
     use super::*;
@@ -314,6 +493,8 @@ mod serialization_tests {
             flagged: false,
             flag_reason: None,
             flag_details: None,
+            flag_severity: None,
+            review_notes: None,
             captured_at: Utc::now(),
             gps_accuracy: None,
             gps_altitude: None,

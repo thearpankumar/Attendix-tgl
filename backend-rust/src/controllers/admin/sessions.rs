@@ -80,6 +80,8 @@ mod session_attendance_response_tests {
             flagged: false,
             flag_reason: None,
             flag_details: None,
+            flag_severity: None,
+            review_notes: None,
             captured_at: Utc::now(),
             gps_accuracy: None,
             gps_altitude: None,

@@ -41,6 +41,8 @@ export async function pollPairingStatus(
 export interface FinishPairingResponse {
   locked: boolean;
   rollNumber: string;
+  telemetryToken: string;
+  telemetryTokenExpiresAt: string;
 }
 
 export async function finishPairing(
@@ -65,22 +67,55 @@ export async function finishPairing(
   return res.json();
 }
 
-/** Returns `false` on a 403 specifically (device lock lost/superseded) so
- * the caller can distinguish "stop trying, re-pair" from a transient
- * network failure worth retrying. */
+/** Returns `false` on a 403 specifically (device lock lost/superseded, or a
+ * telemetry token that's expired/blacklisted/stale) so the caller can
+ * distinguish "stop trying, re-pair" from a transient network failure worth
+ * retrying. `telemetryToken` is sent as `Authorization: Bearer` — see
+ * backend-rust/src/controllers/telemetry.rs::ingest_telemetry's dual-mode
+ * doc comment; `extensionInstanceId`/`rollNumber` stay in the body for the
+ * legacy fallback path (harmless once the signed-token path is in use, since
+ * the backend prefers the header when present). */
 export async function postEvents(
   apiBase: string,
   shortCode: string,
   extensionInstanceId: string,
   rollNumber: string,
   events: TelemetryEvent[],
+  telemetryToken: string,
 ): Promise<boolean> {
   const res = await fetch(`${apiBase}/s/${shortCode}/extension/events`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(telemetryToken ? { authorization: `Bearer ${telemetryToken}` } : {}),
+    },
     body: JSON.stringify({ extensionInstanceId, rollNumber, events }),
   });
   if (res.status === 403) return false;
   if (!res.ok) throw new Error(`Failed to post telemetry batch (${res.status})`);
   return true;
+}
+
+export interface RefreshTelemetryTokenResponse {
+  telemetryToken: string;
+  telemetryTokenExpiresAt: string;
+}
+
+/** Reissues a telemetry token for a still-active lock without a full
+ * WebAuthn re-pair — see
+ * backend-rust/src/controllers/extension_pairing.rs::refresh_telemetry_token.
+ * Returns `null` on a 403 (lock no longer active — the caller must fall back
+ * to re-pairing), matching `postEvents`'s convention. */
+export async function refreshTelemetryToken(
+  apiBase: string,
+  shortCode: string,
+  currentToken: string,
+): Promise<RefreshTelemetryTokenResponse | null> {
+  const res = await fetch(`${apiBase}/s/${shortCode}/extension/telemetry/token/refresh`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${currentToken}` },
+  });
+  if (res.status === 403 || res.status === 401) return null;
+  if (!res.ok) throw new Error(`Failed to refresh telemetry token (${res.status})`);
+  return res.json();
 }

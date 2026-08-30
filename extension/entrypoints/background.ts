@@ -1,7 +1,42 @@
 import { browser } from 'wxt/browser';
-import { getOrCreateExtensionInstanceId, getPairingState, clearPairingState, enqueueEvent, drainEventQueue, requeueEvents } from '../lib/storage';
-import { postEvents } from '../lib/api';
+import { getOrCreateExtensionInstanceId, getPairingState, setPairingState, clearPairingState, enqueueEvent, drainEventQueue, requeueEvents } from '../lib/storage';
+import { postEvents, refreshTelemetryToken } from '../lib/api';
 import type { TelemetryEvent, TelemetryEventType, PairingState } from '../lib/types';
+
+// The token's server-side lifetime is 30 minutes
+// (TELEMETRY_TOKEN_LIFETIME_MINUTES in backend-rust/src/models/telemetry_token.rs)
+// — refresh once inside this window of expiry so a legitimately paired
+// device never hits a hard 403 mid-session just from clock drift between
+// flush ticks.
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+/** Proactively refreshes the telemetry token when it's close to expiry,
+ * persisting the updated `PairingState` so future ticks see it too. Returns
+ * `null` when the lock is no longer active (refresh got a 403) — the caller
+ * should treat that exactly like a `postEvents` lock-loss. */
+export async function ensureFreshTelemetryToken(state: PairingState): Promise<PairingState | null> {
+  const expiresAt = Date.parse(state.telemetryTokenExpiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS) {
+    return state;
+  }
+
+  try {
+    const refreshed = await refreshTelemetryToken(state.apiBase, state.shortCode, state.telemetryToken);
+    if (!refreshed) return null;
+
+    const updated: PairingState = {
+      ...state,
+      telemetryToken: refreshed.telemetryToken,
+      telemetryTokenExpiresAt: refreshed.telemetryTokenExpiresAt,
+    };
+    await setPairingState(updated);
+    return updated;
+  } catch {
+    // Network error, not a lock loss — keep using the still-technically-valid
+    // current token for this tick and try refreshing again next time.
+    return state;
+  }
+}
 
 const FLUSH_ALARM = 'attendix-telemetry-flush';
 // 20s: within the plan's 15-30s batching window, short enough that a
@@ -241,12 +276,21 @@ export default defineBackground(() => {
   });
 
   async function flushQueue(): Promise<void> {
-    const state = await getPairingState();
+    let state = await getPairingState();
     if (!state) return;
 
     record('heartbeat', {});
     const events = await drainEventQueue();
     if (events.length === 0) return;
+
+    const fresh = await ensureFreshTelemetryToken(state);
+    if (!fresh) {
+      // Refresh itself got a 403 — the lock is gone, same handling as a
+      // postEvents lock-loss below.
+      await clearPairingState();
+      return;
+    }
+    state = fresh;
 
     // Send in <=MAX_BATCH_SIZE chunks, sequentially and in order. A failed
     // chunk requeues itself plus every chunk after it (unsent chunks stay
@@ -261,6 +305,7 @@ export default defineBackground(() => {
           state.extensionInstanceId,
           state.rollNumber,
           chunk,
+          state.telemetryToken,
         );
         if (!stillLocked) {
           // Another device superseded this session's lock (Part E step 8) —

@@ -42,7 +42,7 @@ function getWebGLInfo(): { renderer: string; vendor: string } {
   }
 }
 
-function detectEmulation(): { isEmulation: boolean; inconsistencies: string[]; metrics: DeviceMetrics } {
+export function detectEmulation(): { isEmulation: boolean; inconsistencies: string[]; metrics: DeviceMetrics } {
   const inconsistencies: string[] = [];
   
   const webglInfo = getWebGLInfo();
@@ -107,6 +107,20 @@ function detectEmulation(): { isEmulation: boolean; inconsistencies: string[]; m
 
   if (maxTouchPoints === 1 && claimsMobileUA) {
     inconsistencies.push('maxTouchPoints exactly 1 with mobile UA (possible emulator)');
+  }
+
+  // Defense-in-depth for the two automation tells the mobile-check
+  // middleware's hard-reject gate deliberately excludes (see
+  // StudentScan.tsx's deviceEvidenceHeaders/collectAutomationSignals) —
+  // legitimate hardened/privacy-focused browser configs can trigger these,
+  // so they only contribute to submit-time anomaly scoring here, never a
+  // route-level 403.
+  const isChromeUA = /Chrome\//.test(ua) && !/Edg\//.test(ua);
+  if (isChromeUA && navigator.plugins.length === 0) {
+    inconsistencies.push('Chrome UA with zero plugins (possible headless/automation)');
+  }
+  if (!navigator.languages || navigator.languages.length === 0) {
+    inconsistencies.push('Empty navigator.languages (possible headless/automation)');
   }
 
   const metrics: DeviceMetrics = {

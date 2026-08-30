@@ -16,9 +16,9 @@ use crate::{
         GpsValidationResult,
     },
     models::{
-        Attendance, AttendanceDeviceFlag, Device, EmulatorFlag, EmulatorFlagType, GpsAnomaly,
-        GpsAnomalyType, GpsConfidence, IntegrityCheck, IntegrityCheckType, Location, PhotoHash,
-        Session, Severity, ShortLink, WebAuthnCredential,
+        record_audit_event, Attendance, AttendanceDeviceFlag, Device, EmulatorFlag,
+        EmulatorFlagType, GpsAnomaly, GpsAnomalyType, GpsConfidence, IntegrityCheck,
+        IntegrityCheckType, Location, PhotoHash, Session, Severity, ShortLink, WebAuthnCredential,
     },
     services::{compute_image_hash, detect_faces, GpsPositionEntry, IpInfo},
     utils::{calculate_distance, is_same_photo},
@@ -385,13 +385,14 @@ async fn insert_attendance(pool: &sqlx::PgPool, a: &Attendance) -> sqlx::Result<
             device_flag, webauthn_credential_id, webauthn_verified, webauthn_device_type,
             webauthn_authenticator_attachment, webauthn_counter, webauthn_replay_attack,
             flag_reviewed, flag_reviewed_by, flag_reviewed_at, flagged, flag_reason, flag_details,
+            flag_severity, review_notes,
             captured_at, gps_accuracy, gps_altitude, gps_altitude_accuracy, gps_speed, gps_heading,
             gps_timestamp, gps_mock_location, gps_provider, gps_anomalies, gps_confidence,
             emulator_detected, emulator_flags, integrity_checks, source, status, marked_by_admin_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
             $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36,
-            $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52
+            $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54
         )
         RETURNING *",
     )
@@ -430,6 +431,8 @@ async fn insert_attendance(pool: &sqlx::PgPool, a: &Attendance) -> sqlx::Result<
     .bind(a.flagged)
     .bind(&a.flag_reason)
     .bind(&a.flag_details)
+    .bind(a.flag_severity)
+    .bind(&a.review_notes)
     .bind(a.captured_at)
     .bind(a.gps_accuracy)
     .bind(a.gps_altitude)
@@ -655,6 +658,8 @@ pub async fn submit_attendance(
             city: None,
             latitude: None,
             longitude: None,
+            proxy: None,
+            hosting: None,
         });
 
     // IP-geo sanity cross-check: spoofing GPS from a browser is trivial, but
@@ -682,6 +687,12 @@ pub async fn submit_attendance(
         }
         _ => None,
     };
+
+    // VPN/residential-proxy signal: the same IP-geolocation provider already
+    // used for the mismatch check above also flags known VPN/proxy/Tor exit
+    // nodes and datacenter/hosting IPs as free bonus fields — surfacing it
+    // costs nothing extra and strengthens the existing IP-based signal.
+    let vpn_proxy_anomaly = crate::models::vpn_proxy_anomaly_from_ip_info(&ip_info);
 
     let has_high_severity_gps = gps_validation
         .anomalies
@@ -737,6 +748,9 @@ pub async fn submit_attendance(
 
     let mut gps_anomalies: Vec<GpsAnomaly> = build_gps_anomalies(&gps_validation);
     if let Some(anomaly) = ip_geo_anomaly {
+        gps_anomalies.push(anomaly);
+    }
+    if let Some(anomaly) = vpn_proxy_anomaly {
         gps_anomalies.push(anomaly);
     }
 
@@ -877,6 +891,8 @@ pub async fn submit_attendance(
         (None, false)
     };
 
+    let flag_severity = crate::models::rollup_flag_severity(&gps_anomalies, &emulator_flags, &device_flag);
+
     let attendance = Attendance {
         id: Uuid::new_v4(),
         session_id: session.id,
@@ -938,6 +954,8 @@ pub async fn submit_attendance(
             flag_reason.clone()
         },
         flag_details: flag_reason,
+        flag_severity,
+        review_notes: None,
         captured_at: Utc::now(),
         gps_accuracy: gps_metadata.and_then(|g| g.accuracy),
         gps_altitude: gps_metadata.and_then(|g| g.altitude),
@@ -958,6 +976,30 @@ pub async fn submit_attendance(
 
     let attendance = insert_attendance(&state.db, &attendance).await?;
     let attendance_id = attendance.id;
+
+    if should_flag {
+        let detail = serde_json::json!({
+            "attendanceId": attendance_id,
+            "sessionId": session.id,
+            "rollNumber": roll_upper,
+            "flagReason": attendance.flag_reason,
+        });
+        if let Err(e) = record_audit_event(
+            &state.db,
+            None,
+            "attendance_flagged",
+            detail,
+            attendance.ip_address.as_deref(),
+        )
+        .await
+        {
+            tracing::error!(
+                error = %e,
+                attendance_id = %attendance_id,
+                "Failed to record audit event for flagged attendance"
+            );
+        }
+    }
 
     if let Some(ref fingerprint) = payload.device_fingerprint {
         if let Err(e) =

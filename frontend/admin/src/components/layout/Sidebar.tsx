@@ -13,7 +13,7 @@ interface SidebarProps {
 const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
   const { admin, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const flaggedCount = useFlaggedCount();
+  const { count: flaggedCount, hasHighSeverityUnreviewed } = useFlaggedCount();
 
   return (
     <aside className="sidebar" data-collapsed={collapsed ? 'true' : 'false'}>
@@ -49,7 +49,13 @@ const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
             <Icon size={18} />
             <span className="sidebar-label">{label}</span>
             {to === '/flagged' && flaggedCount > 0 && (
-              <span className="sidebar-badge">{flaggedCount > 99 ? '99+' : flaggedCount}</span>
+              <span
+                className="sidebar-badge"
+                style={hasHighSeverityUnreviewed ? { background: 'var(--color-danger)', animation: 'pulse 1.8s ease-in-out infinite' } : undefined}
+                title={hasHighSeverityUnreviewed ? 'Includes high-severity unreviewed flags' : undefined}
+              >
+                {flaggedCount > 99 ? '99+' : flaggedCount}
+              </span>
             )}
           </NavLink>
         ))}

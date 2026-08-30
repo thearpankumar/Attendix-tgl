@@ -75,7 +75,14 @@ pub async fn record_audit_event(
             .unwrap_or_else(|| GENESIS_HASH.to_string());
 
     let id = Uuid::new_v4();
-    let created_at = Utc::now();
+    // `Utc::now()` carries nanosecond precision, but Postgres `TIMESTAMPTZ`
+    // only stores microseconds — hashing the untruncated value here would
+    // make `verify_chain`'s recomputation (using the value read back from
+    // the DB, already rounded to microseconds) never match this row's
+    // `entry_hash`, so every row would appear tampered. Truncate up front so
+    // the hashed value is bit-identical to what a later read-back produces.
+    let created_at = DateTime::<Utc>::from_timestamp_micros(Utc::now().timestamp_micros())
+        .unwrap_or_else(Utc::now);
     let entry_hash = compute_entry_hash(
         &previous_hash,
         &id,

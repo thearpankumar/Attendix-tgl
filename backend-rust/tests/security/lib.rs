@@ -1,10 +1,12 @@
 #[path = "../common/test_db.rs"]
 mod test_db;
 
+mod audit_log_tests;
 mod audit_regression_tests;
 mod exam_session_flow_tests;
 mod excel_session_flow_tests;
 mod extension_pairing_tests;
+mod flag_queue_tests;
 mod intern_monitoring_tests;
 mod recurring_rule_shortlink_tests;
 mod recurring_scheduler_tests;

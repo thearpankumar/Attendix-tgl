@@ -582,3 +582,102 @@ mod tests {
         }
     }
 }
+
+/// HTTP-level coverage for the automation-tool hardening added to
+/// `evaluate_bot_and_spoofing_checks`: unlike the pure `check_mobile`
+/// function above, this drives real requests through
+/// `mobile_check_middleware` itself, since the automation-signal check reads
+/// a request header the middleware layer inspects, not something
+/// `check_mobile`'s UA-only parsing sees. No database/Redis needed —
+/// `mobile_check_middleware` takes no `State`.
+#[cfg(test)]
+mod automation_detection_tests {
+    use attendance_geotag_backend::middleware::mobile_check_middleware;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    const IPHONE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+    const MAC_SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+    fn test_app() -> Router {
+        Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(mobile_check_middleware))
+    }
+
+    async fn request(user_agent: &str, extra_headers: &[(&str, &str)]) -> StatusCode {
+        let mut builder = Request::builder().uri("/probe").header("user-agent", user_agent);
+        for (k, v) in extra_headers {
+            builder = builder.header(*k, *v);
+        }
+        let response = test_app()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        response.status()
+    }
+
+    #[tokio::test]
+    async fn mobile_ua_with_webdriver_signal_is_rejected() {
+        let status = request(
+            IPHONE_UA,
+            &[("x-attendix-automation-signals", "webdriver")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn mobile_ua_with_cdc_markers_signal_is_rejected() {
+        let status = request(
+            IPHONE_UA,
+            &[("x-attendix-automation-signals", "cdc-markers")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// Regression guard: a genuine mobile request with no automation header
+    /// at all must not be newly rejected by this addition.
+    #[tokio::test]
+    async fn mobile_ua_without_automation_header_is_allowed_through() {
+        let status = request(IPHONE_UA, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// The two informational-only signals (no-plugins-chrome/empty-languages)
+    /// must not gate this middleware — they're sent for submit-time scoring
+    /// instead, not this hard-reject path.
+    #[tokio::test]
+    async fn informational_only_signals_do_not_trigger_a_reject() {
+        let status = request(
+            IPHONE_UA,
+            &[("x-attendix-automation-signals", "no-plugins-chrome,empty-languages")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// Proves the automation check runs independent of (and before) the
+    /// Mac/Linux masquerading allowance — a desktop UA with valid touch
+    /// evidence (which would otherwise be let through) is still rejected the
+    /// moment a webdriver signal is present.
+    #[tokio::test]
+    async fn masquerading_desktop_with_webdriver_signal_is_still_rejected() {
+        let status = request(
+            MAC_SAFARI_UA,
+            &[
+                ("x-attendix-touch-points", "5"),
+                ("x-attendix-coarse-pointer", "1"),
+                ("x-attendix-automation-signals", "webdriver"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+}

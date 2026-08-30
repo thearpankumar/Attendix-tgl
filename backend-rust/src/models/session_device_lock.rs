@@ -18,6 +18,12 @@ pub struct SessionDeviceLock {
     pub released_at: Option<DateTime<Utc>>,
     pub status: String,
     pub superseded_by: Option<Uuid>,
+    /// The `jti` of the currently-valid signed telemetry token for this
+    /// lock, if one has been issued — used to blacklist it the moment this
+    /// lock is superseded by a re-pair (see
+    /// controllers::extension_pairing::finish_pairing).
+    pub telemetry_token_jti: Option<String>,
+    pub telemetry_token_expires_at: Option<DateTime<Utc>>,
 }
 
 impl SessionDeviceLock {

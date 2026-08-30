@@ -113,9 +113,17 @@ describe('AdminSecurityReview', () => {
     expect(screen.getByText(/Confirm Approval/i)).toBeInTheDocument();
     expect(screen.getByText(/This will increase the device trust score/i)).toBeInTheDocument();
 
+    // Confirm is disabled until notes are entered — required on the backend.
+    expect(screen.getByText('Confirm')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Review notes/i), {
+      target: { value: 'Verified with student, false positive' },
+    });
     fireEvent.click(screen.getByText('Confirm'));
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/security/attendance/sub1/review', { action: 'approve' });
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/security/attendance/sub1/review', {
+        action: 'approve',
+        notes: 'Verified with student, false positive',
+      });
     });
   });
 
@@ -139,9 +147,15 @@ describe('AdminSecurityReview', () => {
 
     // Reopen and actually confirm the rejection this time.
     fireEvent.click(screen.getByText('Reject'));
+    fireEvent.change(screen.getByLabelText(/Review notes/i), {
+      target: { value: 'Repeated GPS spoofing pattern' },
+    });
     fireEvent.click(screen.getByText('Confirm'));
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledWith('/api/admin/security/attendance/sub1/review', { action: 'reject' });
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/security/attendance/sub1/review', {
+        action: 'reject',
+        notes: 'Repeated GPS spoofing pattern',
+      });
     });
   });
 

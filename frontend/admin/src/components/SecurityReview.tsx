@@ -14,6 +14,7 @@ import {
   IconButton,
   Collapse,
   Paper,
+  TextField,
 } from '@mui/material';
 import {
   ExpandMore as ExpandMoreIcon,
@@ -76,6 +77,7 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [reviewAction, setReviewAction] = useState<'approve' | 'reject' | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const [reviewNotes, setReviewNotes] = useState('');
 
   useEffect(() => {
     if (!sessionId) return;
@@ -110,16 +112,18 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
   };
 
   const handleReview = async () => {
-    if (!selectedSubmission || !reviewAction) return;
-    
+    if (!selectedSubmission || !reviewAction || !reviewNotes.trim()) return;
+
     setReviewing(true);
     try {
       await axios.post(`${apiBaseUrl}/admin/security/attendance/${selectedSubmission._id}/review`, {
-        action: reviewAction
+        action: reviewAction,
+        notes: reviewNotes.trim(),
       });
 
       setReviewDialogOpen(false);
       setDetailsOpen(false);
+      setReviewNotes('');
       loadSecurityData();
     } catch {
       // Failed to review
@@ -392,9 +396,9 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
       </Dialog>
 
       {/* Review Confirmation Dialog */}
-      <Dialog 
-        open={reviewDialogOpen} 
-        onClose={() => setReviewDialogOpen(false)}
+      <Dialog
+        open={reviewDialogOpen}
+        onClose={() => { setReviewDialogOpen(false); setReviewNotes(''); }}
         sx={{ '& .MuiDialog-paper': {
             bgcolor: 'var(--color-surface)',
             color: 'var(--color-text)',
@@ -405,18 +409,31 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
       >
         <DialogTitle sx={{ color: 'var(--color-text)', fontWeight: 700 }}>Confirm {reviewAction === 'approve' ? 'Approval' : 'Rejection'}</DialogTitle>
         <DialogContent sx={{ color: 'var(--color-muted)' }}>
-          <Typography>
+          <Typography sx={{ mb: 2 }}>
             Are you sure you want to {reviewAction} this submission?
             {reviewAction === 'approve' && ' This will increase the device trust score.'}
           </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            required
+            multiline
+            minRows={2}
+            label="Review notes"
+            placeholder="Why is this being approved/rejected?"
+            value={reviewNotes}
+            onChange={(e) => setReviewNotes(e.target.value)}
+            error={reviewNotes.trim().length === 0}
+            helperText={reviewNotes.trim().length === 0 ? 'Notes are required to submit a review.' : ' '}
+          />
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
-          <Button onClick={() => setReviewDialogOpen(false)} disabled={reviewing} sx={{ color: 'var(--color-text)' }}>Cancel</Button>
-          <Button 
-            onClick={handleReview} 
+          <Button onClick={() => { setReviewDialogOpen(false); setReviewNotes(''); }} disabled={reviewing} sx={{ color: 'var(--color-text)' }}>Cancel</Button>
+          <Button
+            onClick={handleReview}
             color={reviewAction === 'approve' ? 'success' : 'error'}
             variant="contained"
-            disabled={reviewing}
+            disabled={reviewing || !reviewNotes.trim()}
             sx={{ boxShadow: 'none' }}
           >
             {reviewing ? 'Processing...' : 'Confirm'}

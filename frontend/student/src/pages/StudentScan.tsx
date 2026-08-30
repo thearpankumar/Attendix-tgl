@@ -129,11 +129,47 @@ const AppleIcon = ({ size = 14, style }: { size?: number; style?: React.CSSPrope
  *  iPad with an attached mouse/trackpad should still count as a touch
  *  device, whereas useDeviceVerification's own client-side gate uses the
  *  stricter primary-pointer `pointer: coarse` for a different purpose. */
+/** Automation-tool tells collected in the browser itself and sent as a
+ *  header (not the JSON body — same reasoning as the touch-evidence headers
+ *  above: this must cover GET routes too). `webdriver`/`cdc-markers` are
+ *  near-impossible for a genuine mobile browser to trigger, so the backend
+ *  hard-rejects on either (see mobile_check.rs::has_automation_signal).
+ *  `no-plugins-chrome`/`empty-languages` have real false-positive cases on
+ *  hardened/privacy browsers, so they're informational only — the backend
+ *  never gates on them from this header, only from the submit-time
+ *  `deviceMetrics.inconsistencies` channel (see useDeviceVerification.ts). */
+export function collectAutomationSignals(): string[] {
+  const signals: string[] = [];
+
+  if ((navigator as unknown as { webdriver?: boolean }).webdriver) {
+    signals.push('webdriver');
+  }
+
+  // Selenium injects one of these globals onto `document` in every browser
+  // it drives — the exact suffix varies by build, so match the prefix.
+  if (Object.keys(document).some((k) => k.startsWith('$cdc_') || k.startsWith('$wdc_'))) {
+    signals.push('cdc-markers');
+  }
+
+  const isChromeUA = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
+  if (isChromeUA && navigator.plugins.length === 0) {
+    signals.push('no-plugins-chrome');
+  }
+
+  if (!navigator.languages || navigator.languages.length === 0) {
+    signals.push('empty-languages');
+  }
+
+  return signals;
+}
+
 function deviceEvidenceHeaders(): Record<string, string> {
+  const automationSignals = collectAutomationSignals();
   return {
     'X-Attendix-Touch-Points': String(navigator.maxTouchPoints || 0),
     'X-Attendix-Coarse-Pointer':
       (typeof window.matchMedia === 'function' && window.matchMedia('(any-pointer: coarse)').matches) ? '1' : '0',
+    ...(automationSignals.length ? { 'X-Attendix-Automation-Signals': automationSignals.join(',') } : {}),
   };
 }
 

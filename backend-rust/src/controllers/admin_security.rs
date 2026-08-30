@@ -181,17 +181,26 @@ pub async fn review_submission(
 
     assert_attendance_owned(&state.db, attendance_uuid, &auth).await?;
 
+    let notes = payload.notes.as_deref().unwrap_or("").trim();
+    if notes.is_empty() {
+        return Err(AppError::BadRequest(
+            "Review notes are required — briefly note why this submission was approved or rejected."
+                .to_string(),
+        ));
+    }
+
     let message = match payload.action.as_str() {
         "approve" => {
-            // Clear flags, mark verified. `notes` is persisted into flag_details,
-            // the closest existing column (the Mongo-era "flagNotes" field this
-            // mirrored was never modeled on the Attendance document either).
+            // `review_notes` is a dedicated column — it used to be written
+            // into `flag_details`, which already holds the anomaly summary
+            // (what the system detected), overwriting it with what the
+            // reviewer wrote (why they decided) instead of keeping both.
             sqlx::query(
                 "UPDATE attendances SET flagged = false, flag_reviewed = true, flag_reviewed_by = $1, \
-                 flag_reviewed_at = now(), flag_details = $2, verified = true WHERE id = $3",
+                 flag_reviewed_at = now(), review_notes = $2, verified = true WHERE id = $3",
             )
             .bind(auth.id)
-            .bind(&payload.notes)
+            .bind(notes)
             .bind(attendance_uuid)
             .execute(&state.db)
             .await?;
@@ -203,10 +212,10 @@ pub async fn review_submission(
         "reject" => {
             sqlx::query(
                 "UPDATE attendances SET flag_reviewed = true, flag_reviewed_by = $1, \
-                 flag_reviewed_at = now(), flag_details = $2, verified = false WHERE id = $3",
+                 flag_reviewed_at = now(), review_notes = $2, verified = false WHERE id = $3",
             )
             .bind(auth.id)
-            .bind(&payload.notes)
+            .bind(notes)
             .bind(attendance_uuid)
             .execute(&state.db)
             .await?;
@@ -236,12 +245,23 @@ pub async fn review_submission(
 pub struct FlaggedSubmissionResponse {
     #[serde(rename = "_id")]
     pub id: String,
+    /// Needed on the global (cross-session) queue so an admin can tell which
+    /// session a flagged row belongs to — the per-session endpoint doesn't
+    /// need it (the caller already knows), but it's harmless there too.
+    pub session_id: String,
     pub roll_number: String,
     pub student_name: String,
     pub captured_at: chrono::DateTime<chrono::Utc>,
     pub flagged: bool,
     pub flag_reason: Option<String>,
     pub flag_reviewed: bool,
+    /// Rollup of the max severity across this row's anomalies — lets the
+    /// unified review queue sort/filter without unpacking the JSONB arrays
+    /// below. `None` for a row that was never flagged.
+    pub flag_severity: Option<crate::models::Severity>,
+    /// What the reviewing admin wrote when approving/rejecting this flag —
+    /// `None` until reviewed.
+    pub review_notes: Option<String>,
     pub gps_confidence: Option<GpsConfidence>,
     pub gps_anomalies: Vec<GpsAnomaly>,
     pub emulator_detected: bool,
@@ -253,12 +273,15 @@ impl FlaggedSubmissionResponse {
     fn from_attendance(a: Attendance) -> Self {
         Self {
             id: a.id.to_string(),
+            session_id: a.session_id.to_string(),
             roll_number: a.roll_number,
             student_name: a.student_name,
             captured_at: a.captured_at,
             flagged: a.flagged,
             flag_reason: a.flag_reason,
             flag_reviewed: a.flag_reviewed,
+            flag_severity: a.flag_severity,
+            review_notes: a.review_notes,
             gps_confidence: a.gps_confidence,
             gps_anomalies: a.gps_anomalies.0,
             emulator_detected: a.emulator_detected,
@@ -291,6 +314,234 @@ pub async fn get_flagged_submissions(
         .collect();
 
     Ok(Json(serde_json::json!({ "submissions": submissions })))
+}
+
+// =================== Unified Flag Queue ===================
+//
+// Replaces the old `controllers::admin::flags` module ("System A"): that
+// endpoint required no `session_id` (so it was at least global), but only
+// ever matched the legacy `device_flag` column, missed any row flagged
+// purely via `gps_anomalies`/`emulator_flags`/`integrity_checks`, had no
+// pagination, and its `review_notes` request field was silently discarded.
+// This endpoint is System B's richer model (severity, ownership-scoped,
+// notes actually persisted — see `review_submission` above) made global by
+// making `session_id` optional, with real pagination and severity/review
+// filters added.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagQueueQuery {
+    pub session_id: Option<String>,
+    pub reviewed: Option<bool>,
+    /// "high" | "medium" | "low", matching `Severity`'s serde representation.
+    pub severity: Option<String>,
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_page_size() -> i64 {
+    25
+}
+
+const MAX_PAGE_SIZE: i64 = 100;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagQueuePage {
+    pub items: Vec<FlaggedSubmissionResponse>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+}
+
+pub async fn get_flag_queue(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    axum::extract::Query(query): axum::extract::Query<FlagQueueQuery>,
+) -> Result<impl IntoResponse> {
+    let session_id = match &query.session_id {
+        Some(id) => {
+            let session_id = Uuid::parse_str(id)
+                .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
+            assert_session_owned(&state.db, session_id, &auth).await?;
+            Some(session_id)
+        }
+        // No session filter means a cross-tenant view — same rationale as
+        // the old System A route (see controllers::admin::flags, now
+        // removed): only a super-admin may see flags across every session,
+        // a mentor only ever reaches this route with a session_id, scoped by
+        // assert_session_owned above.
+        None => {
+            auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+            None
+        }
+    };
+
+    let severity = match query.severity.as_deref() {
+        Some("high") => Some(crate::models::Severity::High),
+        Some("medium") => Some(crate::models::Severity::Medium),
+        Some("low") => Some(crate::models::Severity::Low),
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid severity '{other}'. Use 'high', 'medium', or 'low'."
+            )));
+        }
+        None => None,
+    };
+
+    let page = query.page.max(1);
+    let page_size = query.page_size.clamp(1, MAX_PAGE_SIZE);
+    let offset = (page - 1) * page_size;
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances \
+         WHERE (flagged = true OR device_flag IS NOT NULL) \
+           AND ($1::uuid IS NULL OR session_id = $1) \
+           AND ($2::bool IS NULL OR flag_reviewed = $2) \
+           AND ($3::text IS NULL OR flag_severity = $3)",
+    )
+    .bind(session_id)
+    .bind(query.reviewed)
+    .bind(severity)
+    .fetch_one(&state.db)
+    .await?;
+
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances \
+         WHERE (flagged = true OR device_flag IS NOT NULL) \
+           AND ($1::uuid IS NULL OR session_id = $1) \
+           AND ($2::bool IS NULL OR flag_reviewed = $2) \
+           AND ($3::text IS NULL OR flag_severity = $3) \
+         ORDER BY \
+           flag_reviewed ASC, \
+           CASE flag_severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, \
+           captured_at DESC \
+         LIMIT $4 OFFSET $5",
+    )
+    .bind(session_id)
+    .bind(query.reviewed)
+    .bind(severity)
+    .bind(page_size)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+
+    let items: Vec<FlaggedSubmissionResponse> = attendances
+        .into_iter()
+        .map(FlaggedSubmissionResponse::from_attendance)
+        .collect();
+
+    Ok(Json(FlagQueuePage {
+        items,
+        total,
+        page,
+        page_size,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkReviewFlagsRequest {
+    pub ids: Vec<String>,
+    pub action: String, // "approve" or "reject"
+    pub notes: Option<String>,
+}
+
+/// Bulk approve/reject for the unified queue — mirrors
+/// `admin::flags::bulk_verify_attendance`'s shape (cap at 100 ids, single
+/// UPDATE) but for the review fields rather than `verified`.
+pub async fn bulk_review_flags(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    Json(payload): Json<BulkReviewFlagsRequest>,
+) -> Result<impl IntoResponse> {
+    if payload.ids.is_empty() {
+        return Err(AppError::BadRequest(
+            "ids must be a non-empty array".to_string(),
+        ));
+    }
+    if payload.ids.len() > 100 {
+        return Err(AppError::BadRequest(
+            "Cannot bulk-review more than 100 records at once".to_string(),
+        ));
+    }
+    let notes = payload.notes.as_deref().unwrap_or("").trim();
+    if notes.is_empty() {
+        return Err(AppError::BadRequest(
+            "Review notes are required for a bulk review.".to_string(),
+        ));
+    }
+
+    let ids: Result<Vec<Uuid>> = payload
+        .ids
+        .iter()
+        .map(|id| {
+            Uuid::parse_str(id)
+                .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))
+        })
+        .collect();
+    let ids = ids?;
+
+    // Ownership check per row (not just per session) since a bulk request
+    // can span multiple sessions in one call.
+    let owned_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances a JOIN sessions s ON s.id = a.session_id \
+         WHERE a.id = ANY($1) AND ($2 = 'super_admin' OR s.created_by = $3)",
+    )
+    .bind(&ids)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+    if owned_count != ids.len() as i64 {
+        return Err(AppError::Forbidden(
+            "One or more attendance records are not accessible to this admin".to_string(),
+        ));
+    }
+
+    // Same per-row semantics as the single-item `review_submission` above:
+    // approving clears `flagged` (the row is settled); rejecting leaves
+    // `flagged` set (still surfaced as a known-bad row) but marks it
+    // reviewed so it drops out of the *unreviewed* queue.
+    let result = match payload.action.as_str() {
+        "approve" => {
+            sqlx::query(
+                "UPDATE attendances SET flagged = false, flag_reviewed = true, flag_reviewed_by = $1, \
+                 flag_reviewed_at = now(), review_notes = $2, verified = true WHERE id = ANY($3)",
+            )
+            .bind(auth.id)
+            .bind(notes)
+            .bind(&ids)
+            .execute(&state.db)
+            .await?
+        }
+        "reject" => {
+            sqlx::query(
+                "UPDATE attendances SET flag_reviewed = true, flag_reviewed_by = $1, \
+                 flag_reviewed_at = now(), review_notes = $2, verified = false WHERE id = ANY($3)",
+            )
+            .bind(auth.id)
+            .bind(notes)
+            .bind(&ids)
+            .execute(&state.db)
+            .await?
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "Invalid action. Use 'approve' or 'reject'".to_string(),
+            ));
+        }
+    };
+
+    Ok(Json(
+        serde_json::json!({ "updated": result.rows_affected() }),
+    ))
 }
 
 // =================== Submission Details ===================
@@ -457,12 +708,15 @@ mod flagged_submission_contract_tests {
     fn sample_response() -> FlaggedSubmissionResponse {
         FlaggedSubmissionResponse {
             id: "507f1f77bcf86cd799439011".to_string(),
+            session_id: "6f1f77bc-f86c-4d79-9439-011111111111".to_string(),
             roll_number: "CS101".to_string(),
             student_name: "Alice".to_string(),
             captured_at: Utc::now(),
             flagged: true,
             flag_reason: Some("GPS anomalies detected".to_string()),
             flag_reviewed: false,
+            flag_severity: Some(crate::models::Severity::High),
+            review_notes: None,
             gps_confidence: Some(GpsConfidence::Suspicious),
             gps_anomalies: vec![],
             emulator_detected: false,

@@ -18,6 +18,14 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/sessions/{sessionId}/flagged",
             get(crate::controllers::get_flagged_submissions),
         )
+        // Global (session_id optional) unified review queue — replaces the
+        // old controllers::admin::flags module ("System A"). See
+        // admin_security::get_flag_queue for why the two were merged.
+        .route("/flags/queue", get(crate::controllers::get_flag_queue))
+        .route(
+            "/flags/bulk-review",
+            post(crate::controllers::bulk_review_flags),
+        )
         .route(
             "/attendance/{attendanceId}/details",
             get(crate::controllers::get_submission_details),

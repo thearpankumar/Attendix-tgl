@@ -94,6 +94,11 @@ pub struct IntegrityMetric {
 pub struct QuarantineMetric {
     pub count: i64,
     pub status: String,
+    /// Substitute for real alerting (no email/webhook/websocket-push infra
+    /// exists) — lets the sidebar badge visually distinguish "something
+    /// urgent needs review" from an ordinary backlog.
+    #[serde(rename = "hasHighSeverityUnreviewed")]
+    pub has_high_severity_unreviewed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -326,6 +331,7 @@ pub async fn get_dashboard_stats(
                 quarantine: QuarantineMetric {
                     count: 0,
                     status: STATUS_ON_TRACK.to_string(),
+                    has_high_severity_unreviewed: false,
                 },
             },
             charts: ChartsData {
@@ -415,8 +421,23 @@ pub async fn get_dashboard_stats(
     .fetch_one(&state.db)
     .await?;
 
+    // Matches the unified review queue's own WHERE clause (admin_security::
+    // get_flag_queue) — this used to be `verified = false AND device_flag IS
+    // NOT NULL`, a third, slightly different definition of "needs review"
+    // than the queue and the per-session summary each used, so the sidebar
+    // badge, the queue list, and the security summary could all disagree on
+    // how many flags were outstanding.
     let quarantine_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND verified = false AND device_flag IS NOT NULL",
+        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) \
+         AND flag_reviewed = false AND (flagged = true OR device_flag IS NOT NULL)",
+    )
+    .bind(&session_ids)
+    .fetch_one(&state.db)
+    .await?;
+
+    let has_high_severity_unreviewed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM attendances WHERE session_id = ANY($1) \
+         AND flag_reviewed = false AND flag_severity = 'high')",
     )
     .bind(&session_ids)
     .fetch_one(&state.db)
@@ -721,6 +742,7 @@ pub async fn get_dashboard_stats(
                     STATUS_ON_TRACK
                 }
                 .to_string(),
+                has_high_severity_unreviewed,
             },
         },
         charts: ChartsData {

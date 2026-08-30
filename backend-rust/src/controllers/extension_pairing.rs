@@ -15,7 +15,7 @@
 
 use axum::{
     extract::{Json, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use chrono::{Duration, Utc};
@@ -29,7 +29,8 @@ use crate::{
         verify_passkey_assertion,
     },
     error::{AppError, Result},
-    models::{ExtensionPairingRequest, ShortLink},
+    middleware::blacklist_token,
+    models::{generate_telemetry_token, verify_telemetry_token, ExtensionPairingRequest, ShortLink},
     AppState,
 };
 
@@ -262,6 +263,11 @@ pub struct FinishPairingRequest {
 pub struct FinishPairingResponse {
     pub locked: bool,
     pub roll_number: String,
+    /// Signed telemetry bearer token for `POST .../extension/events` (see
+    /// `models::telemetry_token`). Extension stores this and sends it as
+    /// `Authorization: Bearer <token>` — see `extension/lib/api.ts`.
+    pub telemetry_token: String,
+    pub telemetry_token_expires_at: chrono::DateTime<Utc>,
 }
 
 /// The extension-side half of pairing: called once the extension polls
@@ -305,23 +311,46 @@ pub async fn finish_pairing(
     // never actually changed. If the current active lock already belongs to
     // this same extension install, this call has already succeeded before —
     // report success without writing anything new.
-    let already_locked_to_this_device: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_device_locks \
+    let already_locked_to_this_device: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM session_device_locks \
          WHERE session_id = $1 AND roll_number = $2 AND status = 'active' \
-         AND extension_instance_id = $3)",
+         AND extension_instance_id = $3",
     )
     .bind(session.id)
     .bind(&roll_number)
     .bind(pairing_request.extension_instance_id)
-    .fetch_one(&state.db)
+    .fetch_optional(&state.db)
     .await?;
 
-    if already_locked_to_this_device {
+    if let Some(existing_lock_id) = already_locked_to_this_device {
+        // The extension never received a response on its first attempt (that's
+        // the only way this branch is reached), so no previously-issued token
+        // was ever used — issue a fresh one and update the still-active lock
+        // in place; nothing to blacklist.
+        let issued = generate_telemetry_token(
+            session.id,
+            &roll_number,
+            pairing_request.extension_instance_id,
+            existing_lock_id,
+            &state.config.jwt_secret,
+        )?;
+        sqlx::query(
+            "UPDATE session_device_locks SET telemetry_token_jti = $1, telemetry_token_expires_at = $2 \
+             WHERE id = $3",
+        )
+        .bind(&issued.jti)
+        .bind(issued.expires_at)
+        .bind(existing_lock_id)
+        .execute(&state.db)
+        .await?;
+
         return Ok((
             StatusCode::CREATED,
             Json(FinishPairingResponse {
                 locked: true,
                 roll_number,
+                telemetry_token: issued.token,
+                telemetry_token_expires_at: issued.expires_at,
             }),
         ));
     }
@@ -356,20 +385,32 @@ pub async fn finish_pairing(
     // satisfiable. Steps 1+2 reversed would violate the unique index; the FK
     // makes setting `superseded_by` in step 1 impossible before step 2 runs.
     let new_lock_id = Uuid::new_v4();
-    sqlx::query(
+    // Capture the just-superseded row's telemetry token so it can be
+    // blacklisted after commit — rotation-on-supersede, mirroring how the
+    // admin JWT is revoked on logout (middleware::auth::blacklist_token).
+    let superseded_token: Option<(Option<String>, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
         "UPDATE session_device_locks \
          SET status = 'superseded', released_at = now() \
-         WHERE session_id = $1 AND roll_number = $2 AND status = 'active'",
+         WHERE session_id = $1 AND roll_number = $2 AND status = 'active' \
+         RETURNING telemetry_token_jti, telemetry_token_expires_at",
     )
     .bind(session.id)
     .bind(&roll_number)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+
+    let issued = generate_telemetry_token(
+        session.id,
+        &roll_number,
+        pairing_request.extension_instance_id,
+        new_lock_id,
+        &state.config.jwt_secret,
+    )?;
 
     sqlx::query(
         "INSERT INTO session_device_locks \
-         (id, session_id, roll_number, extension_instance_id, webauthn_credential_id, device_fingerprint_hash, locked_at, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, now(), 'active')",
+         (id, session_id, roll_number, extension_instance_id, webauthn_credential_id, device_fingerprint_hash, locked_at, status, telemetry_token_jti, telemetry_token_expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, now(), 'active', $7, $8)",
     )
     .bind(new_lock_id)
     .bind(session.id)
@@ -377,6 +418,8 @@ pub async fn finish_pairing(
     .bind(pairing_request.extension_instance_id)
     .bind(pairing_request.webauthn_credential_id)
     .bind(&payload.device_fingerprint_hash)
+    .bind(&issued.jti)
+    .bind(issued.expires_at)
     .execute(&mut *tx)
     .await?;
 
@@ -392,13 +435,106 @@ pub async fn finish_pairing(
 
     tx.commit().await?;
 
+    // Best-effort: a blacklist failure here (e.g. Redis outage) leaves the
+    // old token valid until its own natural expiry rather than blocking the
+    // new pairing — matches blacklist_token's own fail-open behavior.
+    if let Some((Some(old_jti), Some(old_expires_at))) = superseded_token {
+        blacklist_token(&state.redis, &old_jti, old_expires_at.timestamp() as usize).await;
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(FinishPairingResponse {
             locked: true,
             roll_number,
+            telemetry_token: issued.token,
+            telemetry_token_expires_at: issued.expires_at,
         }),
     ))
+}
+
+// =================== Telemetry token refresh ===================
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshTelemetryTokenResponse {
+    pub telemetry_token: String,
+    pub telemetry_token_expires_at: chrono::DateTime<Utc>,
+}
+
+/// `POST /{shortCode}/extension/telemetry/token/refresh` — reissues a token
+/// for a lock that's still active, without a full WebAuthn re-ceremony. The
+/// extension calls this proactively a few minutes before its current token
+/// expires (see `extension/entrypoints/background.ts`), so a legitimately
+/// paired device never has to re-pair mid-session just to keep telemetry
+/// flowing.
+///
+/// The presented token must still verify cryptographically (so an already-
+/// fully-expired token can't be refreshed — that's a deliberate ceiling: a
+/// device that's been offline past its token's lifetime must re-pair via QR,
+/// same as the pairing flow's own 5-minute pairing-code TTL is not
+/// extendable). Not blacklisted on refresh (unlike the supersede path in
+/// `finish_pairing`) — refreshing is a routine, non-security-relevant event,
+/// and the lock row's `telemetry_token_jti` column being overwritten already
+/// makes the previous token unusable via `ingest_telemetry`'s lock-column
+/// check, without needing a Redis write on every refresh cycle.
+pub async fn refresh_telemetry_token(
+    State(state): State<Arc<AppState>>,
+    Path(short_code): Path<String>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
+
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .ok_or_else(|| AppError::Unauthorized("Missing telemetry token".to_string()))?;
+
+    let claims = verify_telemetry_token(token, &state.config.jwt_secret)?;
+    if claims.session_id != session.id {
+        return Err(AppError::Unauthorized(
+            "Telemetry token does not belong to this session".to_string(),
+        ));
+    }
+
+    let still_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM session_device_locks \
+         WHERE id = $1 AND status = 'active' AND extension_instance_id = $2)",
+    )
+    .bind(claims.lock_id)
+    .bind(claims.extension_instance_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !still_active {
+        return Err(AppError::Forbidden(
+            "This device's pairing is no longer active — re-pair to continue.".to_string(),
+        ));
+    }
+
+    let issued = generate_telemetry_token(
+        session.id,
+        &claims.roll_number,
+        claims.extension_instance_id,
+        claims.lock_id,
+        &state.config.jwt_secret,
+    )?;
+
+    sqlx::query(
+        "UPDATE session_device_locks SET telemetry_token_jti = $1, telemetry_token_expires_at = $2 \
+         WHERE id = $3",
+    )
+    .bind(&issued.jti)
+    .bind(issued.expires_at)
+    .bind(claims.lock_id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(RefreshTelemetryTokenResponse {
+        telemetry_token: issued.token,
+        telemetry_token_expires_at: issued.expires_at,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

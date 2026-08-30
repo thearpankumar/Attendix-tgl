@@ -143,11 +143,6 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/sessions/{id}/attendance/bulk-verify",
             post(crate::controllers::bulk_verify_attendance),
         )
-        .route("/flagged", get(crate::controllers::get_flagged_attendance))
-        .route(
-            "/attendance/{id}/review",
-            patch(crate::controllers::review_attendance),
-        )
         .route(
             "/attendance/{id}/verify",
             patch(crate::controllers::verify_attendance),

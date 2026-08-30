@@ -7,7 +7,7 @@
 
 use axum::{
     extract::{Json, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use chrono::{DateTime, Utc};
@@ -19,7 +19,8 @@ use uuid::Uuid;
 use crate::{
     controllers::public_webauthn::load_active_short_link_and_session,
     error::{AppError, Result},
-    models::SessionDeviceLock,
+    middleware::is_token_blacklisted,
+    models::{verify_telemetry_token, SessionDeviceLock},
     AppState,
 };
 
@@ -56,6 +57,7 @@ const MAX_BATCH_SIZE: usize = 200;
 pub async fn ingest_telemetry(
     State(state): State<Arc<AppState>>,
     Path(short_code): Path<String>,
+    headers: HeaderMap,
     Json(payload): Json<IngestTelemetryRequest>,
 ) -> Result<impl IntoResponse> {
     if payload.events.is_empty() {
@@ -91,10 +93,54 @@ pub async fn ingest_telemetry(
         ));
     };
 
-    if lock.extension_instance_id != payload.extension_instance_id {
-        return Err(AppError::Forbidden(
-            "This device is not the one locked to this session for this student".to_string(),
-        ));
+    // Transitional dual-mode (see extension_pairing/telemetry_token doc
+    // comments): a signed `Authorization: Bearer` token is preferred and,
+    // once present, is authoritative — it's checked against the blacklist,
+    // the session, and the lock's *own* stored jti (not just device-id
+    // equality), so a superseded or refreshed-away token is rejected even
+    // though it still cryptographically verifies. Falls back to the old
+    // plaintext `extensionInstanceId` equality check only when no bearer
+    // token is sent at all, so extensions that haven't updated yet keep
+    // working during the rollout window. Remove the fallback branch once
+    // adoption is confirmed near-100% via the log lines below.
+    let bearer_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    match bearer_token {
+        Some(token) => {
+            let claims = verify_telemetry_token(token, &state.config.jwt_secret)?;
+
+            if is_token_blacklisted(&state.redis, &claims.jti).await {
+                return Err(AppError::Forbidden(
+                    "Telemetry token has been revoked".to_string(),
+                ));
+            }
+            if claims.session_id != session.id
+                || claims.lock_id != lock.id
+                || claims.extension_instance_id != lock.extension_instance_id
+                || lock.telemetry_token_jti.as_deref() != Some(claims.jti.as_str())
+            {
+                return Err(AppError::Forbidden(
+                    "Telemetry token does not match the currently active device lock".to_string(),
+                ));
+            }
+            tracing::debug!(session_id = %session.id, "Telemetry ingestion authenticated via signed token");
+        }
+        None => {
+            if lock.extension_instance_id != payload.extension_instance_id {
+                return Err(AppError::Forbidden(
+                    "This device is not the one locked to this session for this student"
+                        .to_string(),
+                ));
+            }
+            tracing::warn!(
+                session_id = %session.id,
+                "Telemetry ingestion authenticated via legacy plaintext device-id match \
+                 (no Authorization header) — extension has not adopted signed tokens yet"
+            );
+        }
     }
 
     let mut tx = state.timescale_db.begin().await?;

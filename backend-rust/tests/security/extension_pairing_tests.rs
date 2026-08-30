@@ -864,6 +864,285 @@ async fn finish_pairing_supersedes_a_prior_active_lock_instead_of_leaving_two_ac
     assert_eq!(superseded_by, Some(new_active));
 }
 
+// ===================================================================
+// Telemetry token issuance and rotation-on-supersede.
+// ===================================================================
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn finish_pairing_issues_a_telemetry_token_bound_to_the_new_lock() {
+    use attendance_geotag_backend::{config::AppConfig, models::verify_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let (client, admin_id) = setup(&app, &db).await;
+    let (short_code, session_id) =
+        create_session_with_short_code(&app, &client, &db, admin_id).await;
+
+    let extension_instance_id = Uuid::new_v4();
+    let pairing_code =
+        complete_pairing_request(&db, session_id, extension_instance_id, "TOK001").await;
+
+    let (status, body) = plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {body:?}");
+
+    let token = body["telemetryToken"]
+        .as_str()
+        .expect("finish_pairing must return a telemetryToken");
+    assert!(body["telemetryTokenExpiresAt"].is_string());
+
+    let config = AppConfig::for_testing();
+    let claims = verify_telemetry_token(token, &config.jwt_secret)
+        .expect("the issued token must verify against the server's own secret");
+    assert_eq!(claims.session_id, session_id);
+    assert_eq!(claims.roll_number, "TOK001");
+    assert_eq!(claims.extension_instance_id, extension_instance_id);
+
+    let (lock_id, stored_jti): (Uuid, Option<String>) = sqlx::query_as(
+        "SELECT id, telemetry_token_jti FROM session_device_locks \
+         WHERE session_id = $1 AND roll_number = 'TOK001' AND status = 'active'",
+    )
+    .bind(session_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(claims.lock_id, lock_id);
+    assert_eq!(stored_jti.as_deref(), Some(claims.jti.as_str()));
+}
+
+/// The core security property of the rotation design: once a second device
+/// pairs for the same (session, roll_number), the FIRST device's token must
+/// stop working for telemetry ingestion — even though it still
+/// cryptographically verifies (right secret, not expired), it no longer
+/// matches the (now-superseded) lock's stored jti, and is also blacklisted.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn a_devices_token_stops_working_once_a_second_device_re_pairs() {
+    use attendance_geotag_backend::{config::AppConfig, models::verify_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let (client, admin_id) = setup(&app, &db).await;
+    let (short_code, session_id) =
+        create_session_with_short_code(&app, &client, &db, admin_id).await;
+
+    // Device A pairs first.
+    let device_a = Uuid::new_v4();
+    let pairing_code_a = complete_pairing_request(&db, session_id, device_a, "TOK002").await;
+    let (status, body_a) = plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code_a }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {body_a:?}");
+    let token_a = body_a["telemetryToken"].as_str().unwrap().to_string();
+
+    // Confirm device A's token works for telemetry right after pairing.
+    let events_body_a = serde_json::json!({
+        "extensionInstanceId": device_a.to_string(),
+        "rollNumber": "TOK002",
+        "events": [{ "eventType": "heartbeat", "eventData": {}, "recordedAt": chrono::Utc::now().to_rfc3339() }],
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/s/{short_code}/extension/events"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::from(serde_json::to_vec(&events_body_a).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "device A's freshly-issued token must be accepted before any re-pair"
+    );
+
+    // Device B re-pairs for the same student, superseding device A's lock.
+    let device_b = Uuid::new_v4();
+    let pairing_code_b = complete_pairing_request(&db, session_id, device_b, "TOK002").await;
+    let (status, body_b) = plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code_b }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {body_b:?}");
+
+    // Device A's OLD token still cryptographically verifies...
+    let config = AppConfig::for_testing();
+    assert!(
+        verify_telemetry_token(&token_a, &config.jwt_secret).is_ok(),
+        "the old token's signature/expiry alone are still valid"
+    );
+
+    // ...but must now be rejected for telemetry ingestion.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/s/{short_code}/extension/events"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::from(serde_json::to_vec(&events_body_a).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "device A's token must be rejected once device B has superseded its lock"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn refresh_telemetry_token_issues_a_fresh_token_for_a_still_active_lock() {
+    use attendance_geotag_backend::{config::AppConfig, models::verify_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let (client, admin_id) = setup(&app, &db).await;
+    let (short_code, session_id) =
+        create_session_with_short_code(&app, &client, &db, admin_id).await;
+
+    let extension_instance_id = Uuid::new_v4();
+    let pairing_code =
+        complete_pairing_request(&db, session_id, extension_instance_id, "TOK003").await;
+    let (_status, body) = plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code }),
+    )
+    .await;
+    let original_token = body["telemetryToken"].as_str().unwrap().to_string();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/s/{short_code}/extension/telemetry/token/refresh"
+                ))
+                .header("authorization", format!("Bearer {original_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let refreshed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refreshed_token = refreshed["telemetryToken"].as_str().unwrap().to_string();
+    assert_ne!(
+        refreshed_token, original_token,
+        "refresh must issue a genuinely new token, not echo the old one"
+    );
+
+    let config = AppConfig::for_testing();
+    let refreshed_claims = verify_telemetry_token(&refreshed_token, &config.jwt_secret).unwrap();
+    assert_eq!(refreshed_claims.roll_number, "TOK003");
+
+    // The refreshed token works for ingestion...
+    let events_body = serde_json::json!({
+        "extensionInstanceId": extension_instance_id.to_string(),
+        "rollNumber": "TOK003",
+        "events": [{ "eventType": "heartbeat", "eventData": {}, "recordedAt": chrono::Utc::now().to_rfc3339() }],
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/s/{short_code}/extension/events"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {refreshed_token}"))
+                .body(Body::from(serde_json::to_vec(&events_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // ...while the pre-refresh token no longer does, since the lock's
+    // stored jti now points at the refreshed token.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/s/{short_code}/extension/events"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {original_token}"))
+                .body(Body::from(serde_json::to_vec(&events_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn refresh_telemetry_token_rejects_a_lock_that_is_no_longer_active() {
+    let (app, db) = create_test_app().await;
+    let (client, admin_id) = setup(&app, &db).await;
+    let (short_code, session_id) =
+        create_session_with_short_code(&app, &client, &db, admin_id).await;
+
+    let device_a = Uuid::new_v4();
+    let pairing_code_a = complete_pairing_request(&db, session_id, device_a, "TOK004").await;
+    let (_status, body_a) = plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code_a }),
+    )
+    .await;
+    let token_a = body_a["telemetryToken"].as_str().unwrap().to_string();
+
+    // A second device supersedes device A's lock.
+    let device_b = Uuid::new_v4();
+    let pairing_code_b = complete_pairing_request(&db, session_id, device_b, "TOK004").await;
+    plain_post(
+        &app,
+        &format!("/api/s/{short_code}/extension/pair/finish"),
+        serde_json::json!({ "pairingCode": pairing_code_b }),
+    )
+    .await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/s/{short_code}/extension/telemetry/token/refresh"
+                ))
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a superseded lock must not be refreshable"
+    );
+}
+
 #[tokio::test]
 #[file_serial(admin_bootstrap)]
 async fn finish_pairing_rejects_an_expired_completed_request() {

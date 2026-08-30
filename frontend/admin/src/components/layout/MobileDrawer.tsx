@@ -8,7 +8,7 @@ import { navLinks } from './navLinks';
 const MobileDrawer = ({ onClose }: { onClose: () => void }) => {
   const { admin, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const flaggedCount = useFlaggedCount();
+  const { count: flaggedCount, hasHighSeverityUnreviewed } = useFlaggedCount();
 
   return (
     <>
@@ -42,7 +42,12 @@ const MobileDrawer = ({ onClose }: { onClose: () => void }) => {
               <Icon size={18} />
               {label}
               {to === '/flagged' && flaggedCount > 0 && (
-                <span className="sidebar-badge">{flaggedCount > 99 ? '99+' : flaggedCount}</span>
+                <span
+                  className="sidebar-badge"
+                  style={hasHighSeverityUnreviewed ? { background: 'var(--color-danger)', animation: 'pulse 1.8s ease-in-out infinite' } : undefined}
+                >
+                  {flaggedCount > 99 ? '99+' : flaggedCount}
+                </span>
               )}
             </NavLink>
           ))}

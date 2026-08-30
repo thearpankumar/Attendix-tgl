@@ -254,6 +254,376 @@ async fn rejects_an_empty_batch() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "response body: {body:?}");
 }
 
+// ===================================================================
+// Signed telemetry token auth path (transitional dual-mode — see
+// controllers::telemetry::ingest_telemetry's doc comment). These insert a
+// lock WITH `telemetry_token_jti`/`telemetry_token_expires_at` set directly,
+// the same "seed the row a real flow would produce" technique the plaintext
+// tests above use for `session_device_locks` itself.
+// ===================================================================
+
+async fn insert_active_lock_with_token(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+    roll_number: &str,
+    extension_instance_id: Uuid,
+    jti: &str,
+    expires_at: chrono::DateTime<Utc>,
+) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO session_device_locks \
+         (id, session_id, roll_number, extension_instance_id, locked_at, status, telemetry_token_jti, telemetry_token_expires_at) \
+         VALUES ($1, $2, $3, $4, now(), 'active', $5, $6) RETURNING id",
+    )
+    .bind(Uuid::new_v4())
+    .bind(session_id)
+    .bind(roll_number)
+    .bind(extension_instance_id)
+    .bind(jti)
+    .bind(expires_at)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn post_events_with_bearer(
+    app: &axum::Router,
+    short_code: &str,
+    body: serde_json::Value,
+    token: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/s/{short_code}/extension/events"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({})),
+    )
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn accepts_a_batch_authenticated_with_a_valid_signed_token() {
+    use attendance_geotag_backend::{config::AppConfig, models::generate_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let username = format!("telemetry-admin-{}", Uuid::new_v4().simple());
+    let admin_id = seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "correct-horse-battery-staple",
+        "super_admin",
+    )
+    .await;
+    let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+
+    let short_code = create_session_with_short_code(&app, &client, &db, admin_id).await;
+    let session_id: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let extension_instance_id = Uuid::new_v4();
+    let config = AppConfig::for_testing();
+    // A signed token needs a lock_id to bind to, so a two-step seed: reserve
+    // the lock row's id first, then generate the token, then fill it in —
+    // mirrors how finish_pairing generates new_lock_id before the INSERT.
+    let lock_id = Uuid::new_v4();
+    let issued = generate_telemetry_token(
+        session_id,
+        "TELJWT001",
+        extension_instance_id,
+        lock_id,
+        &config.jwt_secret,
+    )
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session_device_locks \
+         (id, session_id, roll_number, extension_instance_id, locked_at, status, telemetry_token_jti, telemetry_token_expires_at) \
+         VALUES ($1, $2, $3, $4, now(), 'active', $5, $6)",
+    )
+    .bind(lock_id)
+    .bind(session_id)
+    .bind("TELJWT001")
+    .bind(extension_instance_id)
+    .bind(&issued.jti)
+    .bind(issued.expires_at)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (status, body) = post_events_with_bearer(
+        &app,
+        &short_code,
+        sample_batch(extension_instance_id, "teljwt001"),
+        &issued.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "response body: {body:?}");
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn rejects_a_signed_token_whose_jti_does_not_match_the_locks_current_token() {
+    use attendance_geotag_backend::{config::AppConfig, models::generate_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let username = format!("telemetry-admin-{}", Uuid::new_v4().simple());
+    let admin_id = seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "correct-horse-battery-staple",
+        "super_admin",
+    )
+    .await;
+    let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+
+    let short_code = create_session_with_short_code(&app, &client, &db, admin_id).await;
+    let session_id: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let extension_instance_id = Uuid::new_v4();
+    let config = AppConfig::for_testing();
+    let lock_id = Uuid::new_v4();
+
+    // The token presented is well-formed and correctly signed, but the lock
+    // row's stored jti is a DIFFERENT value (simulating a stale token from
+    // before a refresh/rotation the client missed).
+    let stale_token = generate_telemetry_token(
+        session_id,
+        "TELJWT002",
+        extension_instance_id,
+        lock_id,
+        &config.jwt_secret,
+    )
+    .unwrap();
+    insert_active_lock_with_token(
+        &db,
+        session_id,
+        "TELJWT002",
+        extension_instance_id,
+        "a-completely-different-current-jti",
+        Utc::now() + chrono::Duration::minutes(30),
+    )
+    .await;
+
+    let (status, body) = post_events_with_bearer(
+        &app,
+        &short_code,
+        sample_batch(extension_instance_id, "teljwt002"),
+        &stale_token.token,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a token not matching the lock's current jti must be rejected: {body:?}"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn rejects_an_expired_signed_token() {
+    use attendance_geotag_backend::{config::AppConfig, models::TelemetryClaims};
+    use jsonwebtoken::{encode, EncodingKey, Header};
+
+    let (app, db) = create_test_app().await;
+    let username = format!("telemetry-admin-{}", Uuid::new_v4().simple());
+    let admin_id = seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "correct-horse-battery-staple",
+        "super_admin",
+    )
+    .await;
+    let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+
+    let short_code = create_session_with_short_code(&app, &client, &db, admin_id).await;
+    let session_id: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let extension_instance_id = Uuid::new_v4();
+    let lock_id = Uuid::new_v4();
+    let config = AppConfig::for_testing();
+
+    // Hand-crafted rather than via `generate_telemetry_token` (which always
+    // uses the real ~30-minute lifetime) — this needs an `exp` already in
+    // the past to exercise `jsonwebtoken::decode`'s own expiry check inside
+    // `verify_telemetry_token`.
+    let now = chrono::Utc::now().timestamp() as usize;
+    let expired_claims = TelemetryClaims {
+        session_id,
+        roll_number: "TELEXP001".to_string(),
+        extension_instance_id,
+        lock_id,
+        exp: now.saturating_sub(3600),
+        iat: now.saturating_sub(7200),
+        jti: Uuid::new_v4().to_string(),
+    };
+    let expired_token = encode(
+        &Header::default(),
+        &expired_claims,
+        &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+    )
+    .unwrap();
+
+    insert_active_lock_with_token(
+        &db,
+        session_id,
+        "TELEXP001",
+        extension_instance_id,
+        &expired_claims.jti,
+        Utc::now() + chrono::Duration::minutes(30),
+    )
+    .await;
+
+    let (status, body) = post_events_with_bearer(
+        &app,
+        &short_code,
+        sample_batch(extension_instance_id, "telexp001"),
+        &expired_token,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired telemetry token must be rejected: {body:?}"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn rejects_a_tampered_signed_token() {
+    use attendance_geotag_backend::{config::AppConfig, models::generate_telemetry_token};
+
+    let (app, db) = create_test_app().await;
+    let username = format!("telemetry-admin-{}", Uuid::new_v4().simple());
+    let admin_id = seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "correct-horse-battery-staple",
+        "super_admin",
+    )
+    .await;
+    let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+
+    let short_code = create_session_with_short_code(&app, &client, &db, admin_id).await;
+    let session_id: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let extension_instance_id = Uuid::new_v4();
+    let lock_id = Uuid::new_v4();
+    let config = AppConfig::for_testing();
+
+    let issued = generate_telemetry_token(
+        session_id,
+        "TELTAMPER001",
+        extension_instance_id,
+        lock_id,
+        &config.jwt_secret,
+    )
+    .unwrap();
+    insert_active_lock_with_token(
+        &db,
+        session_id,
+        "TELTAMPER001",
+        extension_instance_id,
+        &issued.jti,
+        issued.expires_at,
+    )
+    .await;
+
+    // Flip the last character of the signature — still well-formed
+    // (three dot-separated base64 segments), but must fail verification.
+    let mut tampered = issued.token.clone();
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == 'a' { 'b' } else { 'a' });
+
+    let (status, body) = post_events_with_bearer(
+        &app,
+        &short_code,
+        sample_batch(extension_instance_id, "teltamper001"),
+        &tampered,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a tampered telemetry token must be rejected: {body:?}"
+    );
+}
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn legacy_plaintext_path_still_works_when_no_authorization_header_is_sent() {
+    // Regression guard for the transitional dual-mode rollout: an extension
+    // that hasn't updated yet (sends no Authorization header at all) must
+    // keep working exactly as before.
+    let (app, db) = create_test_app().await;
+    let username = format!("telemetry-admin-{}", Uuid::new_v4().simple());
+    let admin_id = seed_admin(
+        &db,
+        &username,
+        &format!("{username}@example.com"),
+        "correct-horse-battery-staple",
+        "super_admin",
+    )
+    .await;
+    let client = Client::login(&app, &username, "correct-horse-battery-staple").await;
+
+    let short_code = create_session_with_short_code(&app, &client, &db, admin_id).await;
+    let session_id: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM short_links WHERE short_code = $1")
+            .bind(&short_code)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let extension_instance_id = Uuid::new_v4();
+    // No telemetry_token_jti set at all — an old-style lock row.
+    insert_active_lock(&db, session_id, "TELLEGACY001", extension_instance_id).await;
+
+    let (status, body) = post_events(
+        &app,
+        &short_code,
+        sample_batch(extension_instance_id, "tellegacy001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "response body: {body:?}");
+}
+
 #[tokio::test]
 #[file_serial(admin_bootstrap)]
 async fn rejects_a_batch_over_the_max_size() {

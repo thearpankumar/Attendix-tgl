@@ -78,6 +78,10 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/{shortCode}/extension/pair/finish",
             post(crate::controllers::finish_pairing),
         )
+        .route(
+            "/{shortCode}/extension/telemetry/token/refresh",
+            post(crate::controllers::refresh_telemetry_token),
+        )
         // Not shortCode-scoped like the routes above — see
         // `uninstall_extension`'s doc comment for why.
         .route(

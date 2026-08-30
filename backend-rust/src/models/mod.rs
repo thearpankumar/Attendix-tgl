@@ -16,6 +16,7 @@ mod session_device_lock;
 mod short_link;
 mod system_config;
 mod telemetry_event;
+mod telemetry_token;
 mod webauthn_challenge;
 mod webauthn_credential;
 mod webauthn_reenrollment_log;
@@ -38,6 +39,7 @@ pub use session_device_lock::*;
 pub use short_link::*;
 pub use system_config::*;
 pub use telemetry_event::*;
+pub use telemetry_token::*;
 pub use webauthn_challenge::{WebAuthnChallenge, WebAuthnChallengeType};
 pub use webauthn_credential::*;
 pub use webauthn_reenrollment_log::*;
@@ -83,3 +85,9 @@ macro_rules! text_enum_sqlx {
 }
 
 pub(crate) use text_enum_sqlx;
+
+// Lets `flag_severity` bind directly to/from the `attendances.flag_severity`
+// TEXT column (the unified review queue's rollup), in addition to Severity's
+// existing use as a plain serde field inside JSONB-embedded GpsAnomaly /
+// EmulatorFlag entries.
+text_enum_sqlx!(Severity);

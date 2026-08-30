@@ -39,6 +39,11 @@ export interface PairingState {
   extensionInstanceId: string;
   targetTabUrlPattern?: string; // e.g. "meet.google.com" — for meet_tab_open/target_tab_focus
   pairedAt: string;
+  /** Signed bearer token for POST .../extension/events — see
+   * backend-rust/src/models/telemetry_token.rs. Replaces the old plaintext
+   * extensionInstanceId-only auth; sent as `Authorization: Bearer <token>`. */
+  telemetryToken: string;
+  telemetryTokenExpiresAt: string; // ISO 8601
 }
 
 export interface PendingPairing {

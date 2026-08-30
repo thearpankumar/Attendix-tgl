@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, Result},
     models::{
-        GpsAnomaly, GpsAnomalyType, Location, Session, Severity, ShortLink, WebAuthnChallenge,
-        WebAuthnChallengeType, WebAuthnCredential,
+        record_audit_event, GpsAnomaly, GpsAnomalyType, Location, Session, Severity, ShortLink,
+        WebAuthnChallenge, WebAuthnChallengeType, WebAuthnCredential,
     },
     services::IpInfo,
     utils::calculate_distance,
@@ -987,6 +987,8 @@ pub async fn finish_authentication(
             city: None,
             latitude: None,
             longitude: None,
+            proxy: None,
+            hosting: None,
         });
     let ip_geo_anomaly = match (ip_info.latitude, ip_info.longitude) {
         (Some(ip_lat), Some(ip_lon)) => {
@@ -1010,8 +1012,15 @@ pub async fn finish_authentication(
         _ => None,
     };
 
+    // VPN/residential-proxy signal — same rationale/provider fields as
+    // controllers/attendance.rs::submit_attendance.
+    let vpn_proxy_anomaly = crate::models::vpn_proxy_anomaly_from_ip_info(&ip_info);
+
     let mut gps_anomalies = super::attendance::build_gps_anomalies(&gps_validation);
     if let Some(anomaly) = ip_geo_anomaly {
+        gps_anomalies.push(anomaly);
+    }
+    if let Some(anomaly) = vpn_proxy_anomaly {
         gps_anomalies.push(anomaly);
     }
     let emulator_flags = super::attendance::build_emulator_flags(&emulator_detection);
@@ -1045,6 +1054,7 @@ pub async fn finish_authentication(
     };
 
     let captured_at = Utc::now();
+    let flag_severity = crate::models::rollup_flag_severity(&gps_anomalies, &emulator_flags, &device_flag);
 
     let attendance_id: Uuid = sqlx::query_scalar(
         "INSERT INTO attendances (
@@ -1053,7 +1063,7 @@ pub async fn finish_authentication(
             verified, face_detected, device_fingerprint, device_fingerprint_hash, device_first_seen, totp_code, totp_valid,
             device_flag, webauthn_credential_id, webauthn_verified, webauthn_device_type, webauthn_authenticator_attachment,
             webauthn_counter, webauthn_replay_attack, flag_reviewed, flag_reviewed_by, flag_reviewed_at, flagged, flag_reason,
-            flag_details, captured_at, gps_accuracy, gps_altitude, gps_altitude_accuracy, gps_speed, gps_heading, gps_timestamp,
+            flag_details, flag_severity, review_notes, captured_at, gps_accuracy, gps_altitude, gps_altitude_accuracy, gps_speed, gps_heading, gps_timestamp,
             gps_mock_location, gps_provider, gps_anomalies, gps_confidence, emulator_detected, emulator_flags, integrity_checks
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
@@ -1061,8 +1071,8 @@ pub async fn finish_authentication(
             $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27,
             $28, $29, $30, $31, $32, $33, $34,
-            $35, $36, $37, $38, $39, $40, $41, $42,
-            $43, $44, $45, $46, $47, $48, $49
+            $35, $36, $37, $38, $39, $40, $41, $42, $43, $44,
+            $45, $46, $47, $48, $49, $50, $51
         ) RETURNING id",
     )
     .bind(Uuid::new_v4()) // 1 id
@@ -1104,28 +1114,54 @@ pub async fn finish_authentication(
     .bind(should_flag) // 33 flagged
     .bind(&flag_reason_final) // 34 flag_reason
     .bind(&flag_reason) // 35 flag_details
-    .bind(captured_at) // 36 captured_at
-    .bind(payload.gps_data.as_ref().and_then(|g| g.accuracy)) // 37 gps_accuracy
-    .bind(payload.gps_data.as_ref().and_then(|g| g.altitude)) // 38 gps_altitude
-    .bind(Option::<f64>::None) // 39 gps_altitude_accuracy
-    .bind(payload.gps_data.as_ref().and_then(|g| g.speed)) // 40 gps_speed
-    .bind(Option::<f64>::None) // 41 gps_heading
-    .bind(payload.gps_data.as_ref().and_then(|g| g.timestamp)) // 42 gps_timestamp
+    .bind(flag_severity) // 36 flag_severity
+    .bind(Option::<String>::None) // 37 review_notes
+    .bind(captured_at) // 38 captured_at
+    .bind(payload.gps_data.as_ref().and_then(|g| g.accuracy)) // 39 gps_accuracy
+    .bind(payload.gps_data.as_ref().and_then(|g| g.altitude)) // 40 gps_altitude
+    .bind(Option::<f64>::None) // 41 gps_altitude_accuracy
+    .bind(payload.gps_data.as_ref().and_then(|g| g.speed)) // 42 gps_speed
+    .bind(Option::<f64>::None) // 43 gps_heading
+    .bind(payload.gps_data.as_ref().and_then(|g| g.timestamp)) // 44 gps_timestamp
     .bind(
         payload
             .gps_data
             .as_ref()
             .and_then(|g| g.mock_location)
             .unwrap_or(false),
-    ) // 43 gps_mock_location
-    .bind(payload.gps_data.as_ref().and_then(|g| g.provider.clone())) // 44 gps_provider
-    .bind(SqlxJson(gps_anomalies)) // 45 gps_anomalies
-    .bind(gps_confidence) // 46 gps_confidence
-    .bind(emulator_detection.detected) // 47 emulator_detected
-    .bind(SqlxJson(emulator_flags)) // 48 emulator_flags
-    .bind(SqlxJson(integrity_checks)) // 49 integrity_checks
+    ) // 45 gps_mock_location
+    .bind(payload.gps_data.as_ref().and_then(|g| g.provider.clone())) // 46 gps_provider
+    .bind(SqlxJson(gps_anomalies)) // 47 gps_anomalies
+    .bind(gps_confidence) // 48 gps_confidence
+    .bind(emulator_detection.detected) // 49 emulator_detected
+    .bind(SqlxJson(emulator_flags)) // 50 emulator_flags
+    .bind(SqlxJson(integrity_checks)) // 51 integrity_checks
     .fetch_one(&state.db)
     .await?;
+
+    if should_flag {
+        let detail = serde_json::json!({
+            "attendanceId": attendance_id,
+            "sessionId": session_id,
+            "rollNumber": roll_upper,
+            "flagReason": flag_reason_final,
+        });
+        if let Err(e) = record_audit_event(
+            &state.db,
+            None,
+            "attendance_flagged",
+            detail,
+            Some(&client_ip),
+        )
+        .await
+        {
+            tracing::error!(
+                error = %e,
+                attendance_id = %attendance_id,
+                "Failed to record audit event for flagged attendance"
+            );
+        }
+    }
 
     // Credential counter/last_used/last_session_id and challenge consumption
     // were already recorded by `verify_passkey_assertion`/

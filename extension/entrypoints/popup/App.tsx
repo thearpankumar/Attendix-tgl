@@ -172,7 +172,7 @@ export default function App() {
       ]);
       const automationFlags = detectAutomationFlags(fingerprint);
 
-      await finishPairing(
+      const finishResult = await finishPairing(
         target.apiBase,
         target.shortCode,
         pairingCode,
@@ -188,6 +188,8 @@ export default function App() {
         rollNumber,
         extensionInstanceId,
         pairedAt: new Date().toISOString(),
+        telemetryToken: finishResult.telemetryToken,
+        telemetryTokenExpiresAt: finishResult.telemetryTokenExpiresAt,
       };
       await setPairingState(newState);
       await setPendingPairing(null);

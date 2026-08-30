@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Json, Query, State},
+    extract::{Json, State},
     response::IntoResponse,
     Extension,
 };
@@ -12,92 +12,6 @@ use crate::{
     middleware::AuthenticatedAdmin,
     models::{Attendance, Session},
 };
-
-// =================== Flagged Attendance ===================
-
-pub async fn get_flagged_attendance(
-    State(state): State<Arc<crate::AppState>>,
-    Extension(auth): Extension<AuthenticatedAdmin>,
-    Query(query): Query<FlaggedQuery>,
-) -> Result<impl IntoResponse> {
-    // Companion fix while adding the mentor role: without a `session_id`
-    // filter this query has no ownership scoping at all (a pre-existing
-    // cross-tenant leak), and a mentor role now exists that could otherwise
-    // reach it with a valid cookie. The mentor app never needs this route.
-    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
-
-    let session_id_filter = match query.session_id {
-        Some(session_id_str) => {
-            let session_id = Uuid::parse_str(&session_id_str)
-                .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
-
-            // Verify session access — this route already requires super-admin
-            // (see above), so any super-admin may inspect any session's
-            // flags, not just the one they created.
-            sqlx::query_as::<_, Session>(
-                "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
-            )
-            .bind(session_id)
-            .bind(&auth.role)
-            .bind(auth.id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
-
-            Some(session_id)
-        }
-        None => None,
-    };
-
-    let result = sqlx::query_as::<_, Attendance>(
-        "SELECT * FROM attendances \
-         WHERE device_flag IS NOT NULL \
-           AND ($1::uuid IS NULL OR session_id = $1) \
-         ORDER BY captured_at DESC \
-         LIMIT 100",
-    )
-    .bind(session_id_filter)
-    .fetch_all(&state.db)
-    .await?;
-
-    Ok(Json(result))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FlaggedQuery {
-    pub session_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AttendanceReviewRequest {
-    pub reviewed: bool,
-    pub review_notes: Option<String>,
-}
-
-pub async fn review_attendance(
-    State(state): State<Arc<crate::AppState>>,
-    Extension(auth): Extension<AuthenticatedAdmin>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    Json(payload): Json<AttendanceReviewRequest>,
-) -> Result<impl IntoResponse> {
-    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
-
-    let attendance_id = Uuid::parse_str(&id)
-        .map_err(|e| AppError::BadRequest(format!("Invalid attendance ID: {}", e)))?;
-
-    sqlx::query(
-        "UPDATE attendances SET flag_reviewed = $1, flag_reviewed_by = $2, flag_reviewed_at = now() \
-         WHERE id = $3",
-    )
-    .bind(payload.reviewed)
-    .bind(auth.id)
-    .bind(attendance_id)
-    .execute(&state.db)
-    .await?;
-
-    Ok(Json(serde_json::json!({ "success": true })))
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
