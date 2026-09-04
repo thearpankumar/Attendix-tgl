@@ -1,0 +1,53 @@
+# Line-ending policy for this repo.
+#
+# Without this file, behaviour depends on each contributor's core.autocrlf
+# setting, so a Windows checkout gets CRLF working files while CI (Linux) and
+# every Docker build see LF. That split is not cosmetic here:
+#   - frontend/home lints with Prettier, whose endOfLine defaults to "lf", so
+#     a CRLF checkout fails `bun run lint` with a "Delete CR" error on every
+#     single line of every file.
+#   - shell scripts (setup.sh, scripts/*.sh) and every Dockerfile RUN step
+#     break outright if they reach a Linux container with CRLF.
+#
+# `text=auto eol=lf` pins BOTH sides: LF in the repository, and LF in the
+# working tree on every OS. Git stops rewriting endings on checkout, which is
+# what the "LF will be replaced by CRLF" warnings were reporting. Windows
+# tooling used here (VS Code, Node, MSVC, PowerShell) all read LF fine.
+* text=auto eol=lf
+
+# Windows shells are the one exception: cmd.exe requires CRLF in batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Patch files are applied byte-for-byte by patch-package; never rewrite them.
+*.patch -text
+*.diff -text
+
+# Binary assets: never diff, never convert endings.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.wasm  binary
+*.tflite binary
+*.zip   binary
+*.xpi   binary
+*.jar   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.mp4   binary
+*.mp3   binary
+*.keystore binary
+*.jks   binary
+
+# Lockfiles are generated: keep them out of diffs and language stats, but
+# still tracked and still text (LF) so they stay mergeable-looking.
+package-lock.json linguist-generated=true
+bun.lock          linguist-generated=true
+Cargo.lock        linguist-generated=true
