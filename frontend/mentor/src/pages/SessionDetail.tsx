@@ -58,6 +58,7 @@ const SessionDetail = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const fetchedOnce = useRef(false);
+  const pendingRef = useRef(false);
 
   // Ticks so a mentor who opens this page before the session starts sees the
   // countdown live-update and gets the marking UI automatically once the
@@ -114,7 +115,13 @@ const SessionDetail = () => {
   };
 
   const markStudent = async (student: RosterStudent, status: 'present' | 'absent') => {
-    if (!id || pending) return;
+    // Guarded by a ref, not the `pending` state: two calls raised from the
+    // same event tick both read the pre-render `pending` value (still false)
+    // and would both fire, which is exactly how one gesture turned into two
+    // concurrent POSTs. The state copy stays for rendering the disabled/
+    // busy UI.
+    if (!id || pendingRef.current) return;
+    pendingRef.current = true;
     setExitDir(status === 'present' ? -1 : 1);
     setPending(true);
     applyLocalStatus(student.rollNumber, status);
@@ -130,6 +137,7 @@ const SessionDetail = () => {
       const err = error as { response?: { data?: { message?: string } } };
       toast.error(err.response?.data?.message || `Failed to mark ${student.name}`);
     } finally {
+      pendingRef.current = false;
       setPending(false);
     }
   };
@@ -364,26 +372,51 @@ const PullHandle = ({
   enabled: boolean;
   onCommit: () => void;
   label: string;
-}) => (
-  <motion.button
-    type="button"
-    className={`pull-handle pull-handle-${tone}`}
-    aria-label={label}
-    disabled={!enabled}
-    drag={enabled ? 'x' : false}
-    dragConstraints={{ left: 0, right: 0 }}
-    dragElastic={0.6}
-    whileDrag={{ scale: 1.08 }}
-    onDragEnd={(_e, info) => {
-      if (direction === 'left' ? info.offset.x > PULL_THRESHOLD : info.offset.x < -PULL_THRESHOLD) {
+}) => {
+  // The handle is both draggable and tappable, and framer-motion fires BOTH
+  // gestures for a single pull: the element travels with the pointer, so the
+  // release still counts as a tap on it and onTap runs right alongside
+  // onDragEnd. That committed the mark twice per pull — two POSTs for one
+  // gesture, two toasts, and the loser's catch rolling the row back to
+  // unmarked even when the winner had succeeded. This flag lets a pull own
+  // the gesture: it's armed on drag start (before either end handler can
+  // run, so their firing order doesn't matter) and cleared on the next
+  // press. The swipe-stack card never had this bug because it only wires
+  // onDragEnd, with no tap handler beside it.
+  const draggedRef = useRef(false);
+
+  return (
+    <motion.button
+      type="button"
+      className={`pull-handle pull-handle-${tone}`}
+      aria-label={label}
+      disabled={!enabled}
+      drag={enabled ? 'x' : false}
+      dragConstraints={{ left: 0, right: 0 }}
+      dragElastic={0.6}
+      whileDrag={{ scale: 1.08 }}
+      onPointerDown={() => {
+        draggedRef.current = false;
+      }}
+      onDragStart={() => {
+        draggedRef.current = true;
+      }}
+      onDragEnd={(_e, info) => {
+        if (direction === 'left' ? info.offset.x > PULL_THRESHOLD : info.offset.x < -PULL_THRESHOLD) {
+          onCommit();
+        }
+      }}
+      onTap={() => {
+        // A pull already had its say in onDragEnd — including a short one
+        // that fell below the threshold and deliberately marks nothing.
+        if (draggedRef.current || !enabled) return;
         onCommit();
-      }
-    }}
-    onTap={enabled ? onCommit : undefined}
-  >
-    {icon}
-  </motion.button>
-);
+      }}
+    >
+      {icon}
+    </motion.button>
+  );
+};
 
 const StudentRow = ({
   student,
