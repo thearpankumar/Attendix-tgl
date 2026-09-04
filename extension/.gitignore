@@ -1,0 +1,15 @@
+# WXT build output and generated types. Both are produced from source on
+# every install/build, so they must never be committed:
+#   .wxt/    — `wxt prepare`, run as this package's postinstall, regenerates
+#              it on every `npm ci` (tsconfig.json extends .wxt/tsconfig.json)
+#   .output/ — `wxt build` / `wxt zip` output: the unpacked chrome-mv3 and
+#              firefox-mv2 trees plus the .zip/.xpi/-sources.zip packages
+.output/
+.wxt/
+
+# Bundle-analysis reports, if ever generated
+stats.html
+stats-*.json
+
+# web-ext scratch dir
+web-ext-artifacts/
