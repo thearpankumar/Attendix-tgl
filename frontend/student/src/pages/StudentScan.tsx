@@ -60,6 +60,29 @@ interface AuthenticationOptionsResponse {
   challengeId: string;
 }
 
+/** The assertion shape built by authenticate()/startConditionalUI() and sent
+ * as `credential` to /webauthn/authenticate/finish. `authenticatorAttachment`
+ * is also read back out of this by handleSubmit to send as its own top-level
+ * field — see that call site's comment for why. */
+interface WebAuthnAssertionPayload {
+  id: string;
+  rawId: string;
+  response: {
+    authenticatorData: string;
+    clientDataJSON: string;
+    signature: string;
+    userHandle: string | null;
+  };
+  type: string;
+  clientExtensionResults: AuthenticationExtensionsClientOutputs;
+  // PublicKeyCredential.authenticatorAttachment is typed by lib.dom as the
+  // loose `string | null` (unlike the request-side AuthenticatorAttachment
+  // enum used in AuthenticatorSelectionCriteria) — kept that wide here to
+  // match what the browser actually returns; the backend's typed enum field
+  // is what narrows/validates the value.
+  authenticatorAttachment: string | null;
+}
+
 const Spinner = () => (
   <div className="flex flex-col items-center py-10">
     <div className="spinner" />
@@ -240,7 +263,7 @@ export default function StudentScan() {
   const photoDataRef = useRef('');
   const faceDetectedRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
-  const credentialRef = useRef<object | null>(null);
+  const credentialRef = useRef<WebAuthnAssertionPayload | null>(null);
   // The `challengeId` the matching `start` call returned — must round-trip
   // unchanged into the `finish` request body so the server can resolve THIS
   // ceremony's own pending challenge row instead of guessing. See
@@ -616,25 +639,33 @@ export default function StudentScan() {
     }
   };
 
-  const authenticate = async () => {
+  // `silent`: used by handleSubmit's stale-assertion retry — the challenge
+  // captured here can outlive the server's TTL by the time photo/GPS/captcha
+  // are done (see backend WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES). On that retry
+  // we're already in the 'form' step and want the caller (not this function)
+  // to own error display and step transitions, so errors are rethrown
+  // instead of flashed-and-swallowed, and the step/flash side effects below
+  // are skipped.
+  const authenticate = async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? false;
     try {
-      flash('Starting authentication...');
+      if (!silent) flash('Starting authentication...');
       const startRes = await fetch(`${API}/s/${shortCode}/webauthn/authenticate/start`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() },
         body: JSON.stringify({ rollNumber: rollRef.current }),
       });
       if (!startRes.ok) { const e = await startRes.json(); throw new Error(e.message); }
-      const opts: AuthenticationOptionsResponse = await startRes.json();
-      challengeIdRef.current = opts.challengeId;
+      const optsRes: AuthenticationOptionsResponse = await startRes.json();
+      challengeIdRef.current = optsRes.challengeId;
       // Built explicitly from only the real WebAuthn fields, excluding
       // `challengeId` — it isn't part of the PublicKeyCredentialRequestOptions
       // dictionary the browser expects.
       const publicKey: PublicKeyCredentialRequestOptions = {
-        timeout: opts.timeout,
-        rpId: opts.rpId,
-        userVerification: opts.userVerification,
-        challenge: fromB64url(opts.challenge),
-        allowCredentials: opts.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
+        timeout: optsRes.timeout,
+        rpId: optsRes.rpId,
+        userVerification: optsRes.userVerification,
+        challenge: fromB64url(optsRes.challenge),
+        allowCredentials: optsRes.allowCredentials?.map((c) => ({ ...c, id: fromB64url(c.id) })),
       };
 
       const assertion = await navigator.credentials.get({ publicKey }) as PublicKeyCredential;
@@ -654,13 +685,16 @@ export default function StudentScan() {
         authenticatorAttachment: assertion.authenticatorAttachment,
       };
 
-      setWebauthnVerified(true);
-      setVerifyMethod('Biometric verified');
-      flash('Identity verified!', true);
-      setLocStatus('pending');
-      setLocErrMsg('');
-      setStep(internMode ? 'success' : 'form');
+      if (!silent) {
+        setWebauthnVerified(true);
+        setVerifyMethod('Biometric verified');
+        flash('Identity verified!', true);
+        setLocStatus('pending');
+        setLocErrMsg('');
+        setStep(internMode ? 'success' : 'form');
+      }
     } catch (err) {
+      if (silent) throw err;
       const e = err as { name?: string; message?: string };
       if (e.name === 'NotAllowedError') flash('Authentication cancelled. Please try again.');
       else flash('Authentication failed: ' + e.message);
@@ -848,18 +882,49 @@ export default function StudentScan() {
         };
       }
       
-      if (credentialRef.current) {
-        finalBody.credential = credentialRef.current;
-        // Required by the backend now — see RegistrationOptionsResponse.challengeId's
-        // comment. Always set by this point: authenticate()/startConditionalUI()
-        // both set challengeIdRef.current before credentialRef.current can ever
-        // become truthy.
-        finalBody.challengeId = challengeIdRef.current;
+      const applyCredential = () => {
+        if (credentialRef.current) {
+          finalBody.credential = credentialRef.current;
+          // Sent as a sibling of `credential`, not read back out of it — the
+          // backend's WebAuthn credential type has no such field and would
+          // silently drop it if it were only nested inside `credential`.
+          finalBody.authenticatorAttachment = credentialRef.current.authenticatorAttachment;
+          // Required by the backend now — see RegistrationOptionsResponse.challengeId's
+          // comment. Always set by this point: authenticate()/startConditionalUI()
+          // both set challengeIdRef.current before credentialRef.current can ever
+          // become truthy.
+          finalBody.challengeId = challengeIdRef.current;
+        }
+      };
+      applyCredential();
+
+      const postOnce = async () => {
+        const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() }, body: JSON.stringify(finalBody) });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.message || 'Failed to submit');
+      };
+
+      try {
+        await postOnce();
+      } catch (err) {
+        // The WebAuthn assertion captured back in authenticate() can go stale
+        // by the time photo capture / GPS lock / captcha are done and we get
+        // here (see backend WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES) — this is
+        // the one failure worth silently recovering from by redoing just the
+        // biometric step, rather than making the student reload the page.
+        // Everything else (bad photo, GPS, captcha, rate limit) needs the
+        // student to actually change something, so it falls through as-is.
+        const message = (err as Error).message || '';
+        const isStaleAssertion =
+          !!credentialRef.current && /authentication challenge|Biometric verification failed/i.test(message);
+        if (!isStaleAssertion) throw err;
+
+        flash('Verification expired — retrying automatically...');
+        await authenticate({ silent: true });
+        applyCredential();
+        await postOnce();
       }
 
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...deviceEvidenceHeaders() }, body: JSON.stringify(finalBody) });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.message || 'Failed to submit');
       setStep('success');
     } catch (err) {
       flash((err as Error).message);
@@ -1013,7 +1078,7 @@ export default function StudentScan() {
                       : 'No device enrolled. Register your biometric to continue.'}</span>
                   </div>
                   {isEnrolled && !isSuspended && (
-                    <button className="attend-btn" onClick={authenticate}>
+                    <button className="attend-btn" onClick={() => authenticate()}>
                       🔑 Verify Identity (Passkey / Phone)
                     </button>
                   )}

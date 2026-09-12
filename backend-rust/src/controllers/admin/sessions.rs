@@ -333,13 +333,16 @@ pub async fn get_session_absent(
         return Ok(Json::<Vec<AbsentStudent>>(vec![]));
     }
 
-    // Get present roll numbers
-    let present_roll_numbers: Vec<String> = sqlx::query_scalar(
-        "SELECT roll_number FROM attendances WHERE session_id = $1 AND verified = true",
-    )
-    .bind(session_id)
-    .fetch_all(&state.db)
-    .await?;
+    // Get present roll numbers. Any attendance row counts as present here,
+    // matching get_session_stats's absent_count logic above — `verified` is
+    // a GPS-geofence flag, not "did the student submit," so filtering on it
+    // was wrongly reporting geofence-failed-but-genuinely-checked-in
+    // students as absent.
+    let present_roll_numbers: Vec<String> =
+        sqlx::query_scalar("SELECT roll_number FROM attendances WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_all(&state.db)
+            .await?;
 
     let present_rolls: std::collections::HashSet<String> = present_roll_numbers
         .into_iter()

@@ -220,6 +220,13 @@ pub const EMULATOR_FLAG_USER_AGENT_MISMATCH: &str = "USER_AGENT_MISMATCH";
 // WebAuthn constants
 pub const WEBAUTHN_DEVICE_UNKNOWN: &str = "Unknown Device";
 pub const WEBAUTHN_AUTHENTICATOR_TYPE_MULTI: &str = "multiDevice";
+/// Authentication challenge lifetime. The student's assertion is captured
+/// right after the biometric prompt but only sent to the server once photo
+/// capture, GPS lock and captcha are also done — a slow campus network or a
+/// shaky GPS fix can easily exceed a short window, at which point the
+/// student is stuck resubmitting an assertion tied to an already-expired
+/// challenge with no in-app way to recover short of reloading the page.
+pub const WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES: i64 = 15;
 
 /// Ceiling on any single request body. Attendance submissions are small JSON
 /// documents (photos are uploaded to S3 out-of-band); the roster spreadsheet

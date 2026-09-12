@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     constants::*,
+    controllers::{find_roster_student, resolve_roster_source, RosterSource},
     error::{AppError, Result},
     middleware::{
         record_device_success, DeviceCheckResult, DeviceIntegrityResult, EmulatorDetectionResult,
@@ -304,7 +305,7 @@ pub async fn check_attendance_status(
         .await?
         .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
-    let roll_number = query.roll_number.to_uppercase();
+    let roll_number = query.roll_number.trim().to_uppercase();
 
     let existing = sqlx::query_as::<_, Attendance>(
         "SELECT * FROM attendances WHERE session_id = $1 AND roll_number = $2",
@@ -579,7 +580,25 @@ pub async fn submit_attendance(
         return Err(AppError::BadRequest("Session has expired".to_string()));
     }
 
-    let roll_upper = payload.roll_number.to_uppercase();
+    let roll_upper = payload.roll_number.trim().to_uppercase();
+
+    // Reject a roll number that doesn't belong to this session's roster
+    // before writing anything. Previously any client-typed roll number was
+    // accepted as-is, so a typo silently created an attendances row with no
+    // matching student — invisible everywhere else in the app instead of
+    // failing loudly here. A session with no roster attached (RosterSource::
+    // None) skips this check, since there's nothing to validate against.
+    let roster_source = resolve_roster_source(&session);
+    if !matches!(roster_source, RosterSource::None)
+        && find_roster_student(&state.db, &roster_source, &roll_upper)
+            .await?
+            .is_none()
+    {
+        return Err(AppError::BadRequest(
+            "Roll number not found on this session's roster. Please check and re-enter it."
+                .to_string(),
+        ));
+    }
 
     // Check WebAuthn credential enrollment time for grace period
     let webauthn_required = if let Some(credential) = sqlx::query_as::<_, WebAuthnCredential>(

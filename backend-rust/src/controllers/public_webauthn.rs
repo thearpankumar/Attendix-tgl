@@ -10,6 +10,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
+    constants::WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES,
     error::{AppError, Result},
     models::{
         record_audit_event, GpsAnomaly, GpsAnomalyType, Location, Session, Severity, ShortLink,
@@ -154,12 +155,17 @@ pub async fn get_webauthn_status(
 ) -> Result<impl IntoResponse> {
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
 
-    let roll_upper = roll_number.to_uppercase();
+    let roll_upper = roll_number.trim().to_uppercase();
 
-    let credential: Option<WebAuthnCredential> =
-        sqlx::query_as("SELECT * FROM webauthn_credentials WHERE student_id = $1")
-            .bind(&roll_upper)
-            .fetch_optional(&state.db)
+    // reset_at IS NULL: an admin-reset credential row is kept for audit
+    // history (see reset_credential's comment) but must not count as an
+    // active enrollment, or the student would never see the enrollment UI
+    // again after being reset.
+    let credential: Option<WebAuthnCredential> = sqlx::query_as(
+        "SELECT * FROM webauthn_credentials WHERE student_id = $1 AND reset_at IS NULL",
+    )
+    .bind(&roll_upper)
+    .fetch_optional(&state.db)
             .await?;
 
     let already_submitted: bool = sqlx::query_scalar(
@@ -216,7 +222,7 @@ pub async fn start_registration(
     Path(short_code): Path<String>,
     Json(payload): Json<RegistrationStartRequest>,
 ) -> Result<impl IntoResponse> {
-    let roll_upper = payload.roll_number.to_uppercase();
+    let roll_upper = payload.roll_number.trim().to_uppercase();
 
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
 
@@ -247,8 +253,10 @@ pub async fn start_registration(
         }
     }
 
+    // reset_at IS NULL: see get_webauthn_status's identical comment — a
+    // reset credential must not block re-enrollment.
     let existing_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE student_id = $1)",
+        "SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE student_id = $1 AND reset_at IS NULL)",
     )
     .bind(&roll_upper)
     .fetch_one(&state.db)
@@ -277,6 +285,15 @@ pub async fn start_registration(
     // (start_discoverable_authentication only finds discoverable credentials)
     // and third-party password managers (Bitwarden, 1Password) can properly
     // save and sync the passkey, matching the old Node backend's behavior.
+    //
+    // authenticatorAttachment is also pinned to "platform" so the browser
+    // never offers a cross-device/hybrid/security-key option during
+    // enrollment (the un-set default leaves that entirely up to the
+    // browser, which is what let some students see an unexpected "save to
+    // another device" prompt). Note this narrows out authenticators that
+    // register as cross-platform (e.g. the Bitwarden extension); 1Password
+    // and every on-device biometric (Face/Touch ID, Android biometric,
+    // Windows Hello) register as platform and are unaffected.
     if let Some(sel) = creation_challenge
         .public_key
         .authenticator_selection
@@ -284,6 +301,7 @@ pub async fn start_registration(
     {
         sel.resident_key = Some(webauthn_rs_proto::ResidentKeyRequirement::Required);
         sel.require_resident_key = true;
+        sel.authenticator_attachment = Some(webauthn_rs_proto::AuthenticatorAttachment::Platform);
     }
 
     let webauthn_challenge = WebAuthnChallenge {
@@ -390,12 +408,31 @@ pub async fn finish_registration(
 
     // The unique index on `student_id` makes the enrollment race safe: a second
     // concurrent registration for the same roll number loses here rather than
-    // silently overwriting the first.
+    // silently overwriting the first. The one exception is a row an admin has
+    // reset (reset_at IS NOT NULL, kept for audit history instead of deleted
+    // — see reset_credential's comment): that row is replaced in place so the
+    // student can actually re-enroll, which is the entire point of a reset.
     let inserted = sqlx::query(
         "INSERT INTO webauthn_credentials \
          (id, student_id, credential_id, passkey, user_handle, counter, device_label, device_type, transports, enrolled_at, sign_count) \
          VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, now(), 0) \
-         ON CONFLICT DO NOTHING",
+         ON CONFLICT (student_id) DO UPDATE SET \
+             credential_id = EXCLUDED.credential_id, \
+             passkey = EXCLUDED.passkey, \
+             user_handle = EXCLUDED.user_handle, \
+             counter = 0, \
+             device_label = EXCLUDED.device_label, \
+             device_type = EXCLUDED.device_type, \
+             transports = EXCLUDED.transports, \
+             enrolled_at = now(), \
+             sign_count = 0, \
+             reset_at = NULL, \
+             reset_by = NULL, \
+             is_suspended = false, \
+             suspended_reason = NULL, \
+             suspended_at = NULL, \
+             suspended_by = NULL \
+         WHERE webauthn_credentials.reset_at IS NOT NULL",
     )
     .bind(Uuid::new_v4())
     .bind(&roll_upper)
@@ -454,20 +491,21 @@ pub async fn start_authentication(
     Path(short_code): Path<String>,
     Json(payload): Json<AuthenticationStartRequest>,
 ) -> Result<impl IntoResponse> {
-    let roll_upper = payload.roll_number.to_uppercase();
+    let roll_upper = payload.roll_number.trim().to_uppercase();
 
     let (_short_link, session) = load_active_short_link_and_session(&state.db, &short_code).await?;
 
-    let credential: WebAuthnCredential =
-        sqlx::query_as("SELECT * FROM webauthn_credentials WHERE student_id = $1")
-            .bind(&roll_upper)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(
-                    "No credential found. Please enroll your device first.".to_string(),
-                )
-            })?;
+    // reset_at IS NULL: see get_webauthn_status's comment — an admin-reset
+    // credential must not be usable to authenticate.
+    let credential: WebAuthnCredential = sqlx::query_as(
+        "SELECT * FROM webauthn_credentials WHERE student_id = $1 AND reset_at IS NULL",
+    )
+    .bind(&roll_upper)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| {
+        AppError::NotFound("No credential found. Please enroll your device first.".to_string())
+    })?;
 
     if credential.is_suspended {
         return Err(AppError::BadRequest(
@@ -491,7 +529,7 @@ pub async fn start_authentication(
         session_id: session.id,
         short_code: Some(short_code.to_lowercase()),
         student_name: None,
-        expires_at: Utc::now() + Duration::minutes(5),
+        expires_at: Utc::now() + Duration::minutes(WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES),
         used: false,
         state: Some(
             serde_json::to_value(&auth_state)
@@ -538,7 +576,7 @@ pub async fn start_conditional_authentication(
         session_id: session.id,
         short_code: Some(short_code.to_lowercase()),
         student_name: None,
-        expires_at: Utc::now() + Duration::minutes(5),
+        expires_at: Utc::now() + Duration::minutes(WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES),
         used: false,
         state: Some(
             serde_json::to_value(&auth_state)
@@ -655,12 +693,17 @@ pub(crate) async fn verify_passkey_assertion(
     credential: &webauthn_rs::prelude::PublicKeyCredential,
     session_id: Uuid,
 ) -> Result<(WebAuthnCredential, u32)> {
-    let stored_credential: WebAuthnCredential =
-        sqlx::query_as("SELECT * FROM webauthn_credentials WHERE student_id = $1")
-            .bind(roll_upper)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?;
+    // reset_at IS NULL: see get_webauthn_status's comment. This is the
+    // security-critical gate for the discoverable/conditional-UI path, where
+    // a browser could still have the old credential cached and offer it via
+    // autofill without the student ever going through start_authentication.
+    let stored_credential: WebAuthnCredential = sqlx::query_as(
+        "SELECT * FROM webauthn_credentials WHERE student_id = $1 AND reset_at IS NULL",
+    )
+    .bind(roll_upper)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("No credential found".to_string()))?;
 
     if stored_credential.is_suspended {
         return Err(AppError::BadRequest("Credential is suspended".to_string()));
@@ -731,6 +774,12 @@ pub(crate) async fn verify_passkey_assertion(
 pub struct AuthenticationFinishRequest {
     pub roll_number: Option<String>,
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
+    /// The real `authenticatorAttachment` the browser reported for this
+    /// assertion (platform vs cross-platform). Sent as a sibling of
+    /// `credential` rather than inside it because webauthn-rs's
+    /// `PublicKeyCredential` type has no such field and would silently drop
+    /// it if it were nested there.
+    pub authenticator_attachment: Option<crate::models::WebAuthnAttachment>,
     /// The `challengeId` `start_authentication`/`start_conditional_authentication`
     /// returned. Required — correlates this finish call with its own pending
     /// challenge row. See `take_pending_challenge`'s doc comment.
@@ -1105,7 +1154,7 @@ pub async fn finish_authentication(
     .bind(stored_credential.id.to_string()) // 24 webauthn_credential_id
     .bind(true) // 25 webauthn_verified
     .bind(Some(crate::models::WebAuthnDeviceType::Unknown)) // 26 webauthn_device_type
-    .bind(Some(crate::models::WebAuthnAttachment::CrossPlatform)) // 27 webauthn_authenticator_attachment
+    .bind(payload.authenticator_attachment.clone()) // 27 webauthn_authenticator_attachment
     .bind(Some(counter as i32)) // 28 webauthn_counter
     .bind(false) // 29 webauthn_replay_attack (rejected outright above)
     .bind(false) // 30 flag_reviewed

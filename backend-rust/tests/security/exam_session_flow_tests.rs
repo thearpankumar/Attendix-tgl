@@ -975,6 +975,110 @@ async fn manual_attendance_conflicts_with_self_submitted_row() {
     );
 }
 
+/// A student who genuinely self-submitted attendance but landed outside the
+/// configured geofence radius (`verified = false`) must still count as
+/// present, not absent. `verified` is a GPS-geofence signal, not "did the
+/// student submit" — a prior bug in `get_session_absent` filtered its
+/// present-set to `verified = true` only, so this student would silently
+/// show up in the absent list even though `/stats` (which has no such
+/// filter) correctly counted them as present.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn get_session_absent_counts_unverified_but_submitted_student_as_present() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("unverified-super");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    let mentor_username = unique("unverified-mentor");
+    let (_status, mentor_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/users",
+            serde_json::json!({
+                "username": mentor_username,
+                "email": format!("{}@example.com", mentor_username),
+                "password": "mentor-password-123",
+                "role": "admin",
+            }),
+        )
+        .await;
+    let mentor_id = mentor_body["_id"].as_str().unwrap().to_string();
+
+    let roll_number = "UNVERIFIED001";
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, roll_number).await;
+
+    let (_status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "collegeName": "XYZ College",
+                "startsAt": (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
+                "durationMinutes": 60,
+            }),
+        )
+        .await;
+    let session_id: uuid::Uuid = session_body["_id"].as_str().unwrap().parse().unwrap();
+
+    // Seed a self-submitted row with verified = false, mirroring a genuine
+    // check-in that landed outside the geofence radius.
+    sqlx::query(
+        "INSERT INTO attendances ( \
+            id, session_id, student_name, roll_number, photo_url, photo_public_id, \
+            student_latitude, student_longitude, distance_from_location, verified, \
+            source, status, captured_at \
+         ) VALUES ($1, $2, $3, $4, 'https://example.com/p.jpg', 'photos/p', $5, $6, 500.0, false, \
+            'self_submitted', 'present', now())",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(session_id)
+    .bind("Test Student")
+    .bind(roll_number)
+    .bind(12.9716_f64)
+    .bind(77.5946_f64)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+
+    let (status, absent) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "absent list should load: {absent:?}");
+    assert_eq!(
+        absent.as_array().unwrap().len(),
+        0,
+        "a genuinely submitted-but-unverified student must not appear as absent: {absent:?}"
+    );
+
+    let (status, stats) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "stats should load: {stats:?}");
+    assert_eq!(stats["totalAttendance"], 1);
+    assert_eq!(stats["verifiedAttendance"], 0);
+    assert_eq!(stats["unverifiedAttendance"], 1);
+    assert_eq!(
+        stats["absentCount"], 0,
+        "stats and the absent list must agree on this student being present: {stats:?}"
+    );
+}
+
 /// An exam session can be assigned to more than one mentor and needs no
 /// location at all (manual attendance isn't geofenced) — both are new
 /// behaviour on top of the original single-mentor, location-mandatory shape.
