@@ -197,6 +197,38 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(crate::controllers::get_batch).delete(crate::controllers::delete_batch),
         )
         .route(
+            "/batches/{id}/overview",
+            get(crate::controllers::get_batch_overview),
+        )
+        .route(
+            "/batches/{id}/students",
+            get(crate::controllers::get_batch_students),
+        )
+        .route(
+            "/batches/{id}/students/{studentId}/sessions",
+            get(crate::controllers::get_student_session_detail),
+        )
+        .route(
+            "/batches/{id}/export",
+            post(crate::controllers::export_batch_students),
+        )
+        .route(
+            "/students",
+            get(crate::controllers::get_all_students),
+        )
+        .route(
+            "/students/lookup",
+            post(crate::controllers::lookup_students_by_roll),
+        )
+        .route(
+            "/students/lookup/file",
+            post(crate::controllers::lookup_students_from_file),
+        )
+        .route(
+            "/students/lookup/export",
+            post(crate::controllers::export_student_lookup),
+        )
+        .route(
             "/users",
             get(crate::controllers::list_admin_users).post(crate::controllers::create_admin_user),
         )

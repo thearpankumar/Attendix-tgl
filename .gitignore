@@ -124,3 +124,11 @@ AGENTS.md
 DESIGN.md
 .claude/
 graphify-out/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local-only graft tooling config — ripgrep ignore-override and this
+# machine's MCP server registration, not shared via the repo.
+/.ignore
+/.mcp.json

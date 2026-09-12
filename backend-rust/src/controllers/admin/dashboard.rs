@@ -458,30 +458,30 @@ pub async fn get_dashboard_stats(
         *batch_session_counts.entry(key).or_insert(0) += 1;
     }
 
-    // Get unique students with their checkin counts
-    let attendances: Vec<Attendance> =
-        sqlx::query_as("SELECT * FROM attendances WHERE session_id = ANY($1)")
-            .bind(&session_ids)
-            .fetch_all(&state.db)
-            .await?;
-
-    // Group students by roll number + name + batch
-    let mut student_map: std::collections::HashMap<(String, String, String, String), i64> =
-        std::collections::HashMap::new();
-
-    for attendance in &attendances {
-        let batch_name = session_batch_map
-            .get(&attendance.session_id)
-            .and_then(|batch_id_opt| batch_id_opt.map(|id| id.to_string()))
-            .unwrap_or_default();
-        let key = (
-            attendance.roll_number.to_uppercase(),
-            attendance.student_name.clone(),
-            batch_name.clone(),
-            batch_name,
-        );
-        *student_map.entry(key).or_insert(0) += 1;
+    // Per-student checkin counts, grouped in SQL rather than fetching every
+    // attendance row (including its large JSONB anomaly/flag columns) into
+    // Rust just to tally them — on a batch with 100k+ attendance rows this
+    // full-row fetch measured at ~500-980ms; the equivalent GROUP BY is a
+    // few ms. (roll_number, student_name, batch_id) matches the grouping
+    // key the old Rust HashMap used — its 4th tuple element was the batch
+    // id string repeated and always destructured as `_`, so dropping it
+    // here changes nothing observable.
+    #[derive(Debug, sqlx::FromRow)]
+    struct StudentCheckinRow {
+        roll_number: String,
+        student_name: String,
+        batch_id: Option<Uuid>,
+        checkins: i64,
     }
+    let student_checkins: Vec<StudentCheckinRow> = sqlx::query_as(
+        "SELECT upper(a.roll_number) AS roll_number, a.student_name, s.batch_id, COUNT(*) AS checkins \
+         FROM attendances a JOIN sessions s ON s.id = a.session_id \
+         WHERE a.session_id = ANY($1) \
+         GROUP BY upper(a.roll_number), a.student_name, s.batch_id",
+    )
+    .bind(&session_ids)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut on_track_count: i64 = 0;
     let mut at_risk_count: i64 = 0;
@@ -502,9 +502,11 @@ pub async fn get_dashboard_stats(
         }
     }
 
-    for ((roll_no, name, batch_id_str, _), checkins) in &student_map {
+    for row in &student_checkins {
+        let batch_id_str = row.batch_id.map(|id| id.to_string()).unwrap_or_default();
+        let checkins = row.checkins;
         let expected_checkins = batch_session_counts
-            .get(batch_id_str)
+            .get(&batch_id_str)
             .copied()
             .unwrap_or(10);
         let percentage = if expected_checkins > 0 {
@@ -526,14 +528,14 @@ pub async fn get_dashboard_stats(
         }
 
         if is_medium_risk || is_high_risk {
-            let batch_name = Uuid::parse_str(batch_id_str)
-                .ok()
+            let batch_name = row
+                .batch_id
                 .and_then(|uuid| batch_names.get(&uuid).cloned())
                 .unwrap_or_else(|| "N/A".to_string());
 
             rescue_list.push(RescueItem {
-                roll_no: roll_no.clone(),
-                name: name.clone(),
+                roll_no: row.roll_number.clone(),
+                name: row.student_name.clone(),
                 batch: batch_name,
                 attendance: percentage,
                 trend: if is_low_risk {
@@ -560,10 +562,22 @@ pub async fn get_dashboard_stats(
         0
     };
 
-    // Weekly trends - get daily attendance for last 7 days
+    // Weekly trends - daily attendance counts for the last 7 days, grouped
+    // in SQL rather than fetching every matching attendance row (same
+    // full-row-fetch cost problem as student_checkins above). `AT TIME ZONE
+    // 'UTC'` before the date cast pins the day boundary to UTC explicitly,
+    // matching chrono's `DateTime<Utc>::format` semantics the old Rust-side
+    // grouping used, regardless of this connection's session TimeZone.
+    #[derive(Debug, sqlx::FromRow)]
+    struct DailyCountRow {
+        day: chrono::NaiveDate,
+        cnt: i64,
+    }
     let week_ago = Utc::now() - chrono::Duration::days(7);
-    let weekly_attendances: Vec<Attendance> = sqlx::query_as(
-        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2",
+    let daily_rows: Vec<DailyCountRow> = sqlx::query_as(
+        "SELECT (captured_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS cnt \
+         FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 \
+         GROUP BY (captured_at AT TIME ZONE 'UTC')::date",
     )
     .bind(&session_ids)
     .bind(week_ago)
@@ -571,9 +585,9 @@ pub async fn get_dashboard_stats(
     .await?;
 
     let mut daily_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for attendance in &weekly_attendances {
-        let date_str = attendance.captured_at.format("%b %d").to_string();
-        *daily_counts.entry(date_str).or_insert(0) += 1;
+    for row in &daily_rows {
+        let date_str = row.day.format("%b %d").to_string();
+        *daily_counts.entry(date_str).or_insert(0) += row.cnt;
     }
 
     let mut weekly_trends: Vec<WeeklyTrend> = daily_counts

@@ -78,14 +78,17 @@ pub struct RosterResponse {
     pub summary: RosterSummary,
 }
 
-fn source_label(source: AttendanceSource) -> &'static str {
+/// `pub(crate)`: also reused by `batch_analytics` for the per-student
+/// session-detail table, so the present/absent/unmarked mapping never drifts
+/// between the two features.
+pub(crate) fn source_label(source: AttendanceSource) -> &'static str {
     match source {
         AttendanceSource::SelfSubmitted => "self_submitted",
         AttendanceSource::Manual => "manual",
     }
 }
 
-fn status_label(status: AttendanceStatus) -> &'static str {
+pub(crate) fn status_label(status: AttendanceStatus) -> &'static str {
     match status {
         AttendanceStatus::Present => "present",
         AttendanceStatus::Absent => "absent",

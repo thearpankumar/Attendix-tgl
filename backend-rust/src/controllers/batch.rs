@@ -151,6 +151,10 @@ pub async fn create_batch(
 pub struct GetBatchesQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Case-insensitive substring match against the batch name, applied to
+    /// both the manual-batch and excel-batch (session-batch) branches below
+    /// before they're merged — the Batches page's search bar.
+    pub search: Option<String>,
 }
 
 pub async fn get_batches(
@@ -158,16 +162,30 @@ pub async fn get_batches(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<GetBatchesQuery>,
 ) -> Result<impl IntoResponse> {
+    let search = query
+        .search
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
     let batches = sqlx::query_as::<_, Batch>(
-        "SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY created_at DESC",
+        "SELECT * FROM batches \
+         WHERE ($1 = 'super_admin' OR created_by = $2) \
+           AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%') \
+         ORDER BY created_at DESC",
     )
     .bind(&auth.role)
     .bind(auth.id)
+    .bind(search)
     .fetch_all(&state.db)
     .await?;
 
+    // Scoped to just the batch ids already filtered above (role + search),
+    // not a system-wide scan of every student for every admin's page load.
+    let batch_ids: Vec<Uuid> = batches.iter().map(|b| b.id).collect();
     let counts: Vec<(Uuid, i64)> =
-        sqlx::query_as("SELECT batch_id, COUNT(*) FROM students GROUP BY batch_id")
+        sqlx::query_as("SELECT batch_id, COUNT(*) FROM students WHERE batch_id = ANY($1) GROUP BY batch_id")
+            .bind(&batch_ids)
             .fetch_all(&state.db)
             .await?;
     let count_for = |batch_id: Uuid| -> i64 {
@@ -209,10 +227,12 @@ pub async fn get_batches(
                 (SELECT COUNT(*) FROM excel_batch_students WHERE excel_batch_id = eb.id) AS student_count \
          FROM excel_batches eb \
          JOIN sessions s ON s.excel_batch_id = eb.id \
-         WHERE ($1 = 'super_admin' OR eb.created_by = $2)",
+         WHERE ($1 = 'super_admin' OR eb.created_by = $2) \
+           AND ($3::text IS NULL OR eb.name ILIKE '%' || $3 || '%')",
     )
     .bind(&auth.role)
     .bind(auth.id)
+    .bind(search)
     .fetch_all(&state.db)
     .await?;
 
@@ -271,6 +291,76 @@ pub async fn get_batch(
         students,
         created_by: batch.created_by.to_string(),
         created_at: batch.created_at,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DateRangeQuery {
+    pub date_from: Option<DateTime<Utc>>,
+    pub date_to: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOverviewResponse {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub total_students: i64,
+    pub total_sessions_in_range: i64,
+}
+
+/// Lightweight stats for the Batch Details page's Overview tab: student
+/// count is unconditional, session count is scoped to `dateFrom`/`dateTo`
+/// (both optional — omitted means unbounded/all-time) via `created_at`,
+/// which unlike `starts_at` is always set (see idx_sessions_batch_created,
+/// migration 0011).
+pub async fn get_batch_overview(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    Path(id): Path<String>,
+    Query(range): Query<DateRangeQuery>,
+) -> Result<impl IntoResponse> {
+    let batch_id = Uuid::parse_str(&id)
+        .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
+
+    let batch = sqlx::query_as::<_, Batch>(
+        "SELECT * FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(batch_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
+
+    let total_students: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM students WHERE batch_id = $1")
+        .bind(batch_id)
+        .fetch_one(&state.db)
+        .await?;
+
+    let total_sessions_in_range: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sessions \
+         WHERE batch_id = $1 \
+           AND ($2::timestamptz IS NULL OR created_at >= $2) \
+           AND ($3::timestamptz IS NULL OR created_at <= $3)",
+    )
+    .bind(batch_id)
+    .bind(range.date_from)
+    .bind(range.date_to)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(BatchOverviewResponse {
+        id: batch.id.to_string(),
+        name: batch.name,
+        description: batch.description,
+        created_at: batch.created_at,
+        total_students,
+        total_sessions_in_range,
     }))
 }
 
@@ -482,6 +572,47 @@ pub(crate) fn read_raw_rows(data: &[u8]) -> Result<Vec<Vec<String>>> {
     Ok(raw_rows)
 }
 
+/// Header aliases recognized as "this column is the roll/register number",
+/// case/punctuation-insensitive via `normalize_header`. `pub(crate)` — also
+/// reused by `batch_analytics::parse_roll_numbers_from_file` for the global
+/// roll-number Lookup's file-upload path, so both importers agree on what
+/// counts as a roll-number column without duplicating the list.
+pub(crate) const ROLL_NUMBER_ALIASES: &[&str] = &[
+    "roll",
+    "rollno",
+    "rollnumber",
+    "rollnum",
+    "register",
+    "registerno",
+    "registernumber",
+    "regno",
+    "regnumber",
+    "regnno",
+    "regnum",
+    "registration",
+    "registrationno",
+    "registrationnumber",
+    "registrationnum",
+    "id",
+    "studentid",
+    "studentno",
+    "stdid",
+    "enrollment",
+    "enrollmentno",
+    "enrollmentnumber",
+    "enrolment",
+    "enrolmentno",
+    "enrolmentnumber",
+    "usn",
+    "hallticket",
+    "hallticketno",
+    "htno",
+    "slno",
+    "sno",
+    "srno",
+    "serialno",
+];
+
 fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     let raw_rows = read_raw_rows(data)?;
 
@@ -492,41 +623,7 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
         return Ok((students, errors));
     }
 
-    let roll_aliases = [
-        "roll",
-        "rollno",
-        "rollnumber",
-        "rollnum",
-        "register",
-        "registerno",
-        "registernumber",
-        "regno",
-        "regnumber",
-        "regnno",
-        "regnum",
-        "registration",
-        "registrationno",
-        "registrationnumber",
-        "registrationnum",
-        "id",
-        "studentid",
-        "studentno",
-        "stdid",
-        "enrollment",
-        "enrollmentno",
-        "enrollmentnumber",
-        "enrolment",
-        "enrolmentno",
-        "enrolmentnumber",
-        "usn",
-        "hallticket",
-        "hallticketno",
-        "htno",
-        "slno",
-        "sno",
-        "srno",
-        "serialno",
-    ];
+    let roll_aliases = ROLL_NUMBER_ALIASES;
 
     let name_aliases = [
         "name",

@@ -328,7 +328,7 @@ describe('Batches', () => {
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('View Details'));
+      fireEvent.click(screen.getByTitle('View Roster'));
 
       await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/admin/batches/b1'));
       expect(await screen.findByText('Alice')).toBeInTheDocument();
@@ -347,7 +347,7 @@ describe('Batches', () => {
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('View Details'));
+      fireEvent.click(screen.getByTitle('View Roster'));
       const alice = await screen.findByText('Alice');
       expect(alice).toBeInTheDocument();
 
@@ -365,7 +365,7 @@ describe('Batches', () => {
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('View Details'));
+      fireEvent.click(screen.getByTitle('View Roster'));
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to fetch batch details'));
       await waitFor(() => expect(screen.queryByText('Loading...')).not.toBeInTheDocument());

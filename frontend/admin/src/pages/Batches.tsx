@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router';
-import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar, CalendarClock } from 'lucide-react';
+import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar, CalendarClock, BarChart3, Search } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import DataTable from '../components/ui/DataTable';
@@ -42,7 +42,17 @@ const Batches = () => {
   const offsetRef = useRef(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  
+
+  // Search bar — debounced independently so typing doesn't fire a request
+  // per keystroke (same idiom as SessionRecordFilters.tsx's search field).
+  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  useEffect(() => {
+    if (searchInput === search) return;
+    const timeout = setTimeout(() => setSearch(searchInput), 400);
+    return () => clearTimeout(timeout);
+  }, [searchInput]);
+
   // Drawer State
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState<DetailedBatch | null>(null);
@@ -57,15 +67,18 @@ const Batches = () => {
 
   useEffect(() => {
     fetchBatches();
-  }, []);
+  }, [search]);
 
-  // Resets back to the first page — used on mount and after any mutation
-  // (create/delete), since the set of batches (and their order) may have
-  // changed underneath whatever the user had scrolled to.
+  // Resets back to the first page — used on mount, after any mutation
+  // (create/delete), and whenever the search term changes, since the set of
+  // batches (and their order) may have changed underneath whatever the user
+  // had scrolled to.
   const fetchBatches = async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get<Batch[]>('/api/admin/batches', { params: { limit: PAGE_SIZE, offset: 0 } });
+      const { data } = await axios.get<Batch[]>('/api/admin/batches', {
+        params: { limit: PAGE_SIZE, offset: 0, search: search || undefined },
+      });
       setBatches(data);
       offsetRef.current = data.length;
       setHasMore(data.length === PAGE_SIZE);
@@ -83,7 +96,7 @@ const Batches = () => {
     setLoadingMore(true);
     try {
       const { data } = await axios.get<Batch[]>('/api/admin/batches', {
-        params: { limit: PAGE_SIZE, offset: offsetRef.current },
+        params: { limit: PAGE_SIZE, offset: offsetRef.current, search: search || undefined },
       });
       setBatches((prev) => [...prev, ...data]);
       offsetRef.current += data.length;
@@ -252,10 +265,19 @@ const Batches = () => {
           <button
             className="btn btn-secondary btn-small"
             onClick={() => openBatchDetails(b)}
-            title={b.type === 'session' ? 'Open session' : 'View Details'}
+            title={b.type === 'session' ? 'Open session' : 'View Roster'}
           >
             <Eye size={14} />
           </button>
+          {b.type === 'manual' && (
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={() => navigate(`/batches/${b._id}`)}
+              title="View Attendance Analytics"
+            >
+              <BarChart3 size={14} />
+            </button>
+          )}
           {b.type === 'manual' && (
             <button
               className="btn btn-danger btn-small"
@@ -288,6 +310,22 @@ const Batches = () => {
         </button>
       </div>
 
+      <div className="card" style={{ marginBottom: '1rem', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Search size={16} className="text-muted" />
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search batches by name…"
+          style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: '0.95rem', color: 'var(--text-color)' }}
+        />
+        {searchInput && (
+          <button className="btn btn-secondary btn-small" onClick={() => setSearchInput('')} title="Clear search">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
       <div className="card card-table">
         {loading ? (
           <div className="loading">Loading batches...</div>
@@ -295,10 +333,16 @@ const Batches = () => {
           <div className="empty-state">
             <Users size={48} className="empty-icon" />
             <h3>No Batches Found</h3>
-            <p>You haven't created any student batches yet.</p>
-            <button className="btn btn-primary" onClick={() => setIsModalOpen(true)}>
-              Import Your First Roster
-            </button>
+            {search ? (
+              <p>No batches match "{search}".</p>
+            ) : (
+              <>
+                <p>You haven't created any student batches yet.</p>
+                <button className="btn btn-primary" onClick={() => setIsModalOpen(true)}>
+                  Import Your First Roster
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <>

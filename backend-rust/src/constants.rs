@@ -45,6 +45,21 @@ pub const RECENT_ACTIVITY_LIMIT: i64 = 5;
 // infinite-scroll fetches explicitly pass a much smaller `limit` per request.
 pub const SESSIONS_LIST_PAGE_SIZE: i64 = 500;
 
+// Ceiling on how many roll numbers a single global Student Lookup request
+// (pasted list or uploaded file) may resolve at once — bounds the `= ANY($1)`
+// query, the JSON response, and the export workbook size built from it.
+pub const STUDENT_LOOKUP_MAX_ROLL_NUMBERS: usize = 2000;
+
+// Batch Details page's Student View tab (GET /batches/{id}/students):
+// default/ceiling for its lazily-loaded, searchable, paginated roster.
+pub const BATCH_STUDENTS_DEFAULT_PAGE_SIZE: i64 = 25;
+pub const BATCH_STUDENTS_MAX_PAGE_SIZE: i64 = 100;
+
+// Per-student expandable session-detail table
+// (GET /batches/{id}/students/{studentId}/sessions).
+pub const STUDENT_SESSIONS_DEFAULT_PAGE_SIZE: i64 = 20;
+pub const STUDENT_SESSIONS_MAX_PAGE_SIZE: i64 = 100;
+
 // Ceiling any client-supplied `limit` on `GET /batches` is clamped to.
 // Unlike Sessions, `GET /batches` has no default page size — omitting
 // `limit` entirely still returns everything (existing callers, e.g. the

@@ -468,6 +468,64 @@
 .text-center { text-align: center; }
 .mt-6 { margin-top: var(--space-6); }
 
+/* ── Compact meta bar (e.g. Batch Details header stats) ────
+   A single-line summary strip — icon + label + emphasized value —
+   for contexts where a full .stat-tile grid would take too much
+   vertical space (e.g. merged into the same panel as filters/search). */
+.meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+}
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.meta-item-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+.meta-item-icon.tone-success { background: var(--color-success-bg); color: var(--color-success); }
+.meta-item-icon.tone-warning { background: var(--color-warning-bg); color: var(--color-warning); }
+.meta-item strong {
+  color: var(--color-text);
+  font-weight: 700;
+}
+.meta-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--color-border);
+}
+
+/* ── Percentage pill (attendance %, etc.) ───────────────────
+   Same color-mix-over-surface treatment as .stat-card-percent,
+   scaled down to an inline table-cell badge. */
+.percent-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+.percent-pill small {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  opacity: 0.75;
+}
+
 /* ── Badge ──────────────────────────────────────────────── */
 .badge {
   display: inline-flex;
