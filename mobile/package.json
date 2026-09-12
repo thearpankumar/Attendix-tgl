@@ -68,6 +68,20 @@
   "overrides": {
     "uuid": "^11.1.1",
     "fast-uri": "^3.1.7",
+    "@xmldom/xmldom": "^0.9.12",
+    "js-yaml": "^3.15.2",
+    "eslint": {
+      "@eslint/eslintrc": {
+        "js-yaml": "^4.3.2"
+      }
+    },
+    "expo": {
+      "@expo/cli": {
+        "@expo/xcpretty": {
+          "js-yaml": "^4.3.2"
+        }
+      }
+    },
     "eas-cli": {
       "ajv": "^8.20.0",
       "diff": "^9.0.0",
