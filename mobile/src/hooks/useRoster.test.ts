@@ -2,7 +2,13 @@ import { RosterResponse } from '../api/types';
 import { applyLocalStatus } from './useRoster';
 
 const baseRoster: RosterResponse = {
-  session: { _id: 'sess1', expiresAt: '2026-08-17T23:00:00Z', manualMarkEarlyWindowMinutes: 30 },
+  session: {
+    _id: 'sess1',
+    expiresAt: '2026-08-17T23:00:00Z',
+    createdAt: '2026-08-17T09:00:00Z',
+    manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
+  },
   students: [
     { studentId: '1', rollNumber: 'R1', name: 'Alice', status: 'unmarked', source: null, markedAt: null },
     { studentId: '2', rollNumber: 'R2', name: 'Bob', status: 'unmarked', source: null, markedAt: null },

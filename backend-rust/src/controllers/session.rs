@@ -65,6 +65,10 @@ pub struct CreateSessionRequest {
     /// occurrence; cadence is independent of this flag.
     #[serde(default)]
     pub is_intern_monitoring: bool,
+    /// Explicit session shape ("exam" | "normal") — see
+    /// `SessionCreateRequest::is_exam_session` for why this exists.
+    #[serde(default)]
+    pub session_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,6 +137,11 @@ pub struct SessionResponse {
     pub monitoring_ends_at: Option<DateTime<Utc>>,
     #[serde(rename = "sessionKind")]
     pub session_kind: String,
+    /// Normal (non-exam) sessions only — how many hours after `createdAt` a
+    /// mentor may still be added/removed and may still mark/undo attendance.
+    /// See `mentor_edit_window_closed`.
+    #[serde(rename = "mentorEditWindowHours")]
+    pub mentor_edit_window_hours: i64,
 }
 
 /// What short link (if any) a newly created session should get. Pre-validated
@@ -300,6 +309,55 @@ async fn fetch_assigned_mentors(
     Ok((ids, names))
 }
 
+/// Parses and validates a raw mentor-ID list from a create-session request:
+/// every non-empty entry must be a well-formed UUID belonging to an active
+/// admin/mentor account. Used for both exam sessions (mandatory mentors,
+/// enforced by `validate_with_objectids` before this runs) and normal
+/// sessions (optional mentors — an empty list is fine here).
+async fn validate_active_mentor_ids(db: &sqlx::PgPool, raw_ids: &[String]) -> Result<Vec<Uuid>> {
+    let mut assigned_admin_ids = Vec::with_capacity(raw_ids.len());
+    for raw_id in raw_ids {
+        let raw_id = raw_id.trim();
+        if raw_id.is_empty() {
+            continue;
+        }
+        let mentor_id = Uuid::parse_str(raw_id)
+            .map_err(|e| AppError::BadRequest(format!("Invalid mentor ID: {}", e)))?;
+
+        // Each assignee must exist, still hold the mentor ("admin") role, and
+        // be active — otherwise a session could be handed to a super-admin
+        // account or to a mentor who has since been deactivated.
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM admins WHERE id = $1 AND role = $2 AND is_active = true",
+        )
+        .bind(mentor_id)
+        .bind(ROLE_ADMIN)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "Every assigned mentor must be an active admin/mentor account".to_string(),
+            )
+        })?;
+        assigned_admin_ids.push(mentor_id);
+    }
+    Ok(assigned_admin_ids)
+}
+
+/// True once a *normal* (student self-service) session's mentor-edit window
+/// — configurable via `session_config.mentor_edit_window_hours`, counted from
+/// `created_at` — has passed. This is deliberately separate from
+/// `Session::is_expired()` (the session's own, usually much shorter,
+/// self-check-in window): a mentor must be able to fix a student's
+/// attendance well after that window closes, up to this later cutoff.
+///
+/// Only ever called for a normal session (`starts_at.is_none()`) — an exam
+/// session keeps its existing scheduled-start/end gating untouched, see
+/// `mark_attendance_manual`.
+pub fn mentor_edit_window_closed(session: &Session, window_hours: i64) -> bool {
+    Utc::now() > session.created_at + chrono::Duration::hours(window_hours)
+}
+
 /// Role-scoped session lookup shared by every session read/sub-resource
 /// handler: super-admins see every session regardless of who created it,
 /// mentors only ever see sessions a super-admin has explicitly assigned to
@@ -348,6 +406,7 @@ pub async fn create_session(
         starts_at: payload.starts_at.clone(),
         description: payload.description.clone(),
         is_intern_monitoring: payload.is_intern_monitoring,
+        session_type: payload.session_type.clone(),
     };
     validate_request(&validation_req)?;
     validation_req
@@ -361,35 +420,12 @@ pub async fn create_session(
     // validated together (validate_with_objectids already guarantees they're
     // present and well-formed above); location does not apply — exam
     // attendance is marked manually, not geofenced. Normal session: none of
-    // that applies, but location is mandatory.
+    // that applies, but location is mandatory; mentors are optional (assigned
+    // so they can manually fix a student's self check-in — see the
+    // mentor-edit-window feature).
     let (assigned_admin_ids, location_id, college_name, starts_at) = if is_exam_session {
-        let mut assigned_admin_ids = Vec::with_capacity(payload.assigned_admin_ids.len());
-        for raw_id in &payload.assigned_admin_ids {
-            let raw_id = raw_id.trim();
-            if raw_id.is_empty() {
-                continue;
-            }
-            let mentor_id = Uuid::parse_str(raw_id)
-                .map_err(|e| AppError::BadRequest(format!("Invalid mentor ID: {}", e)))?;
-
-            // Each assignee must exist, still hold the mentor ("admin") role,
-            // and be active — otherwise a session could be handed to a
-            // super-admin account or to a mentor who has since been
-            // deactivated.
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM admins WHERE id = $1 AND role = $2 AND is_active = true",
-            )
-            .bind(mentor_id)
-            .bind(ROLE_ADMIN)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| {
-                AppError::BadRequest(
-                    "Every assigned mentor must be an active admin/mentor account".to_string(),
-                )
-            })?;
-            assigned_admin_ids.push(mentor_id);
-        }
+        let assigned_admin_ids =
+            validate_active_mentor_ids(&state.db, &payload.assigned_admin_ids).await?;
 
         let starts_at =
             DateTime::parse_from_rfc3339(payload.starts_at.as_deref().unwrap_or_default())
@@ -408,7 +444,9 @@ pub async fn create_session(
     } else {
         let location_id = Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
             .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
-        (Vec::new(), Some(location_id), None, None)
+        let assigned_admin_ids =
+            validate_active_mentor_ids(&state.db, &payload.assigned_admin_ids).await?;
+        (assigned_admin_ids, Some(location_id), None, None)
     };
 
     // Intern-monitoring sessions have no self-service GPS check-in flow, but
@@ -608,6 +646,8 @@ pub async fn create_session(
         None => None,
     };
 
+    let sys_config = state.get_system_config().await;
+
     Ok((
         StatusCode::CREATED,
         Json(SessionResponse {
@@ -649,6 +689,7 @@ pub async fn create_session(
             class_duration_minutes: session.class_duration_minutes,
             monitoring_ends_at: session.monitoring_ends_at,
             session_kind: session.session_kind,
+            mentor_edit_window_hours: sys_config.session_config.mentor_edit_window_hours,
         }),
     ))
 }
@@ -677,6 +718,7 @@ pub async fn get_sessions(
     // progress, so the per-session loop below only needs to fill in the
     // fields that live on `sessions`/`batches`/`short_links` directly.
     let records = query_session_records(&state.db, &auth, &filters, limit, offset).await?;
+    let sys_config = state.get_system_config().await;
 
     let mut sessions_list = Vec::with_capacity(records.len());
 
@@ -748,6 +790,7 @@ pub async fn get_sessions(
             class_duration_minutes: session.class_duration_minutes,
             monitoring_ends_at: session.monitoring_ends_at,
             session_kind: session.session_kind,
+            mentor_edit_window_hours: sys_config.session_config.mentor_edit_window_hours,
         });
     }
 
@@ -789,6 +832,7 @@ pub async fn get_session(
 
     let (assigned_admin_ids, assigned_admin_names) =
         fetch_assigned_mentors(&state.db, session.id).await?;
+    let sys_config = state.get_system_config().await;
 
     Ok(Json(SessionResponse {
         id: session.id.to_string(),
@@ -825,6 +869,7 @@ pub async fn get_session(
         class_duration_minutes: session.class_duration_minutes,
         monitoring_ends_at: session.monitoring_ends_at,
         session_kind: session.session_kind,
+        mentor_edit_window_hours: sys_config.session_config.mentor_edit_window_hours,
     }))
 }
 
@@ -2052,7 +2097,7 @@ pub async fn update_session_mentors(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let _session: Session = sqlx::query_as(
+    let session: Session = sqlx::query_as(
         "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(session_id)
@@ -2061,6 +2106,20 @@ pub async fn update_session_mentors(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+
+    // Normal session only (exam sessions keep today's unrestricted add/remove
+    // at any time): once the configurable mentor-edit window has passed
+    // since creation, the mentor list is frozen — no further add or remove.
+    if session.starts_at.is_none() && (!payload.add.is_empty() || !payload.remove.is_empty()) {
+        let sys_config = state.get_system_config().await;
+        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours)
+        {
+            return Err(AppError::BadRequest(format!(
+                "The {}-hour window to change this session's mentors has closed",
+                sys_config.session_config.mentor_edit_window_hours
+            )));
+        }
+    }
 
     let mut add_ids = Vec::with_capacity(payload.add.len());
     for raw_id in &payload.add {

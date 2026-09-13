@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::{
     controllers::{
         fetch_roster_name, fetch_roster_students, find_roster_student, find_session_for_admin,
-        resolve_roster_source,
+        mentor_edit_window_closed, resolve_roster_source,
     },
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
@@ -36,6 +36,7 @@ pub struct RosterSessionInfo {
     pub college_name: Option<String>,
     pub starts_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
     pub batch_name: Option<String>,
     pub description: Option<String>,
     /// Super-admin configurable (Settings page) — how many minutes before
@@ -43,6 +44,11 @@ pub struct RosterSessionInfo {
     /// per-response instead of baked into the client so it stays correct
     /// without an app release when a super-admin changes the setting.
     pub manual_mark_early_window_minutes: i64,
+    /// Normal (non-exam) sessions only — how many hours after `created_at` a
+    /// mentor may still mark/undo attendance or be added/removed. Sent
+    /// per-response (super-admin configurable, Settings page) so the mentor
+    /// apps can show an accurate countdown/lock state without a release.
+    pub mentor_edit_window_hours: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,11 +122,13 @@ pub async fn get_session_roster(
         college_name: session.college_name.clone(),
         starts_at: session.starts_at,
         expires_at: session.expires_at,
+        created_at: session.created_at,
         batch_name,
         description: session.description.clone(),
         manual_mark_early_window_minutes: sys_config
             .session_config
             .manual_mark_early_window_minutes,
+        mentor_edit_window_hours: sys_config.session_config.mentor_edit_window_hours,
     };
 
     // Legacy sessions created before batches were mandatory (or a normal
@@ -262,11 +270,26 @@ pub async fn mark_attendance_manual(
                 "This session hasn't started yet".to_string(),
             ));
         }
-    }
-    if session.is_expired() {
-        return Err(AppError::BadRequest(
-            "This session's attendance window has closed".to_string(),
-        ));
+        // Exam session: unchanged — closes for good once its own scheduled
+        // end passes.
+        if session.is_expired() {
+            return Err(AppError::BadRequest(
+                "This session's attendance window has closed".to_string(),
+            ));
+        }
+    } else if mentor_edit_window_closed(
+        &session,
+        sys_config.session_config.mentor_edit_window_hours,
+    ) {
+        // Normal session: its own self-check-in window (`is_expired()`) is
+        // deliberately *not* checked here — a mentor must still be able to
+        // fix a student's attendance after that window closes, up to this
+        // later, configurable cutoff counted from when the session was
+        // created.
+        return Err(AppError::BadRequest(format!(
+            "The {}-hour window to update this session's attendance has closed",
+            sys_config.session_config.mentor_edit_window_hours
+        )));
     }
 
     let source = resolve_roster_source(&session);
@@ -379,7 +402,20 @@ pub async fn undo_manual_mark(
     let session_id = uuid::Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let _session = find_session_for_admin(&state.db, session_id, &auth).await?;
+    let session = find_session_for_admin(&state.db, session_id, &auth).await?;
+
+    // Same normal-session-only 48h (configurable) cutoff as marking itself —
+    // an undo is just another edit. Exam sessions are unaffected.
+    if session.starts_at.is_none() {
+        let sys_config = state.get_system_config().await;
+        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours)
+        {
+            return Err(AppError::BadRequest(format!(
+                "The {}-hour window to update this session's attendance has closed",
+                sys_config.session_config.mentor_edit_window_hours
+            )));
+        }
+    }
 
     let roll_upper = roll_number.trim().to_uppercase();
 

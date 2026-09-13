@@ -406,6 +406,13 @@ pub struct SessionConfig {
     /// manually marking attendance.
     #[serde(default = "default_manual_mark_early_window")]
     pub manual_mark_early_window_minutes: i64,
+    /// For a normal (student self-service) session only: how many hours
+    /// after the session was *created* a mentor may still be added/removed
+    /// and may still manually mark/undo attendance, even after the
+    /// session's own self-check-in window has closed. Exam sessions are
+    /// unaffected — they keep their own scheduled-start/end gating.
+    #[serde(default = "default_mentor_edit_window_hours")]
+    pub mentor_edit_window_hours: i64,
 }
 
 fn default_session_expire() -> u64 {
@@ -416,11 +423,16 @@ fn default_manual_mark_early_window() -> i64 {
     30
 }
 
+fn default_mentor_edit_window_hours() -> i64 {
+    48
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             expire_minutes: 60,
             manual_mark_early_window_minutes: 30,
+            mentor_edit_window_hours: 48,
         }
     }
 }

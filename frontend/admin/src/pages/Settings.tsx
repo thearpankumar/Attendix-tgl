@@ -54,6 +54,7 @@ interface PhotoVerificationConfig {
 interface SessionConfig {
   expireMinutes: number;
   manualMarkEarlyWindowMinutes: number;
+  mentorEditWindowHours: number;
 }
 
 interface LockoutConfig {
@@ -102,7 +103,7 @@ const DEFAULT_CONFIG: SystemConfig = {
   },
   webauthnConfig: { gracePeriodMinutes: 15 },
   photoVerification: { similarityThreshold: 0.15, highSimilarityThreshold: 0.85 },
-  sessionConfig: { expireMinutes: 60, manualMarkEarlyWindowMinutes: 30 },
+  sessionConfig: { expireMinutes: 60, manualMarkEarlyWindowMinutes: 30, mentorEditWindowHours: 48 },
   lockoutConfig: { maxLoginAttempts: 5, lockoutDurationMinutes: 15 },
   attendanceConfig: { maxAttendanceAttempts: 3 },
 };
@@ -261,6 +262,13 @@ function SecuritySection({ config, onChange }: { config: SystemConfig; onChange:
         tooltip="How many minutes before an exam session's scheduled start a mentor may begin manually marking attendance. Marking always closes at the session's scheduled end, regardless of this setting."
       >
         <NumInput value={config.sessionConfig.manualMarkEarlyWindowMinutes} onChange={v => onChange({ ...config, sessionConfig: { ...config.sessionConfig, manualMarkEarlyWindowMinutes: v } })} unit="minutes" min={0} max={180} step={5} />
+      </SettingRow>
+
+      <SettingRow
+        label="Mentor Edit Window (Normal Sessions)"
+        tooltip="For a normal (student self-check-in) session only: how many hours after the session is created a mentor assigned to it may add/remove other mentors and mark or undo a student's attendance — even after that session's own check-in window has closed. Locked permanently once this passes. Exam sessions are unaffected."
+      >
+        <NumInput value={config.sessionConfig.mentorEditWindowHours} onChange={v => onChange({ ...config, sessionConfig: { ...config.sessionConfig, mentorEditWindowHours: v } })} unit="hours" min={1} max={168} step={1} />
       </SettingRow>
 
       <SettingRow

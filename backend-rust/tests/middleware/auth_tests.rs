@@ -335,6 +335,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -359,6 +360,7 @@ mod tests {
                 starts_at: None,
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -381,6 +383,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -399,6 +402,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -417,6 +421,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -435,6 +440,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -982,6 +988,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -1003,6 +1010,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -1081,6 +1089,7 @@ mod tests {
                 starts_at: Some("2026-08-14T09:00:00Z".to_string()),
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             let result = req.validate_with_objectids();
@@ -1104,6 +1113,7 @@ mod tests {
                 starts_at: None,
                 description: None,
                 is_intern_monitoring: false,
+                session_type: None,
             };
 
             assert!(!req.is_exam_session());

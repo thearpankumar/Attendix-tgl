@@ -496,11 +496,13 @@ const Sessions = () => {
         locationId: isExam || isIntern ? undefined : formData.locationId,
         durationMinutes: duration,
         description: formData.description,
-        // Normal sessions omit these entirely — an empty mentor list is
-        // exactly what tells the backend "this is a normal session, batch
-        // stays optional" (see SessionCreateRequest::is_exam_session).
+        // Explicit shape, so a normal session can still optionally carry
+        // mentors (assigned so one can fix a student's self check-in)
+        // without being misclassified as an exam session server-side — see
+        // SessionCreateRequest::is_exam_session.
+        sessionType: formData.sessionType,
         batchId: isExam ? formData.batchId : (formData.batchId || undefined),
-        assignedAdminIds: isExam ? formData.assignedAdminIds : undefined,
+        assignedAdminIds: formData.assignedAdminIds.length > 0 ? formData.assignedAdminIds : undefined,
         collegeName: isExam ? formData.collegeName.trim() : undefined,
         startsAt: isExam ? new Date(`${formData.startsDate}T${formData.startsTime}`).toISOString() : undefined,
         // Exam sessions have no self-service check-in flow, so there's
@@ -1113,6 +1115,27 @@ const Sessions = () => {
                 </div>
               </div>
             </>
+          )}
+
+          {/* Optional on a normal session — assigned so a mentor can step in
+               and fix a student's attendance from their own app if the
+               student's device can't complete self check-in. Doesn't apply
+               to intern monitoring (no roster/manual-mark surface there). */}
+          {formData.sessionType === 'normal' && !formData.isInternMonitoring && (
+            <div className="form-group">
+              <label htmlFor="session-mentor-list-normal">Assign Mentor(s) (Optional)</label>
+              <MultiSelect
+                id="session-mentor-list-normal"
+                options={mentors.map((m) => ({ value: m._id, label: m.fullName || m.username }))}
+                selected={formData.assignedAdminIds}
+                onChange={(next) => setFormData({ ...formData, assignedAdminIds: next })}
+                placeholder={mentors.length === 0 ? 'No active mentor accounts' : 'Search mentors…'}
+                emptyMessage="No mentors match your search"
+              />
+              <small style={{ color: 'var(--color-muted)' }}>
+                A mentor can fix a student's attendance from the mentor app if their device fails, within 48 hours of this session being created.
+              </small>
+            </div>
           )}
 
           {/* ── Short Link mode selector — exam sessions have no self-service

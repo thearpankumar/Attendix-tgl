@@ -247,7 +247,7 @@ async fn register(
 
 /// Usernames are capped at 30 chars (see `create_admin_user`'s validation),
 /// so this keeps well under that while still being unique per test run.
-fn unique(prefix: &str) -> String {
+pub(crate) fn unique(prefix: &str) -> String {
     format!(
         "{}-{}",
         prefix,
@@ -639,7 +639,7 @@ async fn super_admin_cannot_change_own_role_or_active_status() {
 /// manual-mark endpoints only care about table contents, not how a batch
 /// was created — going through the multipart Excel-upload endpoint would
 /// test unrelated code).
-async fn seed_location_and_batch(
+pub(crate) async fn seed_location_and_batch(
     pool: &sqlx::PgPool,
     created_by: uuid::Uuid,
     roll_number: &str,

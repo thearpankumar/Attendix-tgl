@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { Activity, AlertCircle, Calendar, CheckCircle, Clock, MapPin, Pencil, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
+import { Activity, AlertCircle, Calendar, CheckCircle, Clock, Lock, MapPin, Pencil, QrCode, RefreshCw, ShieldCheck, User, UserX, Users, X, XCircle } from 'lucide-react';
 import PageHeader from '../components/ui/PageHeader';
 import Badge from '../components/ui/Badge';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -31,6 +31,9 @@ interface Session {
   monitoringEnabled: boolean;
   classDurationMinutes?: number;
   monitoringEndsAt?: string;
+  // Normal (non-exam) sessions only — how many hours after `createdAt` a
+  // mentor may still be added/removed. See `mentorEditWindowClosed` below.
+  mentorEditWindowHours?: number;
 }
 
 interface Mentor { _id: string; username: string; fullName?: string; role: string; isActive: boolean; }
@@ -479,6 +482,15 @@ const SessionDetail = () => {
   // startsAt when set, createdAt otherwise, same as the server.
   const scheduleAnchor = new Date(session.startsAt || session.createdAt || Date.now());
   const isScheduleEditableToday = scheduleAnchor.toDateString() === new Date().toDateString();
+  // A normal (non-exam) session has a location; an exam session never does.
+  // Only a normal session's mentor list is time-boxed — see backend
+  // `mentor_edit_window_closed`, mirrored here purely for UI feedback (the
+  // server remains the source of truth on every mutating request).
+  const normalMentorWindowClosed =
+    !!session.locationId &&
+    !!session.createdAt &&
+    typeof session.mentorEditWindowHours === 'number' &&
+    Date.now() - new Date(session.createdAt).getTime() > session.mentorEditWindowHours * 3600000;
 
   return (
     <div className="container">
@@ -560,40 +572,47 @@ const SessionDetail = () => {
                 </span>
               </div>
             )}
-            {(!session.locationId || session.assignedAdminNames?.length || editingMentors) && (
-              <div className="session-detail-item" style={{ alignItems: 'flex-start' }}>
-                <span className="detail-label">
-                  <User size={14} /> Mentor(s):
-                </span>
-                <span className="detail-value" style={{ flex: 1 }}>
-                  {editingMentors ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <MultiSelect
-                        options={mentors.map((m) => ({ value: m._id, label: m.fullName || m.username }))}
-                        selected={mentorSelection}
-                        onChange={setMentorSelection}
-                        placeholder="Search mentors…"
-                        emptyMessage="No mentors match your search"
-                      />
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button type="button" className="btn btn-success btn-small" onClick={saveMentors} disabled={savingMentors}>
-                          {savingMentors ? 'Saving…' : 'Save'}
-                        </button>
-                        <button type="button" className="btn btn-secondary btn-small" onClick={cancelEditingMentors} disabled={savingMentors}>
-                          Cancel
-                        </button>
-                      </div>
+            <div className="session-detail-item" style={{ alignItems: 'flex-start' }}>
+              <span className="detail-label">
+                <User size={14} /> Mentor(s):
+              </span>
+              <span className="detail-value" style={{ flex: 1 }}>
+                {editingMentors ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <MultiSelect
+                      options={mentors.map((m) => ({ value: m._id, label: m.fullName || m.username }))}
+                      selected={mentorSelection}
+                      onChange={setMentorSelection}
+                      placeholder="Search mentors…"
+                      emptyMessage="No mentors match your search"
+                    />
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button type="button" className="btn btn-success btn-small" onClick={saveMentors} disabled={savingMentors}>
+                        {savingMentors ? 'Saving…' : 'Save'}
+                      </button>
+                      <button type="button" className="btn btn-secondary btn-small" onClick={cancelEditingMentors} disabled={savingMentors}>
+                        Cancel
+                      </button>
                     </div>
-                  ) : (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      {(session.assignedAdminNames || []).map((name) => (
-                        <span key={name} className="status-pill" style={{ background: 'var(--color-primary-subtle)', color: 'var(--color-primary)', border: '1px solid var(--color-primary)' }}>
-                          {name}
-                        </span>
-                      ))}
-                      {(!session.assignedAdminNames || session.assignedAdminNames.length === 0) && (
-                        <span style={{ color: 'var(--color-muted)' }}>None assigned</span>
-                      )}
+                  </div>
+                ) : (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {(session.assignedAdminNames || []).map((name) => (
+                      <span key={name} className="status-pill" style={{ background: 'var(--color-primary-subtle)', color: 'var(--color-primary)', border: '1px solid var(--color-primary)' }}>
+                        {name}
+                      </span>
+                    ))}
+                    {(!session.assignedAdminNames || session.assignedAdminNames.length === 0) && (
+                      <span style={{ color: 'var(--color-muted)' }}>None assigned</span>
+                    )}
+                    {normalMentorWindowClosed ? (
+                      <span
+                        title={`Mentor changes are locked ${session.mentorEditWindowHours}h after a session is created`}
+                        style={{ color: 'var(--color-muted)', display: 'flex', alignItems: 'center' }}
+                      >
+                        <Lock size={13} />
+                      </span>
+                    ) : (
                       <button
                         type="button"
                         onClick={startEditingMentors}
@@ -603,11 +622,11 @@ const SessionDetail = () => {
                       >
                         <Pencil size={13} />
                       </button>
-                    </span>
-                  )}
-                </span>
-              </div>
-            )}
+                    )}
+                  </span>
+                )}
+              </span>
+            </div>
           </div>
 
           <div className="session-actions-new">

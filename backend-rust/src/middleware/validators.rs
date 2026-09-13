@@ -268,8 +268,11 @@ pub struct SessionCreateRequest {
     pub duration_minutes: Option<i32>,
 
     pub batch_id: Option<String>,
-    /// One or more mentor IDs. Present (non-empty) + valid signals an exam
-    /// session — see `SessionCreateRequest::is_exam_session`.
+    /// One or more mentor IDs. For an exam session these are mandatory; a
+    /// normal session may optionally carry mentors too (assigned so they can
+    /// manually fix a student's self check-in — see the mentor-edit-window
+    /// feature), which does *not* make it an exam session. See
+    /// `SessionCreateRequest::is_exam_session`.
     #[serde(default)]
     pub assigned_admin_ids: Vec<String>,
     pub college_name: Option<String>,
@@ -282,14 +285,28 @@ pub struct SessionCreateRequest {
     /// `Session::session_kind`. Mutually exclusive with an exam session.
     #[serde(default)]
     pub is_intern_monitoring: bool,
+
+    /// Explicit session shape from the frontend: `"exam"` or `"normal"`.
+    /// Older callers (and every existing test) omit this, in which case
+    /// exam-ness falls back to the legacy `assigned_admin_ids`-non-empty
+    /// heuristic — see `is_exam_session`. Once set explicitly it always wins,
+    /// which is what lets a normal session carry mentors without being
+    /// misclassified as an exam session.
+    #[serde(default)]
+    pub session_type: Option<String>,
 }
 
 impl SessionCreateRequest {
     /// True when this request is creating an exam session (mentor-assigned,
     /// mandatory batch/college/time, no location) rather than a normal
-    /// self-service attendance session (optional batch, geofenced, no mentor).
+    /// self-service attendance session (optional batch, geofenced, mentors
+    /// optional).
     pub fn is_exam_session(&self) -> bool {
-        self.assigned_admin_ids.iter().any(|s| !s.trim().is_empty())
+        match self.session_type.as_deref() {
+            Some("exam") => true,
+            Some(_) => false,
+            None => self.assigned_admin_ids.iter().any(|s| !s.trim().is_empty()),
+        }
     }
 
     /// Validate the session request including ObjectId format checks
@@ -404,6 +421,30 @@ impl SessionCreateRequest {
                     errors.push(FieldError {
                         field: "batch_id".to_string(),
                         message: "Valid batch ID required".to_string(),
+                    });
+                }
+            }
+            // Mentors are optional on a normal session (unlike an exam
+            // session, where at least one is mandatory) — assigned so a
+            // mentor can manually fix a student's self check-in. Any
+            // provided ID still has to be well-formed and non-duplicate.
+            let mentor_ids: Vec<&str> = self
+                .assigned_admin_ids
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            for id in &mentor_ids {
+                if !is_valid_objectid(id) {
+                    errors.push(FieldError {
+                        field: "assigned_admin_ids".to_string(),
+                        message: format!("Invalid mentor ID: {}", id),
+                    });
+                } else if !seen.insert(*id) {
+                    errors.push(FieldError {
+                        field: "assigned_admin_ids".to_string(),
+                        message: "Duplicate mentor in mentor list".to_string(),
                     });
                 }
             }
@@ -699,6 +740,7 @@ mod tests {
             starts_at: None,
             description: None,
             is_intern_monitoring: false,
+            session_type: None,
         };
         assert!(!normal_no_batch.is_exam_session());
         assert!(
@@ -720,6 +762,49 @@ mod tests {
             "normal session with a malformed batch id should still be rejected"
         );
 
+        // A normal session may optionally carry mentors (so one can fix a
+        // student's self check-in) without becoming an exam session, as long
+        // as `session_type` is explicit.
+        let mut normal_with_mentor = normal_no_batch.clone();
+        normal_with_mentor.session_type = Some("normal".to_string());
+        normal_with_mentor.assigned_admin_ids =
+            vec!["550e8400-e29b-41d4-a716-446655440002".to_string()];
+        assert!(
+            !normal_with_mentor.is_exam_session(),
+            "an explicit normal session type must not be reclassified as exam just because mentors are present"
+        );
+        assert!(
+            normal_with_mentor.validate_with_objectids().is_ok(),
+            "normal session with a valid mentor should be allowed"
+        );
+
+        let mut normal_invalid_mentor = normal_with_mentor.clone();
+        normal_invalid_mentor.assigned_admin_ids = vec!["invalid".to_string()];
+        assert!(
+            normal_invalid_mentor.validate_with_objectids().is_err(),
+            "normal session with a malformed mentor id should still be rejected"
+        );
+
+        let mut normal_duplicate_mentor = normal_with_mentor.clone();
+        normal_duplicate_mentor.assigned_admin_ids = vec![
+            "550e8400-e29b-41d4-a716-446655440002".to_string(),
+            "550e8400-e29b-41d4-a716-446655440002".to_string(),
+        ];
+        assert!(
+            normal_duplicate_mentor.validate_with_objectids().is_err(),
+            "normal session should reject a duplicate mentor id too"
+        );
+
+        // Without an explicit session_type, the legacy heuristic still
+        // applies: any assigned_admin_ids at all means "exam session".
+        let mut legacy_mentor_no_type = normal_no_batch.clone();
+        legacy_mentor_no_type.assigned_admin_ids =
+            vec!["550e8400-e29b-41d4-a716-446655440002".to_string()];
+        assert!(
+            legacy_mentor_no_type.is_exam_session(),
+            "legacy callers omitting session_type keep the old assigned_admin_ids heuristic"
+        );
+
         // Invalid location UUID (normal session only — location isn't checked for exam sessions)
         let invalid_location = SessionCreateRequest {
             location_id: Some("invalid-id".to_string()),
@@ -730,6 +815,7 @@ mod tests {
             starts_at: None,
             description: None,
             is_intern_monitoring: false,
+            session_type: None,
         };
         assert!(invalid_location.validate_with_objectids().is_err());
 
@@ -753,6 +839,7 @@ mod tests {
             starts_at: None,
             description: None,
             is_intern_monitoring: false,
+            session_type: None,
         };
         assert!(invalid_duration.validate_with_objectids().is_err());
 
@@ -767,6 +854,7 @@ mod tests {
             starts_at: Some("2026-08-14T09:00:00Z".to_string()),
             description: None,
             is_intern_monitoring: false,
+            session_type: None,
         };
         assert!(valid_exam.is_exam_session());
         assert!(
@@ -852,6 +940,7 @@ mod tests {
             starts_at: None,
             description: None,
             is_intern_monitoring: true,
+            session_type: None,
         };
         assert!(
             intern_no_batch.validate_with_objectids().is_ok(),

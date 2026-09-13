@@ -24,11 +24,16 @@ interface RosterResponse {
     collegeName?: string;
     startsAt?: string;
     expiresAt: string;
+    createdAt: string;
     batchName?: string;
     description?: string;
     // Super-admin configurable (Settings page) — how many minutes before
     // startsAt a mentor may begin manually marking attendance.
     manualMarkEarlyWindowMinutes: number;
+    // Normal (non-exam) sessions only — how many hours after createdAt a
+    // mentor may still mark/undo attendance, even after the session's own
+    // (often much shorter) self-check-in window has closed.
+    mentorEditWindowHours: number;
   };
   students: RosterStudent[];
   summary: { total: number; marked: number; present: number; absent: number; unmarked: number };
@@ -178,7 +183,20 @@ const SessionDetail = () => {
   const hasStarted =
     !session.startsAt ||
     new Date(session.startsAt).getTime() - session.manualMarkEarlyWindowMinutes * 60000 <= now;
-  const hasEnded = new Date(session.expiresAt).getTime() <= now;
+  const isNormalSession = !session.startsAt;
+  // Exam session: unchanged — closes for good once its own scheduled end
+  // (expiresAt) passes. Normal session: its own self-check-in window can
+  // close in as little as a few minutes, but a mentor must still be able to
+  // fix a student's attendance well after that — up to this later,
+  // configurable cutoff counted from when the session was created.
+  const mentorWindowClosesAt = isNormalSession
+    ? new Date(session.createdAt).getTime() + session.mentorEditWindowHours * 3600000
+    : null;
+  const hasEnded = isNormalSession ? (mentorWindowClosesAt as number) <= now : new Date(session.expiresAt).getTime() <= now;
+  // A normal session's own check-in window closing doesn't block marking —
+  // it's just worth telling the mentor about, since students can no longer
+  // self-submit past this point.
+  const ownCheckInWindowClosed = isNormalSession && new Date(session.expiresAt).getTime() <= now;
 
   return (
     <div className="fade-in">
@@ -216,9 +234,13 @@ const SessionDetail = () => {
       ) : hasEnded ? (
         <div className="card empty-state starts-soon-card" style={{ marginTop: 20 }}>
           <div className="starts-soon-icon starts-soon-icon-danger"><Hourglass size={26} /></div>
-          <p style={{ fontWeight: 700, fontSize: 16, margin: '2px 0 4px' }}>This session has ended</p>
+          <p style={{ fontWeight: 700, fontSize: 16, margin: '2px 0 4px' }}>
+            {isNormalSession ? 'The window to update this session has closed' : 'This session has ended'}
+          </p>
           <p style={{ fontSize: 12.5, color: 'var(--color-muted)', margin: '10px 0 0' }}>
-            Attendance marking closed when the scheduled session time ended.
+            {isNormalSession
+              ? `Attendance marking closed ${session.mentorEditWindowHours} hours after this session was created.`
+              : 'Attendance marking closed when the scheduled session time ended.'}
           </p>
         </div>
       ) : summary.total === 0 ? (
@@ -227,6 +249,12 @@ const SessionDetail = () => {
         </div>
       ) : (
         <>
+          {ownCheckInWindowClosed && mentorWindowClosesAt !== null && (
+            <div className="card" style={{ marginTop: 16, padding: '10px 14px', fontSize: 12.5, color: 'var(--color-muted)' }}>
+              This session's own check-in window has closed, but you can still fix attendance for{' '}
+              {timeUntil(new Date(mentorWindowClosesAt).toISOString(), now)}.
+            </div>
+          )}
           <div className="view-toggle">
             <button type="button" className={viewMode === 'stack' ? 'active' : ''} onClick={() => setViewMode('stack')}>
               <Layers size={14} /> Stack

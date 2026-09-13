@@ -5,7 +5,13 @@ import axios from 'axios';
 import SessionDetail from '../src/pages/SessionDetail';
 
 const ROSTER_ONE_UNMARKED = {
-  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
+  session: {
+    _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101',
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    createdAt: new Date().toISOString(),
+    manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
+  },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
   ],
@@ -13,11 +19,50 @@ const ROSTER_ONE_UNMARKED = {
 };
 
 const ROSTER_ALL_MARKED = {
-  session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
+  session: {
+    _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101',
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    createdAt: new Date().toISOString(),
+    manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
+  },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'present', source: 'manual', markedAt: new Date().toISOString() },
   ],
   summary: { total: 1, marked: 1, present: 1, absent: 0, unmarked: 0 },
+};
+
+// A normal (non-exam, no startsAt) session whose own short check-in window
+// has already closed, but is still well within the 48h mentor-edit window
+// counted from createdAt.
+const ROSTER_OWN_WINDOW_CLOSED_BUT_MENTOR_WINDOW_OPEN = {
+  session: {
+    _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101',
+    expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+    createdAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
+  },
+  students: [
+    { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
+  ],
+  summary: { total: 1, marked: 0, present: 0, absent: 0, unmarked: 1 },
+};
+
+// A normal session created more than mentorEditWindowHours ago — the mentor
+// window itself has now closed for good.
+const ROSTER_MENTOR_WINDOW_CLOSED = {
+  session: {
+    _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101',
+    expiresAt: new Date(Date.now() - 49 * 3_600_000).toISOString(),
+    createdAt: new Date(Date.now() - 49 * 3_600_000).toISOString(),
+    manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
+  },
+  students: [
+    { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
+  ],
+  summary: { total: 1, marked: 0, present: 0, absent: 0, unmarked: 1 },
 };
 
 const renderSessionDetail = () => render(
@@ -35,7 +80,9 @@ const ROSTER_NOT_STARTED = {
     batchName: 'CS101',
     startsAt: new Date(Date.now() + 3_600_000).toISOString(),
     expiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+    createdAt: new Date().toISOString(),
     manualMarkEarlyWindowMinutes: 30,
+    mentorEditWindowHours: 48,
   },
   students: [
     { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
@@ -59,6 +106,24 @@ describe('Mentor SessionDetail (roster + manual marking)', () => {
     expect(screen.queryByText('Asha Rao')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /present/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /absent/i })).not.toBeInTheDocument();
+  });
+
+  it('still shows the marking UI for a normal session whose own check-in window has closed, as long as it is within the mentor-edit window', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: ROSTER_OWN_WINDOW_CLOSED_BUT_MENTOR_WINDOW_OPEN });
+    renderSessionDetail();
+
+    await waitFor(() => expect(screen.getByText('Asha Rao')).toBeInTheDocument());
+    expect(screen.queryByText(/window to update this session has closed/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/own check-in window has closed/i)).toBeInTheDocument();
+  });
+
+  it('shows the locked state once a normal session\'s mentor-edit window has closed for good', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: ROSTER_MENTOR_WINDOW_CLOSED });
+    renderSessionDetail();
+
+    await waitFor(() => expect(screen.getByText(/window to update this session has closed/i)).toBeInTheDocument());
+    expect(screen.queryByText('Asha Rao')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /present/i })).not.toBeInTheDocument();
   });
 
   it('shows the unmarked student and progress summary', async () => {
@@ -133,7 +198,13 @@ describe('Mentor SessionDetail (roster + manual marking)', () => {
   // ─── List view ────────────────────────────────────────────────────────
 
   const ROSTER_MIXED = {
-    session: { _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), manualMarkEarlyWindowMinutes: 30 },
+    session: {
+      _id: 'sess1', collegeName: 'XYZ College', batchName: 'CS101',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      manualMarkEarlyWindowMinutes: 30,
+      mentorEditWindowHours: 48,
+    },
     students: [
       { studentId: 's1', rollNumber: '21CS001', name: 'Asha Rao', status: 'unmarked', source: null, markedAt: null },
       { studentId: 's2', rollNumber: '21CS002', name: 'Bilal Khan', status: 'present', source: 'manual', markedAt: new Date().toISOString() },

@@ -109,7 +109,20 @@ export default function SessionDetail() {
   const hasStarted =
     !session.startsAt ||
     new Date(session.startsAt).getTime() - session.manualMarkEarlyWindowMinutes * 60000 <= now;
-  const hasEnded = new Date(session.expiresAt).getTime() <= now;
+  const isNormalSession = !session.startsAt;
+  // Exam session: unchanged — closes for good once its own scheduled end
+  // (expiresAt) passes. Normal session: its own self-check-in window can
+  // close in as little as a few minutes, but a mentor must still be able to
+  // fix a student's attendance well after that — up to this later,
+  // configurable cutoff counted from when the session was created.
+  const mentorWindowClosesAt = isNormalSession
+    ? new Date(session.createdAt).getTime() + session.mentorEditWindowHours * 3600000
+    : null;
+  const hasEnded = isNormalSession ? (mentorWindowClosesAt as number) <= now : new Date(session.expiresAt).getTime() <= now;
+  // A normal session's own check-in window closing doesn't block marking —
+  // it's just worth telling the mentor about, since students can no longer
+  // self-submit past this point.
+  const ownCheckInWindowClosed = isNormalSession && new Date(session.expiresAt).getTime() <= now;
 
   return (
     <Screen mode="back">
@@ -167,10 +180,12 @@ export default function SessionDetail() {
               <Hourglass size={26} color={colors.dangerTxt} />
             </View>
             <Text style={[styles.startsSoonTitle, { color: colors.text, fontFamily: font.bold }]}>
-              This session has ended
+              {isNormalSession ? 'The window to update this session has closed' : 'This session has ended'}
             </Text>
             <Text style={[styles.startsSoonHint, { color: colors.muted }]}>
-              Attendance marking closed when the scheduled session time ended.
+              {isNormalSession
+                ? `Attendance marking closed ${session.mentorEditWindowHours} hours after this session was created.`
+                : 'Attendance marking closed when the scheduled session time ended.'}
             </Text>
           </View>
         </Card>
@@ -178,6 +193,14 @@ export default function SessionDetail() {
         <EmptyState title="This session has no roster attached." />
       ) : (
         <>
+          {ownCheckInWindowClosed && mentorWindowClosesAt !== null ? (
+            <Card style={{ marginTop: 16, padding: 12 }}>
+              <Text style={{ color: colors.muted, fontSize: 12.5 }}>
+                This session&apos;s own check-in window has closed, but you can still fix attendance for{' '}
+                {countdownLabel(new Date(mentorWindowClosesAt).toISOString(), now)}.
+              </Text>
+            </Card>
+          ) : null}
           <View style={[styles.toggle, { backgroundColor: colors.bgSubtle, borderRadius: radii.md }]}>
             <ToggleButton label="Stack" icon={<Layers size={14} color={viewMode === 'stack' ? colors.primary : colors.muted} />} active={viewMode === 'stack'} onPress={() => setViewMode('stack')} />
             <ToggleButton label="List" icon={<ListIcon size={14} color={viewMode === 'list' ? colors.primary : colors.muted} />} active={viewMode === 'list'} onPress={() => setViewMode('list')} />
