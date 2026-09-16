@@ -37,7 +37,7 @@ use crate::{
         STUDENT_SESSIONS_MAX_PAGE_SIZE,
     },
     controllers::{
-        batch::{normalize_header, read_raw_rows, ROLL_NUMBER_ALIASES},
+        batch::{normalize_header, read_raw_rows, ROLL_NUMBER_ALIASES, ROLL_NUMBER_WEAK_ALIASES},
         status_label, source_label,
     },
     error::{AppError, Result},
@@ -864,12 +864,23 @@ fn parse_roll_numbers_from_file(data: &[u8]) -> Result<Vec<String>> {
         return Ok(vec![]);
     }
 
-    let mut roll_col: Option<usize> = None;
-    for (i, cell) in raw_rows[0].iter().enumerate() {
-        if ROLL_NUMBER_ALIASES.contains(&normalize_header(cell).as_str()) {
-            roll_col = Some(i);
-            break;
-        }
+    // Two passes, not one combined membership check: a lookup file only ever
+    // has this one column to identify, so unlike `batch::parse_excel` (which
+    // cross-checks against name/email/college columns too) there's nothing
+    // else to disambiguate an accidental match. Scanning for an unambiguous
+    // alias (ROLL_NUMBER_ALIASES) first, and only falling back to a generic
+    // one (ROLL_NUMBER_WEAK_ALIASES — "S.No", "ID", etc.) if no column
+    // matched, stops a genuine "Roll Number" column from being shadowed by
+    // an unrelated leading "S.No" index column just because it happens to
+    // sit further left.
+    let normalized_headers: Vec<String> = raw_rows[0].iter().map(|c| normalize_header(c)).collect();
+    let mut roll_col = normalized_headers
+        .iter()
+        .position(|h| ROLL_NUMBER_ALIASES.contains(&h.as_str()));
+    if roll_col.is_none() {
+        roll_col = normalized_headers
+            .iter()
+            .position(|h| ROLL_NUMBER_WEAK_ALIASES.contains(&h.as_str()));
     }
     let start = if roll_col.is_some() { 1 } else { 0 };
 
@@ -1172,5 +1183,43 @@ mod batch_analytics_tests {
     fn test_parse_roll_numbers_empty_file() {
         let rolls = parse_roll_numbers_from_file(b"").unwrap();
         assert!(rolls.is_empty());
+    }
+
+    #[test]
+    fn test_parse_roll_numbers_recognizes_registration_enrollment_and_prn_headers() {
+        for header in [
+            "Registration Number",
+            "Enrollment No",
+            "Enrolment Number",
+            "PRN",
+            "USN",
+            "Admission No.",
+            "GR Number",
+            "Hall Ticket No",
+        ] {
+            let csv = format!("{header},Name\n21B91A0501,Alice\n");
+            let rolls = parse_roll_numbers_from_file(csv.as_bytes()).unwrap();
+            assert_eq!(rolls, vec!["21B91A0501"], "header {header:?} should be recognized");
+        }
+    }
+
+    /// A genuine "Roll Number" column must win over a leading "S.No" index
+    /// column, even though "S.No" comes first left-to-right — S.No/ID/etc.
+    /// are ambiguous fallback aliases, only used when no unambiguous column
+    /// exists at all (see the two-pass scan in `parse_roll_numbers_from_file`).
+    #[test]
+    fn test_parse_roll_numbers_prefers_unambiguous_alias_over_leading_sno_column() {
+        let csv = b"S.No,Roll Number,Name\n1,21B91A0501,Alice\n2,21B91A0502,Bob\n";
+        let rolls = parse_roll_numbers_from_file(csv).unwrap();
+        assert_eq!(rolls, vec!["21B91A0501", "21B91A0502"]);
+    }
+
+    /// With no unambiguous column at all, a weak alias like "S.No" is still
+    /// better than nothing.
+    #[test]
+    fn test_parse_roll_numbers_falls_back_to_weak_alias_when_nothing_else_matches() {
+        let csv = b"S.No,Name\n21B91A0501,Alice\n21B91A0502,Bob\n";
+        let rolls = parse_roll_numbers_from_file(csv).unwrap();
+        assert_eq!(rolls, vec!["21B91A0501", "21B91A0502"]);
     }
 }

@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { Search, Upload, FileSpreadsheet, Download, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
+import { Search, FileSpreadsheet, Download, ExternalLink, ChevronDown, ChevronRight, X } from 'lucide-react';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
@@ -93,6 +93,62 @@ const StudentLookup = () => {
     return () => clearTimeout(timeout);
   }, [searchInput]);
 
+  // ── Roll-number lookup mode ── the same search box doubles as the bulk
+  // roll-number lookup: a comma (or semicolon/newline, in case a paste from
+  // a spreadsheet column preserves them) means "these are discrete roll
+  // numbers, not a name/batch fragment to fuzzy-match" — switches the page
+  // from the live student list to exact roll-number lookup results. A bare
+  // single roll number with no separator still goes through the plain
+  // fuzzy search below (it already matches on roll number).
+  const bulkRollNumbers = useMemo(
+    () =>
+      search
+        .split(/[,;\n]+/)
+        .map((r) => r.trim())
+        .filter((r) => r.length > 0),
+    [search]
+  );
+  const isBulkMode = /[,;\n]/.test(search) && bulkRollNumbers.length > 0;
+
+  const [bulkSearching, setBulkSearching] = useState(false);
+  const [bulkResult, setBulkResult] = useState<StudentLookupResponse | null>(null);
+  const [bulkExporting, setBulkExporting] = useState(false);
+
+  // Guards against re-fetching roll numbers the Excel-upload flow already
+  // resolved: that flow sets `search` itself (to echo the extracted roll
+  // numbers back into the box), which would otherwise also re-trigger the
+  // effect below for the exact same roll numbers — a redundant second POST
+  // that can race the first and clobber a correct result with a second,
+  // possibly-different response purely by arrival order.
+  const lastFetchedBulkKeyRef = useRef<string | null>(null);
+  const bulkKey = `${bulkRollNumbers.join(',')}|${dateFrom ?? ''}|${dateTo ?? ''}`;
+
+  const runBulkLookup = useCallback(
+    async (rollNumbers: string[]) => {
+      setBulkSearching(true);
+      try {
+        const res = await axios.post<StudentLookupResponse>('/api/admin/students/lookup', {
+          rollNumbers,
+          dateFrom,
+          dateTo,
+        });
+        setBulkResult(res.data);
+      } catch (error) {
+        const err = error as { response?: { data?: { message?: string } } };
+        toast.error(err.response?.data?.message || 'Lookup failed');
+      } finally {
+        setBulkSearching(false);
+      }
+    },
+    [dateFrom, dateTo]
+  );
+
+  useEffect(() => {
+    if (!isBulkMode || lastFetchedBulkKeyRef.current === bulkKey) return;
+    lastFetchedBulkKeyRef.current = bulkKey;
+    runBulkLookup(bulkRollNumbers);
+  }, [isBulkMode, bulkKey]);
+
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sessionRows, setSessionRows] = useState<Record<string, StudentSessionRow[]>>({});
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
@@ -121,9 +177,10 @@ const StudentLookup = () => {
   );
 
   useEffect(() => {
+    if (isBulkMode) return;
     setExpandedId(null);
     fetchStudents(true);
-  }, [fetchStudents]);
+  }, [fetchStudents, isBulkMode]);
 
   const loadSessionsFor = async (row: AllStudentRow, reset: boolean) => {
     setSessionLoading((prev) => ({ ...prev, [row.studentId]: true }));
@@ -188,18 +245,17 @@ const StudentLookup = () => {
     },
   ];
 
-  // ── Bulk lookup by roll number(s) — paste or upload, for when you already
-  // know which roll numbers you're after (e.g. re-enrolled students who
-  // appear in more than one batch). ──
-  const [rollNumbersText, setRollNumbersText] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  // ── Excel upload → roll-number lookup. The file never needs to be shown
+  // or reviewed: the server extracts its roll-number column (any header
+  // name/position — see ROLL_NUMBER_ALIASES) and looks the students up in
+  // one round trip; the result's roll numbers are then written back into
+  // the search box (comma-separated) so it's visible/editable exactly like
+  // a hand-typed bulk lookup, with the matching results shown immediately
+  // underneath. ──
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [searching, setSearching] = useState(false);
-  const [result, setResult] = useState<StudentLookupResponse | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
 
-  const validateAndSetFile = (file: File) => {
+  const handleFileSelected = async (file: File) => {
     const nameLower = file.name.toLowerCase();
     if (!['.csv', '.xlsx', '.xls', '.ods'].some((ext) => nameLower.endsWith(ext))) {
       toast.error('Please upload a valid .csv, .xlsx, .xls, or .ods file');
@@ -209,63 +265,49 @@ const StudentLookup = () => {
       toast.error('File size must be less than 10MB');
       return;
     }
-    setSelectedFile(file);
-    setRollNumbersText('');
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) validateAndSetFile(file);
-  };
-
-  const handleBulkSearch = async () => {
-    setSearching(true);
-    setResult(null);
+    setUploadingFile(true);
     try {
-      if (selectedFile) {
-        const data = new FormData();
-        data.append('file', selectedFile);
-        if (dateFrom) data.append('dateFrom', dateFrom);
-        if (dateTo) data.append('dateTo', dateTo);
-        const res = await axios.post<StudentLookupResponse>('/api/admin/students/lookup/file', data, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
-        setResult(res.data);
-      } else {
-        const rollNumbers = rollNumbersText
-          .split(/[,\n]/)
-          .map((r) => r.trim())
-          .filter((r) => r.length > 0);
-        if (rollNumbers.length === 0) {
-          toast.error('Enter at least one roll number, or upload a file');
-          setSearching(false);
-          return;
-        }
-        const res = await axios.post<StudentLookupResponse>('/api/admin/students/lookup', {
-          rollNumbers,
-          dateFrom,
-          dateTo,
-        });
-        setResult(res.data);
+      const data = new FormData();
+      data.append('file', file);
+      if (dateFrom) data.append('dateFrom', dateFrom);
+      if (dateTo) data.append('dateTo', dateTo);
+      const res = await axios.post<StudentLookupResponse>('/api/admin/students/lookup/file', data, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const rollNumbers = [...res.data.aggregates.map((a) => a.rollNumber), ...res.data.notFound];
+      if (rollNumbers.length === 0) {
+        toast.error('No roll numbers were found in this file');
+        return;
       }
+      const joined = rollNumbers.join(', ');
+      // Pre-mark this exact roll-number set (+ date range) as already
+      // fetched — matches how `bulkKey` is derived from `search` once the
+      // state below lands, so the auto-lookup effect sees a hit and skips
+      // re-fetching what this upload just resolved (see `lastFetchedBulkKeyRef`).
+      lastFetchedBulkKeyRef.current = `${rollNumbers.join(',')}|${dateFrom ?? ''}|${dateTo ?? ''}`;
+      // A single roll number alone wouldn't trip `isBulkMode` (no
+      // separator), so it wouldn't show these already-fetched results —
+      // append a trailing comma to force lookup mode regardless of count.
+      setSearchInput(rollNumbers.length === 1 ? `${joined},` : joined);
+      setSearch(rollNumbers.length === 1 ? `${joined},` : joined);
+      setBulkResult(res.data);
     } catch (error) {
       const err = error as { response?: { data?: { message?: string } } };
-      toast.error(err.response?.data?.message || 'Lookup failed');
+      toast.error(err.response?.data?.message || 'Failed to read that file');
     } finally {
-      setSearching(false);
+      setUploadingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
   const handleBulkExport = async () => {
-    if (!result || result.matches.length === 0) return;
-    setExporting(true);
+    if (!bulkResult || bulkResult.matches.length === 0) return;
+    setBulkExporting(true);
     try {
-      const studentIds = result.matches.map((m) => m.studentId);
+      const studentIds = bulkResult.matches.map((m) => m.studentId);
       const res = await axios.post(
         '/api/admin/students/lookup/export',
-        { studentIds, notFound: result.notFound, dateFrom, dateTo },
+        { studentIds, notFound: bulkResult.notFound, dateFrom, dateTo },
         { responseType: 'blob' }
       );
       const filename = filenameFromContentDisposition(res.headers['content-disposition'], 'Student_Lookup_Export.xlsx');
@@ -274,7 +316,7 @@ const StudentLookup = () => {
     } catch (_err) {
       toast.error('Failed to export');
     } finally {
-      setExporting(false);
+      setBulkExporting(false);
     }
   };
 
@@ -284,7 +326,7 @@ const StudentLookup = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <h1 className="page-title" style={{ fontSize: '2.2rem', fontWeight: 800, margin: 0 }}>Students</h1>
           <p className="page-subtitle" style={{ margin: 0, color: 'var(--text-muted)' }}>
-            Every student across every batch you can see, with attendance %. Search below, or look up specific roll numbers further down.
+            Every student across every batch you can see, with attendance %. Search by name/batch, paste comma-separated roll numbers, or upload a roster file to look several up at once.
           </p>
         </div>
       </div>
@@ -295,9 +337,41 @@ const StudentLookup = () => {
           type="text"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search by name, roll number, or batch…"
+          placeholder="Search by name/batch, or paste roll numbers separated by commas…"
           style={{ flex: 1, minWidth: 200, border: 'none', outline: 'none', background: 'transparent', fontSize: '0.95rem', color: 'var(--text-color)' }}
         />
+        {searchInput && (
+          <button
+            className="btn btn-secondary btn-small"
+            onClick={() => {
+              setSearchInput('');
+              setSearch('');
+              setBulkResult(null);
+            }}
+            title="Clear search"
+          >
+            <X size={13} />
+          </button>
+        )}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleFileSelected(file);
+          }}
+          accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
+          style={{ display: 'none' }}
+        />
+        <button
+          className="btn btn-secondary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploadingFile}
+          title="Upload a roster/roll-number file (.csv, .xlsx, .xls, .ods — any column position) to look those students up"
+        >
+          <FileSpreadsheet size={15} style={{ marginRight: 6, verticalAlign: -2 }} />
+          {uploadingFile ? 'Reading file…' : 'Upload Excel'}
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>From</label>
           <input type="date" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} />
@@ -319,6 +393,7 @@ const StudentLookup = () => {
         )}
       </div>
 
+      {!isBulkMode && (
       <div className="card card-table" style={{ marginBottom: '2rem' }}>
         {studentsLoading ? (
           <SkeletonRows count={5} />
@@ -389,84 +464,36 @@ const StudentLookup = () => {
           </>
         )}
       </div>
+      )}
 
-      <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.75rem' }}>Bulk Lookup by Roll Number</h2>
-      <div className="card" style={{ padding: 20, marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div>
-          <label style={{ fontWeight: 600, fontSize: '0.9rem' }}>Roll Numbers (comma or newline separated)</label>
-          <textarea
-            value={rollNumbersText}
-            onChange={(e) => {
-              setRollNumbersText(e.target.value);
-              if (e.target.value) setSelectedFile(null);
-            }}
-            placeholder="e.g. 21B91A0501, 21B91A0502, 21B91A0503"
-            rows={3}
-            style={{ width: '100%', marginTop: 6, borderRadius: 8, border: '1px solid var(--border-color, #ddd)', padding: '10px 12px', fontFamily: 'inherit' }}
-          />
-        </div>
-
-        <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>— or —</div>
-
-        <div
-          className={`file-drop-zone ${isDragging ? 'dragging' : ''} ${selectedFile ? 'has-file' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) validateAndSetFile(file);
-            }}
-            accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
-            style={{ display: 'none' }}
-          />
-          {selectedFile ? (
-            <div className="file-selected-info">
-              <FileSpreadsheet size={28} className="text-primary" />
-              <span className="file-name">{selectedFile.name}</span>
-              <p className="click-to-change">Click to change file</p>
-            </div>
-          ) : (
-            <>
-              <Upload size={28} className="text-muted" />
-              <p>Upload a roster/roll-number file (any column position)</p>
-              <span className="text-muted" style={{ fontSize: '0.8rem' }}>Supports .csv, .xlsx, .xls, .ods</span>
-            </>
-          )}
-        </div>
-
-        <button className="btn btn-primary" onClick={handleBulkSearch} disabled={searching} style={{ alignSelf: 'flex-start' }}>
-          <Search size={16} style={{ marginRight: 6 }} />
-          {searching ? 'Searching…' : 'Search'}
-        </button>
-      </div>
-
-      {result && (
+      {isBulkMode && (
         <div className="card" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
             <h3 style={{ margin: 0 }}>
-              {result.aggregates.length} of {result.aggregates.length + result.notFound.length} roll number(s) found
+              {bulkSearching
+                ? `Looking up ${bulkRollNumbers.length} roll number${bulkRollNumbers.length === 1 ? '' : 's'}…`
+                : bulkResult
+                  ? `${bulkResult.aggregates.length} of ${bulkResult.aggregates.length + bulkResult.notFound.length} roll number(s) found`
+                  : `${bulkRollNumbers.length} roll number${bulkRollNumbers.length === 1 ? '' : 's'} entered`}
             </h3>
-            <button className="btn btn-secondary" onClick={handleBulkExport} disabled={exporting || result.matches.length === 0}>
+            <button
+              className="btn btn-secondary"
+              onClick={handleBulkExport}
+              disabled={bulkExporting || !bulkResult || bulkResult.matches.length === 0}
+            >
               <Download size={14} style={{ marginRight: 6 }} />
-              {exporting ? 'Exporting…' : 'Export Results'}
+              {bulkExporting ? 'Exporting…' : 'Export Results'}
             </button>
           </div>
 
-          {result.aggregates.length === 0 && result.notFound.length === 0 ? (
-            <div className="empty-state">Enter roll numbers above and search.</div>
+          {bulkSearching ? (
+            <SkeletonRows count={3} />
+          ) : !bulkResult || (bulkResult.aggregates.length === 0 && bulkResult.notFound.length === 0) ? (
+            <div className="empty-state">No results yet.</div>
           ) : (
             <>
-              {result.aggregates.map((agg) => {
-                const rows = result.matches.filter((m) => m.rollNumberQueried.toUpperCase() === agg.rollNumber);
+              {bulkResult.aggregates.map((agg) => {
+                const rows = bulkResult.matches.filter((m) => m.rollNumberQueried.toUpperCase() === agg.rollNumber);
                 return (
                   <div key={agg.rollNumber} className="card" style={{ marginBottom: 12, padding: 14 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -510,10 +537,10 @@ const StudentLookup = () => {
                 );
               })}
 
-              {result.notFound.length > 0 && (
+              {bulkResult.notFound.length > 0 && (
                 <div className="card" style={{ padding: 14, marginTop: 12 }}>
-                  <strong>Not Found ({result.notFound.length})</strong>
-                  <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>{result.notFound.join(', ')}</p>
+                  <strong>Not Found ({bulkResult.notFound.length})</strong>
+                  <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>{bulkResult.notFound.join(', ')}</p>
                 </div>
               )}
             </>

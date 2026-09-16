@@ -10,8 +10,12 @@
 //! `created_at`; and that window closing for good — locking both the mentor
 //! list and attendance edits — once it passes.
 
-use axum::http::StatusCode;
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use serial_test::file_serial;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::exam_session_flow_tests::{
@@ -284,6 +288,126 @@ async fn mentor_can_mark_normal_session_after_its_own_window_closed_but_within_4
     );
 }
 
+/// Reported bug: a mentor re-marking a student on a normal session (absent
+/// then present, or present then absent) looked correct in the mentor app
+/// but the super-admin's session-detail page (`/stats` and `/absent`) stayed
+/// frozen at whatever the *first* mark had been. Root cause: those two
+/// endpoints treated "an attendance row exists for this roll number" as
+/// "present", never looking at the row's `status` — and `mark_attendance_manual`
+/// updates the same row in place rather than deleting/recreating it, so once
+/// any row existed the student never went back to "absent" no matter how
+/// `status` changed afterwards.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn normal_session_stats_track_mentor_remarking_not_just_first_mark() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("nrm-super-remark");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    let (mentor_id, mentor_username) = create_mentor(&super_client, &app, "nrm-mentor-remark").await;
+
+    let roll_number = "NORM-REMARK-1";
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, roll_number).await;
+
+    let (status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "sessionType": "normal",
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "durationMinutes": 30,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {session_body:?}");
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+
+    // First mark: absent. Admin's stats/absent list must show it immediately.
+    let (status, _) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "absent" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, stats) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 1,
+        "super-admin stats must show the student absent right after the first mark: {stats:?}"
+    );
+
+    // Re-mark: present. This is the flip the bug report describes — admin
+    // side must update, not stay stuck on the first mark.
+    let (status, _) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "present" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, stats) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 0,
+        "super-admin stats must reflect the re-mark to present: {stats:?}"
+    );
+    let (status, absent) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        absent.as_array().unwrap().len(),
+        0,
+        "absent list must no longer include a student re-marked present: {absent:?}"
+    );
+
+    // And the reverse flip, to confirm it isn't one-way.
+    let (status, _) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "absent" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, stats) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 1,
+        "super-admin stats must reflect the re-mark back to absent: {stats:?}"
+    );
+}
+
 /// Once the configurable mentor-edit window has passed since the session was
 /// *created*, marking, undoing, and add/remove-mentor are all rejected —
 /// even though nothing here ever depends on the session's own (already long
@@ -388,5 +512,156 @@ async fn normal_session_locks_mentor_edits_after_48h_window() {
         status,
         StatusCode::BAD_REQUEST,
         "removing an already-assigned mentor must also be rejected once the window has closed: {remove_body:?}"
+    );
+}
+
+/// Guards against a regression the fix above could plausibly have caused:
+/// making `get_session_stats`/`get_session_absent` look at `status` instead
+/// of "does a row exist" must not touch the *student-facing* "already
+/// submitted" gate at all — `check_attendance_status` and `submit_attendance`
+/// both still key off row existence alone (see attendance.rs), so a student
+/// must stay locked out of self-submitting a second time regardless of
+/// whether a mentor's manual mark on that row currently reads present or
+/// absent.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn student_stays_locked_out_after_mentor_marks_present_or_absent() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("nrm-super-lock");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    let (mentor_id, mentor_username) = create_mentor(&super_client, &app, "nrm-mentor-lock").await;
+
+    let roll_number = "NORM-LOCK-1";
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, roll_number).await;
+
+    let (status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "sessionType": "normal",
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "durationMinutes": 30,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {session_body:?}");
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+    let token = session_body["token"].as_str().unwrap().to_string();
+
+    let check_status = || {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/api/attend/{token}/status?rollNumber={roll_number}"
+                        ))
+                        .header("user-agent", "Mozilla/5.0 (Linux; Android 13; Mobile)")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value =
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+            (status, body)
+        }
+    };
+
+    // Before any mark: the student is free to submit.
+    let (status, body) = check_status().await;
+    assert_eq!(status, StatusCode::OK, "status check should load: {body:?}");
+    assert_eq!(
+        body["alreadySubmitted"], false,
+        "no mark yet — student should not be locked out: {body:?}"
+    );
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+    let (status, _) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "absent" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = check_status().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["alreadySubmitted"], true,
+        "mentor marked absent — student must be locked out, not free to self-submit: {body:?}"
+    );
+
+    // Flip to present — still locked out; only the mentor may change it.
+    let (status, _) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "present" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = check_status().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["alreadySubmitted"], true,
+        "mentor marked present — student must still be locked out: {body:?}"
+    );
+
+    // Belt and suspenders: the actual submission endpoint never returns
+    // success here either (captcha is required first in production config,
+    // so this mainly confirms there's no accidental early-return success
+    // path before that check is even reached).
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/attend/{token}"))
+                .header("content-type", "application/json")
+                .header("user-agent", "Mozilla/5.0 (Linux; Android 13; Mobile)")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "rollNumber": roll_number,
+                        "studentName": "Test Student",
+                        "photoUrl": "https://example.com/p.jpg",
+                        "photoPublicId": "photos/p",
+                        "latitude": 12.9716,
+                        "longitude": 77.5946,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "a student must never be able to self-submit over an existing (mentor-marked) row"
     );
 }

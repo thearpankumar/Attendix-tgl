@@ -18,13 +18,20 @@ pub async fn device_check_middleware(
     next: Next,
 ) -> Result<Response> {
     if state.config.node_env == "test" {
-        let mut req = Request::new(Body::empty());
-        req.extensions_mut().insert(DeviceCheckResult {
+        // Must reuse the original `request`, not build a fresh
+        // `Request::new(..)`: a brand-new request has no URI/headers/body of
+        // its own, and critically drops the router's path-param extension
+        // that was already attached during route matching (this layer runs
+        // *inside* the matched route's service stack) — any downstream
+        // `Path<_>` extractor then fails with `MissingPathParams` even
+        // though the request matched a route just fine.
+        let mut request = request;
+        request.extensions_mut().insert(DeviceCheckResult {
             first_seen: true,
             flags: vec![],
             device_flag: None,
         });
-        return Ok(next.run(req).await);
+        return Ok(next.run(request).await);
     }
 
     let (parts, body) = request.into_parts();

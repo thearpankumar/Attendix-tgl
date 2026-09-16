@@ -577,6 +577,17 @@ pub(crate) fn read_raw_rows(data: &[u8]) -> Result<Vec<Vec<String>>> {
 /// reused by `batch_analytics::parse_roll_numbers_from_file` for the global
 /// roll-number Lookup's file-upload path, so both importers agree on what
 /// counts as a roll-number column without duplicating the list.
+///
+/// Covers the terminology actually used across Indian colleges/universities
+/// (researched, not guessed): "roll number" is the common class-level term
+/// (may change by year/semester); "registration"/"enrollment"/"enrolment"
+/// number and PRN (Permanent Registration Number) are the more durable
+/// university-level identifiers, and are often the *same* number for a
+/// single-degree student even though they're conceptually distinct; USN
+/// (University Seat Number, VTU/Karnataka), SRN (Student Registration
+/// Number, PESU and similar), hall ticket / HT number (AP/Telangana exam
+/// identifier), GR number (General Register number, common in school-style
+/// registers), admission number, and seat number round out the set.
 pub(crate) const ROLL_NUMBER_ALIASES: &[&str] = &[
     "roll",
     "rollno",
@@ -593,10 +604,10 @@ pub(crate) const ROLL_NUMBER_ALIASES: &[&str] = &[
     "registrationno",
     "registrationnumber",
     "registrationnum",
-    "id",
     "studentid",
     "studentno",
     "stdid",
+    "studentcode",
     "enrollment",
     "enrollmentno",
     "enrollmentnumber",
@@ -607,11 +618,34 @@ pub(crate) const ROLL_NUMBER_ALIASES: &[&str] = &[
     "hallticket",
     "hallticketno",
     "htno",
-    "slno",
-    "sno",
-    "srno",
-    "serialno",
+    "admission",
+    "admissionno",
+    "admissionnumber",
+    "admno",
+    "admnno",
+    "prn",
+    "srn",
+    "gr",
+    "grno",
+    "grnumber",
+    "generalregisterno",
+    "generalregisternumber",
+    "matricno",
+    "matriculationno",
+    "matriculationnumber",
+    "seatno",
+    "seatnumber",
 ];
+
+/// Header aliases that plausibly mean "roll/register number" but are
+/// generic enough to also be an unrelated column — most commonly a plain
+/// row index ("S.No", "Sr. No.") that happens to sit next to (and, if
+/// checked with equal priority, would shadow) the real roll-number column.
+/// Kept separate from `ROLL_NUMBER_ALIASES` so callers that care about this
+/// ambiguity (`batch_analytics::parse_roll_numbers_from_file`) can treat it
+/// as a lower-priority fallback, tried only once no unambiguous alias
+/// matched any column.
+pub(crate) const ROLL_NUMBER_WEAK_ALIASES: &[&str] = &["id", "slno", "sno", "srno", "serialno"];
 
 fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     let raw_rows = read_raw_rows(data)?;
@@ -623,7 +657,15 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
         return Ok((students, errors));
     }
 
-    let roll_aliases = ROLL_NUMBER_ALIASES;
+    // Roster import checks a row's name/roll/email/college columns together in
+    // one pass (see below), so the strong-vs-weak roll-alias split that
+    // `parse_roll_numbers_from_file` needs to avoid an ambiguous "S.No"-style
+    // column shadowing the real one doesn't apply here — a genuine name
+    // column already won't be mistaken for a roll column, and vice versa.
+    // Checking both lists together keeps this exactly as permissive as
+    // before the split.
+    let is_roll_alias =
+        |norm: &str| ROLL_NUMBER_ALIASES.contains(&norm) || ROLL_NUMBER_WEAK_ALIASES.contains(&norm);
 
     let name_aliases = [
         "name",
@@ -659,7 +701,7 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
         let norm = normalize_header(cell_str);
         if name_col.is_none() && name_aliases.contains(&norm.as_str()) {
             name_col = Some(i);
-        } else if roll_col.is_none() && roll_aliases.contains(&norm.as_str()) {
+        } else if roll_col.is_none() && is_roll_alias(&norm) {
             roll_col = Some(i);
         } else if email_col.is_none() && email_aliases.contains(&norm.as_str()) {
             email_col = Some(i);

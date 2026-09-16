@@ -1079,6 +1079,160 @@ async fn get_session_absent_counts_unverified_but_submitted_student_as_present()
     );
 }
 
+/// A mentor re-marking a student (absent -> present, or present -> absent)
+/// must be reflected by `/stats` and `/absent`, not just by the roster
+/// endpoint the mentor app reads. `mark_attendance_manual` updates the same
+/// attendance row in place rather than deleting/recreating it, so a prior
+/// bug in `get_session_stats`/`get_session_absent` that treated "row exists"
+/// as "present" (ignoring `status`) froze both endpoints at whatever the
+/// *first* mark had been: once a row existed at all, the student dropped out
+/// of the absent count for good, no matter how `status` changed afterwards.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn stats_and_absent_list_track_status_changes_after_remarking() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("remark-super");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+
+    let mentor_username = unique("remark-mentor");
+    let (_status, mentor_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/users",
+            serde_json::json!({
+                "username": mentor_username,
+                "email": format!("{}@example.com", mentor_username),
+                "password": "mentor-password-123",
+                "role": "admin",
+            }),
+        )
+        .await;
+    let mentor_id = mentor_body["_id"].as_str().unwrap().to_string();
+
+    let roll_number = "REMARK001";
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, roll_number).await;
+
+    let (_status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "collegeName": "XYZ College",
+                "startsAt": (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
+                "durationMinutes": 60,
+            }),
+        )
+        .await;
+    let session_id: uuid::Uuid = session_body["_id"].as_str().unwrap().parse().unwrap();
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+
+    // Mark absent first.
+    let (status, _body) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "absent" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, absent) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        absent.as_array().unwrap().len(),
+        1,
+        "student marked absent must appear in the absent list: {absent:?}"
+    );
+
+    let (status, stats) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 1,
+        "stats must count the student as absent right after the first mark: {stats:?}"
+    );
+
+    // Flip to present — this must un-stick both endpoints, not just the
+    // roster the mentor app reads.
+    let (status, _body) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "present" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, absent) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        absent.as_array().unwrap().len(),
+        0,
+        "re-marking present must remove the student from the absent list: {absent:?}"
+    );
+
+    let (status, stats) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 0,
+        "stats must reflect the flip to present, not freeze at the first mark: {stats:?}"
+    );
+
+    // And back to absent again, to rule out this only working one-way.
+    let (status, _body) = mentor_client
+        .mutate(
+            &app,
+            "POST",
+            &format!("/api/admin/sessions/{session_id}/attendance/manual"),
+            serde_json::json!({ "rollNumber": roll_number, "status": "absent" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, stats) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/stats"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stats["absentCount"], 1,
+        "stats must reflect the flip back to absent: {stats:?}"
+    );
+
+    let (status, absent) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        absent.as_array().unwrap().len(),
+        1,
+        "absent list must reflect the flip back to absent: {absent:?}"
+    );
+}
+
 /// An exam session can be assigned to more than one mentor and needs no
 /// location at all (manual attendance isn't geofenced) — both are new
 /// behaviour on top of the original single-mentor, location-mandatory shape.
