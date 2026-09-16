@@ -1,6 +1,6 @@
 {
   "name": "attendance-admin",
-  "version": "1.5.4",
+  "version": "1.5.8",
   "private": true,
   "type": "module",
   "scripts": {

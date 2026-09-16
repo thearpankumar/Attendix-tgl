@@ -1,6 +1,6 @@
 [package]
 name = "attendance-geotag-backend"
-version = "2.5.4"
+version = "2.5.8"
 edition = "2021"
 
 [dependencies]
