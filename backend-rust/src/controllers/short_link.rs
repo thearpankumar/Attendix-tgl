@@ -50,14 +50,46 @@ pub struct ShortLinkResponse {
     pub locked_by_rule_description: Option<String>,
 }
 
-/// Resolves the short code to use for a new short link: a trimmed, non-empty
-/// custom code if the admin provided one, otherwise a freshly generated one.
-/// An empty string (sent by the admin UI's "auto-generate" mode) must fall
-/// through to generation rather than being used literally.
-fn resolve_short_code(provided: Option<String>) -> String {
-    provided
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| ShortLink::generate_short_code(10))
+/// Resolves the short code to use for a new short link: a custom code if the
+/// admin provided one (trimmed, lower-cased and validated), otherwise a
+/// freshly generated one. An empty string (sent by the admin UI's
+/// "auto-generate" mode) must fall through to generation rather than being
+/// used literally.
+///
+/// Every other short-link endpoint (get/attach/detach/delete, and the public
+/// resolver) lower-cases the code from the URL before looking it up, so a code
+/// stored with capitals or punctuation could never be found again — normalise
+/// on the way in, with the same length rule `create_session` /
+/// `create_recurring_rule` apply (3-20 chars) but restricted to `[a-z0-9-]`.
+fn resolve_short_code(provided: Option<String>) -> Result<String> {
+    match provided.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(ShortLink::generate_short_code(10)),
+        Some(raw) => {
+            let code = raw.to_lowercase();
+            if !(3..=20).contains(&code.len())
+                || !code
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(AppError::BadRequest(
+                    "Short code must be 3-20 characters: letters, digits or hyphens".to_string(),
+                ));
+            }
+            Ok(code)
+        }
+    }
+}
+
+/// Parses an optional id from a request, treating absent/blank as `None` and
+/// anything else that isn't a UUID as a 400 — silently dropping it (the old
+/// `.ok()`) turned a typo into "no filter" or "not attached to a session".
+fn parse_optional_uuid(raw: Option<&str>, what: &str) -> Result<Option<Uuid>> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(s) => Uuid::parse_str(s)
+            .map(Some)
+            .map_err(|_| AppError::BadRequest(format!("Invalid {what}"))),
+    }
 }
 
 pub async fn create_short_link(
@@ -65,7 +97,7 @@ pub async fn create_short_link(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<CreateShortLinkRequest>,
 ) -> Result<impl IntoResponse> {
-    let session_id = payload.session_id.and_then(|id| Uuid::parse_str(&id).ok());
+    let session_id = parse_optional_uuid(payload.session_id.as_deref(), "session ID")?;
 
     if let Some(sid) = session_id {
         let _session = sqlx::query_as::<_, Session>(
@@ -95,7 +127,7 @@ pub async fn create_short_link(
         // Postgres schema, so it's intentionally dropped.
     }
 
-    let short_code = resolve_short_code(payload.short_code);
+    let short_code = resolve_short_code(payload.short_code)?;
 
     let existing: Option<ShortLink> =
         sqlx::query_as("SELECT * FROM short_links WHERE short_code = $1")
@@ -169,10 +201,7 @@ pub async fn get_short_links(
         .unwrap_or(20)
         .clamp(1, MAX_SHORT_LINKS_PAGE_SIZE);
 
-    let session_id_filter = query
-        .session_id
-        .as_deref()
-        .and_then(|s| Uuid::parse_str(s).ok());
+    let session_id_filter = parse_optional_uuid(query.session_id.as_deref(), "session ID")?;
     let is_active_filter = query.is_active.as_deref().map(|s| s == "true");
 
     let total: i64 = sqlx::query_scalar(
@@ -342,7 +371,7 @@ pub async fn attach_short_link(
         }
     }
 
-    let _session = sqlx::query_as::<_, Session>(
+    let session = sqlx::query_as::<_, Session>(
         "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(session_id)
@@ -367,11 +396,18 @@ pub async fn attach_short_link(
             .await?;
     }
 
-    sqlx::query("UPDATE short_links SET session_id = $1, is_active = true WHERE id = $2")
-        .bind(session_id)
-        .bind(link.id)
-        .execute(&state.db)
-        .await?;
+    // The link takes on the new session's expiry (as `create_session` does
+    // for an existing code). Keeping the previous session's `expires_at` left
+    // a re-attached old link permanently "expired" for students (`/s/{code}`
+    // resolved to 404) even though its new session was live.
+    sqlx::query(
+        "UPDATE short_links SET session_id = $1, is_active = true, expires_at = $3 WHERE id = $2",
+    )
+    .bind(session_id)
+    .bind(link.id)
+    .bind(session.expires_at)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({
         "message": "Short link attached successfully",
@@ -573,8 +609,47 @@ mod create_short_link_tests {
 
     #[test]
     fn resolve_short_code_uses_provided_custom_code() {
-        let resolved = resolve_short_code(Some("custom123".to_string()));
+        let resolved = resolve_short_code(Some("custom123".to_string())).unwrap();
         assert_eq!(resolved, "custom123");
+    }
+
+    #[test]
+    fn resolve_short_code_lowercases_and_trims_a_custom_code() {
+        assert_eq!(
+            resolve_short_code(Some("  My-Class-1 ".to_string())).unwrap(),
+            "my-class-1"
+        );
+    }
+
+    #[test]
+    fn resolve_short_code_rejects_bad_custom_codes() {
+        for bad in [
+            "ab",
+            "has space",
+            "under_score",
+            "dot.dot",
+            "ünïcode",
+            &"x".repeat(21),
+        ] {
+            assert!(
+                resolve_short_code(Some(bad.to_string())).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+        assert!(resolve_short_code(Some("abc".to_string())).is_ok());
+        assert!(resolve_short_code(Some("a".repeat(20))).is_ok());
+    }
+
+    #[test]
+    fn parse_optional_uuid_treats_blank_as_none_and_garbage_as_error() {
+        assert_eq!(parse_optional_uuid(None, "session ID").unwrap(), None);
+        assert_eq!(parse_optional_uuid(Some("  "), "session ID").unwrap(), None);
+        assert!(parse_optional_uuid(Some("nope"), "session ID").is_err());
+        let id = Uuid::new_v4();
+        assert_eq!(
+            parse_optional_uuid(Some(&id.to_string()), "session ID").unwrap(),
+            Some(id)
+        );
     }
 
     /// Regression test: the admin UI's "auto-generate" mode sends
@@ -584,17 +659,17 @@ mod create_short_link_tests {
     /// with an empty code.
     #[test]
     fn resolve_short_code_falls_back_to_generated_code_for_empty_string() {
-        let resolved = resolve_short_code(Some("".to_string()));
+        let resolved = resolve_short_code(Some("".to_string())).unwrap();
         assert_eq!(resolved.len(), 10);
         assert_ne!(resolved, "");
 
-        let resolved_whitespace = resolve_short_code(Some("   ".to_string()));
+        let resolved_whitespace = resolve_short_code(Some("   ".to_string())).unwrap();
         assert_eq!(resolved_whitespace.len(), 10);
     }
 
     #[test]
     fn resolve_short_code_falls_back_to_generated_code_for_none() {
-        let resolved = resolve_short_code(None);
+        let resolved = resolve_short_code(None).unwrap();
         assert_eq!(resolved.len(), 10);
     }
 }

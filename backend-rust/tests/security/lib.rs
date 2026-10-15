@@ -1,8 +1,8 @@
 #[path = "../common/test_db.rs"]
 mod test_db;
 
-mod attendance_consistency_tests;
 mod audit_log_tests;
+mod attendance_consistency_tests;
 mod authz_validation_tests;
 mod audit_regression_tests;
 mod batch_lifecycle_tests;
@@ -21,5 +21,6 @@ mod route_auth_tests;
 mod security_enhancements_tests;
 mod security_tests;
 mod session_monitoring_tests;
+mod shortlink_export_tests;
 mod student_behavior_tests;
 mod telemetry_ingestion_tests;

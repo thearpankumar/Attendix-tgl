@@ -406,6 +406,27 @@ async fn find_session_for_owner(
     .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
 }
 
+/// Read-only access for exports: a super-admin, the creator, or a mentor
+/// assigned to the session — the same people who can read its roster and
+/// attendance. (Mutations stay creator/super-admin only; see
+/// `find_session_for_owner`.)
+async fn find_session_for_export(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+    auth: &AuthenticatedAdmin,
+) -> Result<Option<Session>> {
+    Ok(sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 \
+         AND ($2 = 'super_admin' OR created_by = $3 \
+              OR EXISTS (SELECT 1 FROM session_admins sa WHERE sa.session_id = sessions.id AND sa.admin_id = $3))",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(db)
+    .await?)
+}
+
 pub async fn create_session(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -1375,15 +1396,9 @@ pub async fn export_session_attendance(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session: Session = sqlx::query_as(
-        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
-    )
-    .bind(session_id)
-    .bind(&auth.role)
-    .bind(auth.id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session: Session = find_session_for_export(&state.db, session_id, &auth)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
 
     if let Some(excel_batch_id) = session.excel_batch_id {
         return export_mentor_format(&state, &session, excel_batch_id).await;
@@ -1890,7 +1905,7 @@ type XlsxAttachment = (StatusCode, [(header::HeaderName, String); 2], Vec<u8>);
 
 /// Builds a single workbook containing one worksheet per session (skipping
 /// any id the caller can't access — any session for a super-admin, only
-/// sessions they created for a mentor), auto-detecting GPS vs mentor format
+/// sessions they created or are assigned to for a mentor), auto-detecting GPS vs mentor format
 /// per session exactly as the single-session export does.
 pub(crate) async fn build_sessions_workbook_response(
     state: &Arc<crate::AppState>,
@@ -1902,15 +1917,7 @@ pub(crate) async fn build_sessions_workbook_response(
     let mut included = 0usize;
 
     for &session_id in session_ids {
-        let Some(session): Option<Session> = sqlx::query_as(
-            "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
-        )
-        .bind(session_id)
-        .bind(&auth.role)
-        .bind(auth.id)
-        .fetch_optional(&state.db)
-        .await?
-        else {
+        let Some(session) = find_session_for_export(&state.db, session_id, auth).await? else {
             continue;
         };
 

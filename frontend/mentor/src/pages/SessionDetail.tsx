@@ -5,7 +5,8 @@ import { useParams } from 'react-router';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { PanInfo } from 'framer-motion';
-import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search, ChevronLeft, ChevronRight, Download } from 'lucide-react';
+import { downloadBlob } from '../utils/downloadBlob';
 
 interface RosterStudent {
   studentId: string;
@@ -62,6 +63,7 @@ const SessionDetail = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('stack');
   const [searchQuery, setSearchQuery] = useState('');
   const [now, setNow] = useState(() => Date.now());
+  const [exporting, setExporting] = useState(false);
   const fetchedOnce = useRef(false);
   const pendingRef = useRef(false);
 
@@ -160,6 +162,23 @@ const SessionDetail = () => {
     }
   };
 
+  // Read-only export of this session's attendance (an assigned mentor may
+  // export, same as they may read the roster).
+  const exportSession = async () => {
+    if (!id || exporting) return;
+    setExporting(true);
+    try {
+      const res = await axios.get(`/api/admin/sessions/${id}/export`, { responseType: 'blob' });
+      const label = (data?.session.collegeName || data?.session.batchName || 'session').replace(/[^a-zA-Z0-9_-]/g, '_');
+      downloadBlob(new Blob([res.data]), `attendance_${label}.xlsx`);
+      toast.success('Attendance exported');
+    } catch {
+      toast.error('Failed to export attendance');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleDragEnd = (student: RosterStudent, _e: unknown, info: PanInfo) => {
     if (info.offset.x < -SWIPE_THRESHOLD) markStudent(student, 'present');
     else if (info.offset.x > SWIPE_THRESHOLD) markStudent(student, 'absent');
@@ -200,7 +219,19 @@ const SessionDetail = () => {
 
   return (
     <div className="fade-in">
-      <h1 style={{ fontSize: 21, fontWeight: 800, margin: '0 0 4px' }}>{session.collegeName || 'Session'}</h1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <h1 style={{ fontSize: 21, fontWeight: 800, margin: '0 0 4px' }}>{session.collegeName || 'Session'}</h1>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={exportSession}
+          disabled={exporting}
+          aria-label="Export attendance"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
+        >
+          {exporting ? <Loader2 size={14} className="spin" /> : <Download size={14} />} Export
+        </button>
+      </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', fontSize: 13, color: 'var(--color-muted)', marginBottom: 16 }}>
         {session.batchName && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><MapPin size={13} /> {session.batchName}</span>}
         {session.startsAt && (

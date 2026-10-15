@@ -268,4 +268,23 @@ describe('Mentor SessionDetail (roster + manual marking)', () => {
       expect(axios.delete).toHaveBeenCalledWith('/api/admin/sessions/sess1/attendance/manual/21CS002');
     });
   });
+
+  it('exports the session attendance through the read-only export endpoint', async () => {
+    vi.mocked(axios.get).mockImplementation((url: string) => {
+      if (url.endsWith('/export')) return Promise.resolve({ data: new Blob(['xlsx']) });
+      return Promise.resolve({ data: ROSTER_ONE_UNMARKED });
+    });
+    const createObjectURL = vi.fn(() => 'blob:mock');
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    renderSessionDetail();
+    await waitFor(() => expect(screen.getByText('Asha Rao')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /export attendance/i }));
+
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/admin/sessions/sess1/export', { responseType: 'blob' }));
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    click.mockRestore();
+  });
 });
