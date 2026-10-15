@@ -6,6 +6,9 @@ use crate::config::S3Config;
 use crate::error::AppError;
 use async_trait::async_trait;
 
+// async_trait boxes each future and tags the generated fn #[must_use]; newer clippy
+// (1.99+) flags that as double_must_use. The attribute is macro-generated, so allow it here.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
     async fn upload(

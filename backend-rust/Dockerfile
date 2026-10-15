@@ -23,7 +23,8 @@ RUN RUSTFLAGS="-C link-arg=-lstdc++" cargo build --release
 # Download and cache Hugging Face models for FaceAnalyzer
 RUN cargo new --bin model-downloader && \
     cd model-downloader && \
-    cargo add face_id@0.4 && cargo add tokio -F rt-multi-thread && \
+    cargo add face_id@=0.4.2 && cargo add tokio -F rt-multi-thread && \
+    cargo update -p ort --precise 2.0.0-rc.13 && cargo update -p ort-sys --precise 2.0.0-rc.13 && \
     echo 'fn main() {\n\
     println!("Downloading models...");\n\
     tokio::runtime::Builder::new_current_thread()\n\

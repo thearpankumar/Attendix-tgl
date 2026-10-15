@@ -33,6 +33,7 @@ import { execFileSync } from 'node:child_process';
 const ALLOWED_ADVISORIES = new Map([
   ['GHSA-w3rx-r6r6-pgpr', { reviewBy: '2026-11-25', note: 'image-size: ICNS parser DoS — no fix available' }],
   ['GHSA-5p2g-fcmc-qvqq', { reviewBy: '2026-11-25', note: 'image-size: JXL/HEIF parsers DoS — no fix available' }],
+  ['GHSA-86w9-cpqp-85rv', { reviewBy: '2026-11-25', note: 'node-forge: PKCS#1 v1.5 signature verification — affects every published version (latest 1.4.0), no patched release' }],
 ]);
 
 // npm audit exits non-zero whenever it finds anything — the JSON report

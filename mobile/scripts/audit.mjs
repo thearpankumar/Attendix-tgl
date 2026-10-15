@@ -47,6 +47,8 @@ const ALLOWED_ADVISORIES = new Map([
   ['GHSA-3ppc-4f35-3m26', { reviewBy: '2026-11-25', note: 'minimatch: ReDoS via repeated wildcards' }],
   ['GHSA-7r86-cg39-jmmj', { reviewBy: '2026-11-25', note: 'minimatch: ReDoS via GLOBSTAR backtracking' }],
   ['GHSA-23c5-xmqv-rm74', { reviewBy: '2026-11-25', note: 'minimatch: ReDoS via nested extglobs' }],
+  ['GHSA-86w9-cpqp-85rv', { reviewBy: '2026-11-25', note: 'node-forge: PKCS#1 v1.5 signature verification — affects every published version (latest 1.4.0), no patched release' }],
+  ['GHSA-vfj7-8cjw-p6xm', { reviewBy: '2026-11-25', note: 'braces: nested-pattern stack exhaustion — affects every published version (latest 3.0.3); only reachable via jest/eas-cli dev tooling' }],
 ]);
 
 // npm audit exits non-zero whenever it finds anything — the JSON report
