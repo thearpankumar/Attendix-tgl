@@ -395,13 +395,15 @@ async fn find_session_for_owner(
     session_id: Uuid,
     auth: &AuthenticatedAdmin,
 ) -> Result<Session> {
-    sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)")
-        .bind(session_id)
-        .bind(&auth.role)
-        .bind(auth.id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
+    sqlx::query_as(
+        "SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(session_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
 }
 
 pub async fn create_session(
@@ -784,11 +786,12 @@ pub async fn get_sessions(
             None
         };
 
-        let attendance_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
-                .bind(session.id)
-                .fetch_one(&state.db)
-                .await?;
+        let attendance_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND status = 'present'",
+        )
+        .bind(session.id)
+        .fetch_one(&state.db)
+        .await?;
 
         let short_link: Option<ShortLink> =
             sqlx::query_as("SELECT * FROM short_links WHERE session_id = $1 AND is_active = true")
@@ -862,11 +865,12 @@ pub async fn get_session(
 
     let record = session_record_stats_for(&state.db, &session).await?;
 
-    let attendance_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
-            .bind(session.id)
-            .fetch_one(&state.db)
-            .await?;
+    let attendance_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND status = 'present'",
+    )
+    .bind(session.id)
+    .fetch_one(&state.db)
+    .await?;
 
     let short_link: Option<ShortLink> =
         sqlx::query_as("SELECT * FROM short_links WHERE session_id = $1 AND is_active = true")
@@ -1048,8 +1052,7 @@ pub async fn update_session_schedule(
         // leaving the session permanently unmarkable.
         None if payload.starts_at.is_some() => {
             let old_anchor = session.starts_at.unwrap_or(session.created_at);
-            let window =
-                (session.expires_at - old_anchor).max(chrono::Duration::minutes(5));
+            let window = (session.expires_at - old_anchor).max(chrono::Duration::minutes(5));
             schedule_anchor + window
         }
         None => session.expires_at,

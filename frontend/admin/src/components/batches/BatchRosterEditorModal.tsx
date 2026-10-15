@@ -336,7 +336,8 @@ const BatchRosterEditorModal = ({ batch, onClose, onChanged }: Props) => {
           <div>
             <p style={{ fontSize: '0.82rem', color: 'var(--color-muted)', marginTop: 0 }}>
               Edit cells directly, add rows, or remove students, then save. Roll numbers must be unique in the batch (case-insensitive).
-              Past attendance is never changed: records keep the name and roll number the student checked in with.
+              Correcting a student's roll number also moves their past check-ins (and passkey) to the new roll number, so earlier sessions keep showing them present;
+              this is refused if a session already has check-ins under both numbers. Changing a name never rewrites past records, and removing a student keeps their records.
             </p>
             {loading ? (
               <div className="loading">Loading roster…</div>

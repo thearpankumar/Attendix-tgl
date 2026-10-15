@@ -190,10 +190,16 @@ const Batches = () => {
     data.append('file', selectedFile);
 
     try {
-      await axios.post('/api/admin/batches', data, {
+      const res = await axios.post<{ studentsImported?: number; studentsSkipped?: number; errors?: string[] }>('/api/admin/batches', data, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       toast.success('Batch created successfully!');
+      // Rows the server dropped (duplicate/invalid) and a repeated batch name
+      // come back as notes; surface them instead of silently importing less.
+      const notes = res?.data?.errors ?? [];
+      if ((res?.data?.studentsSkipped ?? 0) > 0 || notes.length > 0) {
+        toast.warning(`${res?.data?.studentsImported ?? 0} students imported, ${res?.data?.studentsSkipped ?? 0} skipped. ${notes.slice(0, 3).join(' ')}${notes.length > 3 ? ` (+${notes.length - 3} more)` : ''}`, { autoClose: 10000 });
+      }
       setIsModalOpen(false);
       setFormData({ name: '', description: '' });
       setSelectedFile(null);

@@ -196,8 +196,29 @@ impl Client {
         file_name: &str,
         file_bytes: &[u8],
     ) -> (StatusCode, serde_json::Value) {
+        self.post_form_file(app, uri, &[], file_name, file_bytes)
+            .await
+    }
+
+    /// Like `post_file`, with extra plain text form fields (e.g. `name`).
+    pub(crate) async fn post_form_file(
+        &self,
+        app: &axum::Router,
+        uri: &str,
+        fields: &[(&str, &str)],
+        file_name: &str,
+        file_bytes: &[u8],
+    ) -> (StatusCode, serde_json::Value) {
         let boundary = "batch-roster-test-boundary";
         let mut body = Vec::new();
+        for (name, value) in fields {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+                )
+                .as_bytes(),
+            );
+        }
         body.extend_from_slice(
             format!(
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: text/csv\r\n\r\n"

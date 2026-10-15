@@ -282,17 +282,25 @@ pub async fn validate_token(
         ));
     }
 
-    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // An exam session may have no location (see `create_session`); only a
+    // *missing row for a location the session points at* is an error.
+    let location_name: Option<String> = match session.location_id {
+        Some(location_id) => Some(
+            sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+                .bind(location_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?
+                .name,
+        ),
+        None => None,
+    };
 
     Ok(Json(serde_json::json!({
         "valid": true,
         "session": {
             "_id": session.id.to_string(),
-            "locationName": location.name,
+            "locationName": location_name,
             "expiresAt": session.expires_at
         }
     })))
@@ -656,21 +664,40 @@ pub async fn submit_attendance(
         ));
     }
 
-    let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // A session without a location (an exam session created with none) has
+    // no geofence to enforce: the check-in is accepted and recorded as
+    // location-UNVERIFIED (`verified = false`, distance 0) — the same state a
+    // check-in outside a geofence gets — so mentors/admins still see it as
+    // needing the location question settled by hand. A session that DOES have
+    // a location is checked exactly as before; a dangling location id is still
+    // an error rather than a silent skip of the geofence.
+    let location: Option<Location> = match session.location_id {
+        Some(location_id) => Some(
+            sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
+                .bind(location_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?,
+        ),
+        None => None,
+    };
 
-    let distance = calculate_distance(
-        location.latitude,
-        location.longitude,
-        payload.latitude,
-        payload.longitude,
-    );
-
-    let is_within_geofence = distance <= location.radius_meters
-        || (is_dev_bypass_all && payload.dev_bypass_gps.unwrap_or(false));
+    let (distance, is_within_geofence) = match &location {
+        Some(location) => {
+            let distance = calculate_distance(
+                location.latitude,
+                location.longitude,
+                payload.latitude,
+                payload.longitude,
+            );
+            (
+                distance,
+                distance <= location.radius_meters
+                    || (is_dev_bypass_all && payload.dev_bypass_gps.unwrap_or(false)),
+            )
+        }
+        None => (0.0, false),
+    };
 
     let ip = addr.ip().to_string();
     let user_agent = headers

@@ -555,6 +555,9 @@ pub struct UploadBatchResponse {
     pub students_imported: usize,
     #[serde(rename = "studentsSkipped")]
     pub students_skipped: usize,
+    /// The caller already has a live batch with this (case-insensitive) name.
+    #[serde(rename = "duplicateName")]
+    pub duplicate_name: bool,
     pub errors: Vec<String>,
 }
 
@@ -602,10 +605,50 @@ pub async fn upload_batch_excel(
     let file_data =
         file_data.ok_or_else(|| AppError::BadRequest("No file uploaded".to_string()))?;
 
-    let batch_name =
-        batch_name.unwrap_or_else(|| format!("Batch_{}", Utc::now().format("%Y%m%d_%H%M%S")));
+    // An omitted name falls back to a timestamped one; a name that is present
+    // but blank is a mistake, not a request for the default.
+    let batch_name = match batch_name {
+        Some(n) if n.trim().is_empty() => {
+            return Err(AppError::BadRequest("Batch name is required".to_string()))
+        }
+        Some(n) => n.trim().to_string(),
+        None => format!("Batch_{}", Utc::now().format("%Y%m%d_%H%M%S")),
+    };
+    if batch_name.chars().count() > 200 {
+        return Err(AppError::BadRequest(
+            "Batch name is longer than 200 characters".to_string(),
+        ));
+    }
 
-    let (students, errors) = parse_excel(&file_data)?;
+    let (parsed, mut errors) = parse_excel(&file_data)?;
+    let parsed_count = parsed.len();
+    // Same dedupe/normalisation the roster editor applies: a duplicate roll
+    // number (case/whitespace-insensitive) is skipped and reported, never
+    // stored twice (nothing at the DB level would stop it).
+    let students = crate::controllers::batch_roster::dedupe_parsed_students(parsed, &mut errors);
+    let students =
+        crate::controllers::batch_roster::normalize_parsed_students(students, &mut errors);
+    if students.is_empty() {
+        return Err(AppError::BadRequest(
+            "No students with both a name and a roll number were found in this file".to_string(),
+        ));
+    }
+    crate::controllers::batch_roster::ensure_roster_size(students.len())?;
+
+    // Batch names aren't unique (nothing keys on them), so a repeat is allowed
+    // but flagged — the admin may have meant to update the existing roster.
+    let duplicate_name: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM batches WHERE deleted_at IS NULL AND created_by = $1 AND lower(name) = lower($2))",
+    )
+    .bind(auth.id)
+    .bind(&batch_name)
+    .fetch_one(&state.db)
+    .await?;
+    if duplicate_name {
+        errors.push(format!(
+            "You already have a batch named '{batch_name}'; this one was still created (batch names aren't unique)."
+        ));
+    }
 
     let mut tx = state.db.begin().await?;
 
@@ -631,7 +674,8 @@ pub async fn upload_batch_excel(
             batch_id: batch.id.to_string(),
             name: batch_name,
             students_imported: students.len(),
-            students_skipped: 0,
+            students_skipped: parsed_count - students.len(),
+            duplicate_name,
             errors,
         }),
     ))

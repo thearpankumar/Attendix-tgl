@@ -401,11 +401,12 @@ pub async fn get_dashboard_stats(
     }
 
     // Get total checkins, device flags, gps flags, and quarantine counts
-    let total_checkins: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1)")
-            .bind(&session_ids)
-            .fetch_one(&state.db)
-            .await?;
+    let total_checkins: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND status = 'present'",
+    )
+    .bind(&session_ids)
+    .fetch_one(&state.db)
+    .await?;
 
     let device_flags_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND device_flag IS NOT NULL",
@@ -476,7 +477,7 @@ pub async fn get_dashboard_stats(
     let student_checkins: Vec<StudentCheckinRow> = sqlx::query_as(
         "SELECT upper(a.roll_number) AS roll_number, a.student_name, s.batch_id, COUNT(*) AS checkins \
          FROM attendances a JOIN sessions s ON s.id = a.session_id \
-         WHERE a.session_id = ANY($1) \
+         WHERE a.session_id = ANY($1) AND a.status = 'present' \
          GROUP BY upper(a.roll_number), a.student_name, s.batch_id",
     )
     .bind(&session_ids)
@@ -576,7 +577,7 @@ pub async fn get_dashboard_stats(
     let week_ago = Utc::now() - chrono::Duration::days(7);
     let daily_rows: Vec<DailyCountRow> = sqlx::query_as(
         "SELECT (captured_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS cnt \
-         FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 \
+         FROM attendances WHERE session_id = ANY($1) AND status = 'present' AND captured_at >= $2 \
          GROUP BY (captured_at AT TIME ZONE 'UTC')::date",
     )
     .bind(&session_ids)
@@ -662,11 +663,12 @@ pub async fn get_dashboard_stats(
             continue;
         }
 
-        let batch_checkins: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1)")
-                .bind(&batch_session_ids)
-                .fetch_one(&state.db)
-                .await?;
+        let batch_checkins: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM attendances WHERE session_id = ANY($1) AND status = 'present'",
+        )
+        .bind(&batch_session_ids)
+        .fetch_one(&state.db)
+        .await?;
 
         let student_count = batch_student_counts.get(&batch_id).copied().unwrap_or(0);
         let total_possible = student_count * batch_session_count;
@@ -1029,7 +1031,7 @@ pub async fn get_recent_activity(
 
     // Get recent attendance for these sessions
     let attendances: Vec<Attendance> = sqlx::query_as(
-        "SELECT * FROM attendances WHERE session_id = ANY($1) ORDER BY captured_at DESC LIMIT $2",
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND status = 'present' ORDER BY captured_at DESC LIMIT $2",
     )
     .bind(&session_ids)
     .bind(DASHBOARD_QUARANTINE_LIST_LIMIT)
@@ -1057,6 +1059,25 @@ pub async fn get_recent_activity(
     Ok(Json(activities))
 }
 
+/// Names of the locations the given sessions point at (sessions without a
+/// location contribute nothing and render as "Unknown").
+async fn location_names_for(
+    db: &sqlx::PgPool,
+    sessions: &[Session],
+) -> Result<std::collections::HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = sessions
+        .iter()
+        .filter_map(|s| s.location_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let locations: Vec<Location> = sqlx::query_as("SELECT * FROM locations WHERE id = ANY($1)")
+        .bind(&ids)
+        .fetch_all(db)
+        .await?;
+    Ok(locations.into_iter().map(|l| (l.id, l.name)).collect())
+}
+
 // Attendance Series
 #[derive(Debug, Deserialize)]
 pub struct AttendanceSeriesQuery {
@@ -1080,31 +1101,17 @@ pub async fn get_attendance_series(
     let days = query.days.unwrap_or(180).min(730);
     let from = Utc::now() - chrono::Duration::days(days);
 
-    // Every location visible to this admin.
-    let locations: Vec<Location> =
-        sqlx::query_as("SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2)")
+    // Every session visible to this admin (all for a super-admin, only their
+    // own for a mentor) — scoped by session ownership, NOT by "sessions at my
+    // locations": exam/excel/intern sessions have no location at all and
+    // would otherwise vanish from these views.
+    let sessions: Vec<Session> =
+        sqlx::query_as("SELECT * FROM sessions WHERE ($1 = 'super_admin' OR created_by = $2)")
             .bind(&auth.role)
             .bind(auth.id)
             .fetch_all(&state.db)
             .await?;
-    let mut location_ids: Vec<Uuid> = Vec::new();
-    let mut location_names: std::collections::HashMap<Uuid, String> =
-        std::collections::HashMap::new();
-    for loc in locations {
-        location_ids.push(loc.id);
-        location_names.insert(loc.id, loc.name);
-    }
-
-    if location_ids.is_empty() {
-        return Ok(Json::<Vec<AttendanceSeriesItem>>(vec![]));
-    }
-
-    // Get sessions for these locations
-    let sessions: Vec<Session> =
-        sqlx::query_as("SELECT * FROM sessions WHERE location_id = ANY($1)")
-            .bind(&location_ids)
-            .fetch_all(&state.db)
-            .await?;
+    let location_names = location_names_for(&state.db, &sessions).await?;
     let mut session_map: std::collections::HashMap<Uuid, (Option<Uuid>, String)> =
         std::collections::HashMap::new();
     let mut session_ids: Vec<Uuid> = Vec::new();
@@ -1125,7 +1132,7 @@ pub async fn get_attendance_series(
 
     // Get attendance
     let attendances: Vec<Attendance> = sqlx::query_as(
-        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 ORDER BY captured_at ASC",
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND status = 'present' AND captured_at >= $2 ORDER BY captured_at ASC",
     )
     .bind(&session_ids)
     .bind(from)
@@ -1174,31 +1181,17 @@ pub async fn get_sessions_by_date(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<SessionsByDateQuery>,
 ) -> Result<impl IntoResponse> {
-    // Every location visible to this admin.
-    let locations: Vec<Location> =
-        sqlx::query_as("SELECT * FROM locations WHERE ($1 = 'super_admin' OR created_by = $2)")
+    // Every session visible to this admin (all for a super-admin, only their
+    // own for a mentor) — scoped by session ownership, NOT by "sessions at my
+    // locations": exam/excel/intern sessions have no location at all and
+    // would otherwise vanish from these views.
+    let sessions: Vec<Session> =
+        sqlx::query_as("SELECT * FROM sessions WHERE ($1 = 'super_admin' OR created_by = $2)")
             .bind(&auth.role)
             .bind(auth.id)
             .fetch_all(&state.db)
             .await?;
-    let mut location_ids: Vec<Uuid> = Vec::new();
-    let mut location_names: std::collections::HashMap<Uuid, String> =
-        std::collections::HashMap::new();
-    for loc in locations {
-        location_ids.push(loc.id);
-        location_names.insert(loc.id, loc.name);
-    }
-
-    if location_ids.is_empty() {
-        return Ok(Json::<Vec<SessionByDateItem>>(vec![]));
-    }
-
-    // Get sessions for these locations
-    let sessions: Vec<Session> =
-        sqlx::query_as("SELECT * FROM sessions WHERE location_id = ANY($1)")
-            .bind(&location_ids)
-            .fetch_all(&state.db)
-            .await?;
+    let location_names = location_names_for(&state.db, &sessions).await?;
     type SessionByDateInfo = (Option<Uuid>, Option<String>, DateTime<Utc>);
     let mut session_map: std::collections::HashMap<Uuid, SessionByDateInfo> =
         std::collections::HashMap::new();
@@ -1226,7 +1219,7 @@ pub async fn get_sessions_by_date(
         .map_err(|_| crate::error::AppError::BadRequest("Invalid date".to_string()))?;
 
     let attendances: Vec<Attendance> = sqlx::query_as(
-        "SELECT * FROM attendances WHERE session_id = ANY($1) AND captured_at >= $2 AND captured_at < $3",
+        "SELECT * FROM attendances WHERE session_id = ANY($1) AND status = 'present' AND captured_at >= $2 AND captured_at < $3",
     )
     .bind(&session_ids)
     .bind(date_start)

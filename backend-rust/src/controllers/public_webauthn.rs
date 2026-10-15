@@ -935,29 +935,43 @@ pub async fn finish_authentication(
         ));
     }
 
-    // Get location
-    let location: Location = sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-        .bind(session.location_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?;
+    // Get location. A session without one (an exam session created with no
+    // location) has no geofence: the check-in is accepted and recorded as
+    // location-unverified (`verified = false`, distance 0), matching the plain
+    // submit path. A dangling location id is still an error.
+    let location: Option<Location> = match session.location_id {
+        Some(location_id) => Some(
+            sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+                .bind(location_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Location not found".to_string()))?,
+        ),
+        None => None,
+    };
 
-    // Calculate distance
-    let distance = crate::utils::calculate_distance(
-        location.latitude,
-        location.longitude,
-        payload.latitude,
-        payload.longitude,
-    );
-
-    if distance > location.radius_meters
-        && !(is_dev_bypass_all && payload.dev_bypass_gps.unwrap_or(false))
-    {
-        return Err(AppError::BadRequest(format!(
-            "You are {}m away from the location (max: {}m)",
-            distance, location.radius_meters
-        )));
-    }
+    // Calculate distance and enforce the geofence (when there is one).
+    let distance = match &location {
+        Some(location) => {
+            let distance = crate::utils::calculate_distance(
+                location.latitude,
+                location.longitude,
+                payload.latitude,
+                payload.longitude,
+            );
+            if distance > location.radius_meters
+                && !(is_dev_bypass_all && payload.dev_bypass_gps.unwrap_or(false))
+            {
+                return Err(AppError::BadRequest(format!(
+                    "You are {}m away from the location (max: {}m)",
+                    distance, location.radius_meters
+                )));
+            }
+            distance
+        }
+        None => 0.0,
+    };
+    let location_verified = location.is_some();
 
     let has_high_severity_gps = gps_validation
         .anomalies
@@ -1149,7 +1163,7 @@ pub async fn finish_authentication(
     .bind(Some(user_agent.clone())) // 13 user_agent
     .bind(Some(ip_info.isp.clone())) // 14 network_provider
     .bind(Some(ip_info.org.clone())) // 15 network_org
-    .bind(true) // 16 verified
+    .bind(location_verified) // 16 verified
     .bind(face_detected_result.or(payload.face_detected).unwrap_or(true)) // 17 face_detected
     .bind(&payload.device_fingerprint) // 18 device_fingerprint
     .bind(&device_fingerprint_hash) // 19 device_fingerprint_hash
@@ -1229,7 +1243,7 @@ pub async fn finish_authentication(
             student_name,
             roll_number: roll_upper,
             distance_from_location: distance,
-            verified: true,
+            verified: location_verified,
             captured_at: captured_at.to_rfc3339(),
             webauthn_verified: true,
         }),

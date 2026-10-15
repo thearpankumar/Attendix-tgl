@@ -8,12 +8,17 @@
 // confirm that re-computes the same diff inside a transaction and applies it
 // (`sync_batch_students`). The server never trusts a client-side diff.
 //
-// Past attendance is deliberately untouched by every operation here:
-// `attendances` stores `roll_number`/`student_name` as text captured at
-// check-in time and has no FK to `students`, so removing or renaming a
-// student never rewrites or deletes history. A student removed (or whose
-// roll number is changed) simply stops matching the roster for old
-// sessions' absent lists; their check-ins remain in the records and exports.
+// Past attendance is keyed by roll-number *text* (`attendances.roll_number`,
+// stored upper-cased, has no FK to `students`), so removing a student never
+// rewrites or deletes history: their check-ins remain in the records and
+// exports. Correcting a student's roll number is different — it is the same
+// person, and leaving old check-ins under the old text would show them
+// absent (and their check-ins as off-roster) for every earlier session — so
+// `update_batch_student` carries the change through to this batch's sessions'
+// attendance (and the student's passkey) in the same transaction. A file
+// sync can't do that: it identifies students *by* roll number, so a changed
+// roll number there is indistinguishable from "one student removed, another
+// added".
 
 use axum::{
     extract::{Json, Multipart, Path, State},
@@ -115,6 +120,67 @@ fn normalize_roster(students: &[StudentInput]) -> Result<Vec<StudentInput>> {
         out.push(n);
     }
     Ok(out)
+}
+
+/// Drops duplicate roll numbers (case/whitespace-insensitive) from a freshly
+/// parsed upload — the first occurrence wins — and reports each dropped row
+/// in `errors`. Shared by the roster-edit dry run and the initial batch
+/// upload so both agree on what counts as a duplicate.
+pub(crate) fn dedupe_parsed_students(
+    parsed: Vec<StudentInput>,
+    errors: &mut Vec<String>,
+) -> Vec<StudentInput> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut students = Vec::with_capacity(parsed.len());
+    for s in parsed {
+        let key = roll_key(&s.roll_number);
+        if let Some(first_name) = seen.get(&key) {
+            errors.push(format!(
+                "Duplicate roll number '{}' ('{}') ignored; kept the first occurrence ('{}')",
+                s.roll_number, s.name, first_name
+            ));
+            continue;
+        }
+        seen.insert(key, s.name.clone());
+        students.push(s);
+    }
+    students
+}
+
+/// Trims/validates each parsed row with the same rules as the roster editor
+/// (`normalize_student`), skipping (and reporting) rows that fail instead of
+/// failing the whole upload. Returns the clean rows.
+pub(crate) fn normalize_parsed_students(
+    parsed: Vec<StudentInput>,
+    errors: &mut Vec<String>,
+) -> Vec<StudentInput> {
+    let mut out = Vec::with_capacity(parsed.len());
+    for (i, s) in parsed.iter().enumerate() {
+        match normalize_student(s, None) {
+            Ok(n) => out.push(n),
+            Err(AppError::BadRequest(reason)) => errors.push(format!(
+                "Student {} ('{}') skipped: {reason}",
+                i + 1,
+                s.roll_number
+            )),
+            Err(e) => errors.push(format!(
+                "Student {} ('{}') skipped: {e}",
+                i + 1,
+                s.roll_number
+            )),
+        }
+    }
+    out
+}
+
+/// Upper bound on a roster, shared with the initial batch upload.
+pub(crate) fn ensure_roster_size(count: usize) -> Result<()> {
+    if count > MAX_ROSTER_STUDENTS {
+        return Err(AppError::BadRequest(format!(
+            "A roster can have at most {MAX_ROSTER_STUDENTS} students"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -348,21 +414,7 @@ pub async fn parse_batch_students(
         file_data.ok_or_else(|| AppError::BadRequest("No file uploaded".to_string()))?;
 
     let (parsed, mut errors) = parse_excel(&file_data)?;
-
-    let mut seen: HashMap<String, String> = HashMap::new();
-    let mut students = Vec::with_capacity(parsed.len());
-    for s in parsed {
-        let key = roll_key(&s.roll_number);
-        if let Some(first_name) = seen.get(&key) {
-            errors.push(format!(
-                "Duplicate roll number '{}' ('{}') ignored; kept the first occurrence ('{}')",
-                s.roll_number, s.name, first_name
-            ));
-            continue;
-        }
-        seen.insert(key, s.name.clone());
-        students.push(s);
-    }
+    let students = dedupe_parsed_students(parsed, &mut errors);
     if students.is_empty() {
         return Err(AppError::BadRequest(
             "No students with both a name and a roll number were found in this file".to_string(),
@@ -613,6 +665,113 @@ pub async fn add_batch_student(
     Ok((StatusCode::CREATED, Json(student)))
 }
 
+#[derive(Debug, Default)]
+struct RollCascade {
+    attendances: u64,
+    passkey: bool,
+}
+
+/// Carries a roll-number correction (`old` -> `new`) through to the records
+/// keyed by roll text, inside the caller's transaction:
+///
+/// * `attendances` of this batch's sessions (matched case-insensitively,
+///   stored upper-cased like every check-in). A 409 if some session already
+///   has a row for *both* rolls — the per-session unique key
+///   (session, roll_number) would otherwise be violated, and merging two
+///   check-ins automatically would silently drop one.
+/// * the student's enrolled passkey (`webauthn_credentials.student_id`),
+///   unless another live roster still lists the old roll (then the passkey
+///   still belongs to that student there). A 409 if the new roll already has
+///   its own passkey.
+async fn cascade_roll_change(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch_id: Uuid,
+    old_roll: &str,
+    new_roll: &str,
+) -> Result<RollCascade> {
+    let new_upper = new_roll.trim().to_uppercase();
+
+    let colliding_sessions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sessions s \
+         WHERE s.batch_id = $1 \
+           AND EXISTS (SELECT 1 FROM attendances a WHERE a.session_id = s.id AND upper(a.roll_number) = upper($2)) \
+           AND EXISTS (SELECT 1 FROM attendances a WHERE a.session_id = s.id AND upper(a.roll_number) = $3)",
+    )
+    .bind(batch_id)
+    .bind(old_roll)
+    .bind(&new_upper)
+    .fetch_one(&mut **tx)
+    .await?;
+    if colliding_sessions > 0 {
+        return Err(AppError::Conflict(format!(
+            "Can't change the roll number to '{}': in {colliding_sessions} session(s) of this batch there are already check-ins under both '{}' and '{}'. Remove or merge one of them first.",
+            new_roll.trim(),
+            old_roll,
+            new_roll.trim()
+        )));
+    }
+
+    let attendances = sqlx::query(
+        "UPDATE attendances SET roll_number = $3 \
+         WHERE upper(roll_number) = upper($2) \
+           AND session_id IN (SELECT id FROM sessions WHERE batch_id = $1)",
+    )
+    .bind(batch_id)
+    .bind(old_roll)
+    .bind(&new_upper)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
+    let old_on_other_roster: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM students st \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
+         WHERE st.batch_id <> $1 AND upper(st.roll_number) = upper($2))",
+    )
+    .bind(batch_id)
+    .bind(old_roll)
+    .fetch_one(&mut **tx)
+    .await?;
+    let mut passkey = false;
+    if !old_on_other_roster {
+        let new_has_passkey: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE upper(student_id) = $1)",
+        )
+        .bind(&new_upper)
+        .fetch_one(&mut **tx)
+        .await?;
+        let old_has_passkey: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE upper(student_id) = upper($1))",
+        )
+        .bind(old_roll)
+        .fetch_one(&mut **tx)
+        .await?;
+        if old_has_passkey && new_has_passkey {
+            return Err(AppError::Conflict(format!(
+                "Can't change the roll number to '{}': both '{}' and '{}' already have an enrolled passkey. Reset one of them first.",
+                new_roll.trim(),
+                old_roll,
+                new_roll.trim()
+            )));
+        }
+        if old_has_passkey {
+            sqlx::query(
+                "UPDATE webauthn_credentials SET student_id = $2 WHERE upper(student_id) = upper($1)",
+            )
+            .bind(old_roll)
+            .bind(&new_upper)
+            .execute(&mut **tx)
+            .await?;
+            passkey = true;
+        }
+    }
+
+    Ok(RollCascade {
+        attendances,
+        passkey,
+    })
+}
+
 pub async fn update_batch_student(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -637,6 +796,11 @@ pub async fn update_batch_student(
     if roll_taken(&mut *tx, batch_id, &input.roll_number, Some(student_id)).await? {
         return Err(duplicate_roll_error(&input.roll_number));
     }
+    let cascaded = if roll_key(&before.roll_number) != roll_key(&input.roll_number) {
+        cascade_roll_change(&mut tx, batch_id, &before.roll_number, &input.roll_number).await?
+    } else {
+        RollCascade::default()
+    };
     // Unlike a file merge, an explicit edit sets exactly what was submitted
     // (an emptied email/college field clears it).
     let student = sqlx::query_as::<_, Student>(
@@ -662,6 +826,8 @@ pub async fn update_batch_student(
             "student_id": student_id,
             "before": StudentFields::from(&before),
             "after": StudentFields::from(&student),
+            "attendances_moved": cascaded.attendances,
+            "passkey_moved": cascaded.passkey,
         }),
     )
     .await;

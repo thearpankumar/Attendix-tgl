@@ -1,6 +1,7 @@
 #[path = "../common/test_db.rs"]
 mod test_db;
 
+mod attendance_consistency_tests;
 mod audit_log_tests;
 mod authz_validation_tests;
 mod audit_regression_tests;

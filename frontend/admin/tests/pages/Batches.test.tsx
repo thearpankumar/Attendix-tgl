@@ -202,6 +202,23 @@ describe('Batches', () => {
       await waitFor(() => expect(screen.queryByText('Import Student Batch')).not.toBeInTheDocument());
     });
 
+    it('warns when the server skipped duplicate rows or flagged a repeated batch name', async () => {
+      (axios.post as any).mockResolvedValue({
+        data: { studentsImported: 2, studentsSkipped: 1, errors: ["Duplicate roll number 'R1' ('Alice Again') ignored; kept the first occurrence ('Alice')"] },
+      });
+      await openModal();
+
+      fireEvent.change(screen.getByLabelText('Batch Name'), { target: { value: 'CS 2024' } });
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      fireEvent.change(fileInput, { target: { files: [new File(['a,b\n1,2'], 'roster.csv', { type: 'text/csv' })] } });
+      fireEvent.click(screen.getByText('Create Batch', { selector: 'button[type="submit"]' }));
+
+      await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('2 students imported, 1 skipped'),
+        expect.anything(),
+      ));
+    });
+
     it('shows the server-provided error message when batch creation fails', async () => {
       (axios.post as any).mockRejectedValue({ response: { data: { message: 'Duplicate batch name' } } });
       await openModal();
