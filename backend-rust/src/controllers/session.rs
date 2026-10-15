@@ -1328,11 +1328,13 @@ pub async fn export_session_attendance(
         Vec::new()
     };
 
-    let attendances: Vec<Attendance> =
-        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at ASC")
-            .bind(session_id)
-            .fetch_all(&state.db)
-            .await?;
+    let attendances: Vec<Attendance> = sqlx::query_as(
+        "SELECT * FROM attendances WHERE session_id = $1 AND status = 'present' \
+         ORDER BY captured_at ASC",
+    )
+    .bind(session_id)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut attendance_data: Vec<AttendanceExportRow> = attendances
         .into_iter()
@@ -1938,7 +1940,8 @@ pub(crate) async fn build_sessions_workbook_response(
                 Vec::new()
             };
             let attendances: Vec<Attendance> = sqlx::query_as(
-                "SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at ASC",
+                "SELECT * FROM attendances WHERE session_id = $1 AND status = 'present' \
+                 ORDER BY captured_at ASC",
             )
             .bind(session.id)
             .fetch_all(&state.db)
@@ -2112,8 +2115,7 @@ pub async fn update_session_mentors(
     // since creation, the mentor list is frozen — no further add or remove.
     if session.starts_at.is_none() && (!payload.add.is_empty() || !payload.remove.is_empty()) {
         let sys_config = state.get_system_config().await;
-        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours)
-        {
+        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours) {
             return Err(AppError::BadRequest(format!(
                 "The {}-hour window to change this session's mentors has closed",
                 sys_config.session_config.mentor_edit_window_hours

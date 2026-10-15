@@ -347,55 +347,62 @@ pub async fn mark_attendance_manual(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let attendance: Attendance =
-        match existing {
-            Some(att) if att.source == AttendanceSource::SelfSubmitted => {
-                return Err(AppError::Conflict(
-                    "This student already self-submitted attendance for this session".to_string(),
-                ));
-            }
-            Some(att) => sqlx::query_as(
-                "UPDATE attendances SET status = $1, marked_by_admin_id = $2, captured_at = now() \
-                 WHERE id = $3 RETURNING *",
+    let attendance: Attendance = match existing {
+        Some(att) if att.source == AttendanceSource::SelfSubmitted => {
+            return Err(AppError::Conflict(
+                "This student already self-submitted attendance for this session".to_string(),
+            ));
+        }
+        Some(att) => {
+            sqlx::query_as(
+                // `verified` tracks the new status, same as the INSERT below:
+                // a mentor-confirmed present is "verified", and flipping back
+                // to absent must clear it. Leaving it at its first-mark value
+                // made an absent -> present re-mark show as "Unverified" in
+                // the admin session table, stats and verified export.
+                "UPDATE attendances SET status = $1, verified = $2, marked_by_admin_id = $3, \
+                 captured_at = now() WHERE id = $4 RETURNING *",
             )
             .bind(status)
+            .bind(status == AttendanceStatus::Present)
             .bind(auth.id)
             .bind(att.id)
             .fetch_one(&mut *tx)
-            .await?,
-            None => {
-                let location: Option<Location> =
-                    sqlx::query_as("SELECT * FROM locations WHERE id = $1")
-                        .bind(session.location_id)
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                let (lat, lng) = location
-                    .map(|l| (l.latitude, l.longitude))
-                    .unwrap_or((0.0, 0.0));
+            .await?
+        }
+        None => {
+            let location: Option<Location> =
+                sqlx::query_as("SELECT * FROM locations WHERE id = $1")
+                    .bind(session.location_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let (lat, lng) = location
+                .map(|l| (l.latitude, l.longitude))
+                .unwrap_or((0.0, 0.0));
 
-                sqlx::query_as(
-                    "INSERT INTO attendances ( \
+            sqlx::query_as(
+                "INSERT INTO attendances ( \
                     id, session_id, student_name, roll_number, photo_url, photo_public_id, \
                     student_latitude, student_longitude, distance_from_location, verified, \
                     source, status, marked_by_admin_id, face_detected, captured_at \
                  ) VALUES ( \
                     $1, $2, $3, $4, '', '', $5, $6, 0.0, $7, $8, $9, $10, false, now() \
                  ) RETURNING *",
-                )
-                .bind(uuid::Uuid::new_v4())
-                .bind(session_id)
-                .bind(&student.name)
-                .bind(&roll_upper)
-                .bind(lat)
-                .bind(lng)
-                .bind(status == AttendanceStatus::Present)
-                .bind(AttendanceSource::Manual)
-                .bind(status)
-                .bind(auth.id)
-                .fetch_one(&mut *tx)
-                .await?
-            }
-        };
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(session_id)
+            .bind(&student.name)
+            .bind(&roll_upper)
+            .bind(lat)
+            .bind(lng)
+            .bind(status == AttendanceStatus::Present)
+            .bind(AttendanceSource::Manual)
+            .bind(status)
+            .bind(auth.id)
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
 
     tx.commit().await?;
 
@@ -435,8 +442,7 @@ pub async fn undo_manual_mark(
     // an undo is just another edit. Exam sessions are unaffected.
     if session.starts_at.is_none() {
         let sys_config = state.get_system_config().await;
-        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours)
-        {
+        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours) {
             return Err(AppError::BadRequest(format!(
                 "The {}-hour window to update this session's attendance has closed",
                 sys_config.session_config.mentor_edit_window_hours

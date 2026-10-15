@@ -130,8 +130,14 @@ pub async fn get_session_attendance(
     let _session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
     let attendances: Vec<Attendance> =
-        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at DESC")
-            .bind(session_id)
+        // A mentor's manual "absent" mark is stored as a row with status =
+        // 'absent'; those students are listed by `get_session_absent`, so they
+        // must not also show up here as attendees.
+        sqlx::query_as(
+            "SELECT * FROM attendances WHERE session_id = $1 AND status = 'present' \
+             ORDER BY captured_at DESC",
+        )
+        .bind(session_id)
             .fetch_all(&state.db)
             .await?;
 
@@ -185,13 +191,15 @@ pub async fn get_session_stats(
 
     let session = crate::controllers::find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    let total_attendance: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM attendances WHERE session_id = $1")
-            .bind(session_id)
-            .fetch_one(&state.db)
-            .await?;
+    let total_attendance: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND status = 'present'",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
     let verified_attendance: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM attendances WHERE session_id = $1 AND verified = true",
+        "SELECT COUNT(*) FROM attendances \
+         WHERE session_id = $1 AND status = 'present' AND verified = true",
     )
     .bind(session_id)
     .fetch_one(&state.db)

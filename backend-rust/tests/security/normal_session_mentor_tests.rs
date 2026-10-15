@@ -356,6 +356,32 @@ async fn normal_session_stats_track_mentor_remarking_not_just_first_mark() {
         stats["absentCount"], 1,
         "super-admin stats must show the student absent right after the first mark: {stats:?}"
     );
+    // Regression (admin "Absent tab has no roll number"): the admin web UI
+    // reads `rollNumber` (camelCase) off each absent entry.
+    let (status, absent) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        absent[0]["rollNumber"], roll_number,
+        "absent entries must expose camelCase rollNumber: {absent:?}"
+    );
+    assert!(
+        absent[0].get("roll_number").is_none(),
+        "absent entries must not use snake_case keys: {absent:?}"
+    );
+    // A manual "absent" row is not an attendee: it must not appear in the
+    // admin session's attendance table or inflate its totals.
+    let (status, rows) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/attendance"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        0,
+        "absent-marked student must not be listed as an attendee: {rows:?}"
+    );
+    assert_eq!(stats["totalAttendance"], 0, "stats: {stats:?}");
 
     // Re-mark: present. This is the flip the bug report describes — admin
     // side must update, not stay stuck on the first mark.
@@ -377,6 +403,18 @@ async fn normal_session_stats_track_mentor_remarking_not_just_first_mark() {
         stats["absentCount"], 0,
         "super-admin stats must reflect the re-mark to present: {stats:?}"
     );
+    // The admin session table/stats must show the re-marked student as a
+    // present, verified attendee (reported: it stayed "Unverified").
+    assert_eq!(stats["totalAttendance"], 1, "stats: {stats:?}");
+    assert_eq!(stats["verifiedAttendance"], 1, "stats: {stats:?}");
+    assert_eq!(stats["unverifiedAttendance"], 0, "stats: {stats:?}");
+    let (status, rows) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/attendance"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows.as_array().unwrap().len(), 1, "rows: {rows:?}");
+    assert_eq!(rows[0]["status"], "present", "rows: {rows:?}");
+    assert_eq!(rows[0]["verified"], true, "rows: {rows:?}");
     let (status, absent) = super_client
         .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
         .await;
@@ -406,6 +444,8 @@ async fn normal_session_stats_track_mentor_remarking_not_just_first_mark() {
         stats["absentCount"], 1,
         "super-admin stats must reflect the re-mark back to absent: {stats:?}"
     );
+    assert_eq!(stats["totalAttendance"], 0, "stats: {stats:?}");
+    assert_eq!(stats["verifiedAttendance"], 0, "stats: {stats:?}");
 }
 
 /// Once the configurable mentor-edit window has passed since the session was
