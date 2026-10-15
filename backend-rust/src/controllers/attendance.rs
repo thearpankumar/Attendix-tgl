@@ -276,6 +276,12 @@ pub async fn validate_token(
         return Err(AppError::BadRequest("Session has expired".to_string()));
     }
 
+    if session.not_started_yet() {
+        return Err(AppError::BadRequest(
+            "This session hasn't started yet".to_string(),
+        ));
+    }
+
     let location = sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE id = $1")
         .bind(session.location_id)
         .fetch_optional(&state.db)
@@ -578,6 +584,12 @@ pub async fn submit_attendance(
 
     if session.is_expired() {
         return Err(AppError::BadRequest("Session has expired".to_string()));
+    }
+
+    if session.not_started_yet() {
+        return Err(AppError::BadRequest(
+            "This session hasn't started yet".to_string(),
+        ));
     }
 
     let roll_upper = payload.roll_number.trim().to_uppercase();

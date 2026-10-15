@@ -332,8 +332,16 @@ impl SessionCreateRequest {
             });
         } else if self.is_exam_session() {
             // Exam session: batch/mentors/college/start-time are required
-            // together; location does not apply (manual attendance, no
-            // geofencing) so it is never validated here.
+            // together; location is optional (manual attendance by default)
+            // but must be well-formed when supplied.
+            if let Some(id) = self.location_id.as_deref() {
+                if !id.trim().is_empty() && !is_valid_objectid(id.trim()) {
+                    errors.push(FieldError {
+                        field: "location_id".to_string(),
+                        message: "Valid location ID required".to_string(),
+                    });
+                }
+            }
             match self.batch_id.as_deref() {
                 Some(id) if is_valid_objectid(id) => {}
                 _ => errors.push(FieldError {

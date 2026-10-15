@@ -61,7 +61,7 @@ const BATCH_MENTOR = { _id: 'mentor1', username: 'mentor.jane', fullName: 'Jane 
 // Switches the create-session form to "Exam" mode and fills the fields that
 // mode requires (batch, mentor, college name, start date/time) so tests can
 // submit without the client-side exam-session validation short-circuiting
-// them. Location is deliberately NOT filled — exam sessions don't have one.
+// them. Location is deliberately NOT filled — it is optional for exam sessions.
 // Normal-mode tests don't need this — batch stays optional there.
 const fillRequiredSessionFields = () => {
   fireEvent.click(screen.getByText(/Exam \(assign a mentor\)/i));
@@ -151,7 +151,7 @@ describe('Sessions', () => {
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it('the Location field and Short Link section are hidden in exam mode', async () => {
+  it('exam mode: Location is optional and the Short Link section only appears once a location is chosen', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
     renderComponent();
     await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
@@ -159,8 +159,62 @@ describe('Sessions', () => {
     fireEvent.click(screen.getAllByText('Create Session')[0]);
     fireEvent.click(screen.getByText(/Exam \(assign a mentor\)/i));
 
-    expect(screen.queryByLabelText(/^Location$/i)).not.toBeInTheDocument();
+    const location = screen.getByLabelText(/^Location \(Optional\)$/i);
+    expect(location).not.toBeRequired();
     expect(screen.queryByText(/^Short Link$/i)).not.toBeInTheDocument();
+
+    fireEvent.change(location, { target: { value: 'loc1' } });
+    expect(screen.getByText(/^Short Link$/i)).toBeInTheDocument();
+  });
+
+  it('exam mode with a location: sends locationId and the chosen short link mode', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    (axios.post as any).mockImplementation(() => Promise.resolve({ data: { _id: 'new-session-id', shortCode: 'abc123' } }));
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fillRequiredSessionFields();
+    fireEvent.change(screen.getByLabelText(/^Location \(Optional\)$/i), { target: { value: 'loc1' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/sessions', expect.objectContaining({
+        sessionType: 'exam',
+        locationId: 'loc1',
+        assignedAdminIds: ['mentor1'],
+        shortlinkMode: 'auto',
+      }));
+    });
+  });
+
+  it('exam mode offers the same cadence options and a cron rule carries mentors, college and location', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION], batches: [BATCH] }));
+    (axios.post as any).mockImplementation(() => Promise.resolve({ data: {} }));
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fillRequiredSessionFields();
+    expect(screen.getByText('Schedule for later')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Location \(Optional\)$/i), { target: { value: 'loc1' } });
+    fireEvent.click(screen.getByText(/Cron job \(recurring\)/i));
+    // The fixed exam date/time inputs are replaced by the cron times.
+    expect(screen.queryByLabelText(/^Exam Date$/i)).not.toBeInTheDocument();
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules', expect.objectContaining({
+        sessionType: 'exam',
+        locationId: 'loc1',
+        batchId: 'batch1',
+        assignedAdminIds: ['mentor1'],
+        collegeName: 'XYZ College',
+      }));
+    });
+    expect(axios.post).not.toHaveBeenCalledWith('/api/admin/sessions', expect.anything());
   });
 
   // ─── Short Link modes (normal sessions only) ─────────────────────────────

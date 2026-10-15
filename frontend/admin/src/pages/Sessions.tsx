@@ -394,13 +394,17 @@ const Sessions = () => {
     return { label: 'Active', tone: 'success' as const };
   };
 
+  // Exam (mentor) sessions only get a short link when a location is chosen —
+  // that link is how students reach the geofenced check-in.
+  const showShortLink = formData.sessionType === 'normal' || !!formData.locationId;
+
   const handleCreateSubmit = async (e?: FormEvent, forceReassign = false) => {
     if (e) e.preventDefault();
     try {
       const isExam = formData.sessionType === 'exam';
       const isIntern = formData.isInternMonitoring;
-      const isCron = !isExam && formData.recurrence === 'cron';
-      const isScheduled = !isExam && formData.recurrence === 'scheduled';
+      const isCron = formData.recurrence === 'cron';
+      const isScheduled = formData.recurrence === 'scheduled';
 
       // Intern monitoring has no separate "check-in window" duration — there
       // is no location/link at all — so the work-hours span computed from
@@ -423,7 +427,7 @@ const Sessions = () => {
         if (!formData.batchId) { toast.error('A batch is required for an exam session'); return; }
         if (formData.assignedAdminIds.length === 0) { toast.error('Assign at least one mentor to this exam session'); return; }
         if (!formData.collegeName.trim()) { toast.error('College name is required for an exam session'); return; }
-        if (!formData.startsDate || !formData.startsTime) { toast.error('Start date and time are required for an exam session'); return; }
+        if (formData.recurrence === 'once' && (!formData.startsDate || !formData.startsTime)) { toast.error('Start date and time are required for an exam session'); return; }
       } else if (!isIntern && !formData.locationId) {
         toast.error('A location is required for a self check-in session');
         return;
@@ -443,7 +447,9 @@ const Sessions = () => {
         toast.error('Start date cannot be in the past');
         return;
       }
-      if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
+      const useShortLink = !isExam || !!formData.locationId;
+      const shortlinkMode: ShortlinkMode = useShortLink ? formData.shortlinkMode : 'none';
+      if (useShortLink && formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
         toast.error('Please select an existing short link, or switch to a different mode.');
         return;
       }
@@ -467,7 +473,7 @@ const Sessions = () => {
       // (2) the code is attached to another active *session* — one-off path
       // only; cron rules don't look at session_id server-side (a separate,
       // pre-existing, out-of-scope gap in the cron path).
-      if (formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
+      if (useShortLink && formData.shortlinkMode === 'existing' && formData.existingShortCode && !forceReassign) {
         const selectedLink = activeShortLinks.find(l => l.shortCode === formData.existingShortCode);
         if (selectedLink?.lockedByRuleId) {
           setReassignConfirm({
@@ -486,7 +492,10 @@ const Sessions = () => {
 
       if (isCron || isScheduled) {
         await axios.post('/api/admin/recurring-rules', {
-          locationId: isIntern ? undefined : formData.locationId,
+          locationId: isIntern ? undefined : (formData.locationId || undefined),
+          sessionType: isExam ? 'exam' : undefined,
+          assignedAdminIds: !isIntern && formData.assignedAdminIds.length > 0 ? formData.assignedAdminIds : undefined,
+          collegeName: isExam ? formData.collegeName.trim() : undefined,
           batchId: formData.batchId || undefined,
           description: formData.description,
           durationMinutes: duration,
@@ -495,9 +504,9 @@ const Sessions = () => {
           daysOfWeek: isScheduled ? undefined : formData.daysOfWeek,
           runOnceDate: isScheduled ? formData.scheduleDate : undefined,
           startDate: isCron ? (formData.startDate || undefined) : undefined,
-          shortlinkMode: formData.shortlinkMode,
-          customShortCode: formData.customShortCode.trim() || undefined,
-          existingShortCode: formData.existingShortCode || undefined,
+          shortlinkMode,
+          customShortCode: useShortLink ? (formData.customShortCode.trim() || undefined) : undefined,
+          existingShortCode: useShortLink ? (formData.existingShortCode || undefined) : undefined,
           forceReassign: forceReassign || undefined,
           monitoringEnabled: isIntern || formData.monitoringEnabled,
           classDurationMinutes: classDuration,
@@ -516,10 +525,10 @@ const Sessions = () => {
       }
 
       const res = await axios.post<{ _id: string; shortCode?: string }>('/api/admin/sessions', {
-        // Exam and intern-monitoring sessions have no location — exam is
-        // manual attendance, intern monitoring is purely browser-extension
-        // based, neither is geofenced.
-        locationId: isExam || isIntern ? undefined : formData.locationId,
+        // Intern monitoring has no location (browser-extension only). An
+        // exam (mentor) session's location is optional — when set, student
+        // self check-in through its short link is geofenced.
+        locationId: isIntern ? undefined : (formData.locationId || undefined),
         durationMinutes: duration,
         description: formData.description,
         // Explicit shape, so a normal session can still optionally carry
@@ -535,9 +544,9 @@ const Sessions = () => {
         // nothing for a short link to point to. Intern-monitoring sessions
         // DO need one — it's how the extension/passkey-registration flow
         // finds the session.
-        shortlinkMode: isExam ? 'none' : formData.shortlinkMode,
-        customShortCode: isExam ? undefined : (formData.customShortCode.trim() || undefined),
-        existingShortCode: isExam ? undefined : (formData.existingShortCode || undefined),
+        shortlinkMode,
+        customShortCode: useShortLink ? (formData.customShortCode.trim() || undefined) : undefined,
+        existingShortCode: useShortLink ? (formData.existingShortCode || undefined) : undefined,
         forceReassign: forceReassign || undefined,
         monitoringEnabled: isIntern || formData.monitoringEnabled,
         classDurationMinutes: classDuration,
@@ -905,7 +914,7 @@ const Sessions = () => {
               ))}
             </div>
             {formData.sessionType === 'exam' && (
-              <small style={{ color: 'var(--color-muted)' }}>Exam sessions require a batch, one or more mentors, a college name, and a start date/time. Attendance is marked manually, so no location is needed.</small>
+              <small style={{ color: 'var(--color-muted)' }}>Exam sessions require a batch, one or more mentors, a college name, and a start date/time. Attendance is marked manually by the mentor; add a location to also geofence student self check-in.</small>
             )}
           </div>
 
@@ -932,17 +941,20 @@ const Sessions = () => {
             </div>
           )}
 
-          {formData.sessionType === 'normal' && !formData.isInternMonitoring && (
+          {!(formData.sessionType === 'normal' && formData.isInternMonitoring) && (
             <div className="form-group">
-              <label htmlFor="session-location">Location</label>
-              <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required>
-                <option value="">Select a location</option>
+              <label htmlFor="session-location">Location{formData.sessionType === 'exam' ? ' (Optional)' : ''}</label>
+              <select id="session-location" value={formData.locationId} onChange={(e) => setFormData({ ...formData, locationId: e.target.value })} required={formData.sessionType === 'normal'}>
+                <option value="">{formData.sessionType === 'exam' ? 'No location (manual marking only)' : 'Select a location'}</option>
                 {locations.map((loc) => <option key={loc._id} value={loc._id}>{loc.name} (Radius: {loc.radiusMeters}m)</option>)}
               </select>
+              {formData.sessionType === 'exam' && (
+                <small style={{ color: 'var(--color-muted)' }}>Pick a location to geofence this mentor session: students checking in through its short link must be within the location's radius. Leave empty for manual marking only.</small>
+              )}
             </div>
           )}
 
-          {formData.sessionType === 'normal' && (
+          {(
             <div className="form-group">
               <label>Cadence</label>
               <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
@@ -964,7 +976,7 @@ const Sessions = () => {
                       style={{ display: 'none' }} />
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                       {mode === 'cron' && <RefreshCw size={14} />}
-                      <span>{mode === 'once' ? 'Start now' : mode === 'scheduled' ? 'Schedule for later' : 'Cron job (recurring)'}</span>
+                      <span>{mode === 'once' ? (formData.sessionType === 'exam' ? 'Set exam date/time' : 'Start now') : mode === 'scheduled' ? 'Schedule for later' : 'Cron job (recurring)'}</span>
                     </div>
                   </label>
                 ))}
@@ -973,6 +985,8 @@ const Sessions = () => {
                 <small style={{ color: 'var(--color-muted)' }}>
                   {formData.isInternMonitoring
                     ? 'One monitoring session is created automatically at the date and time below, once.'
+                    : formData.sessionType === 'exam'
+                    ? 'One mentor-assigned exam session is created automatically at the date and time below, once, with the mentors, batch, college and (optional) location chosen here.'
                     : 'One session for this location is created automatically at the date and time below, once. No cron rule needed.'}
                 </small>
               )}
@@ -980,13 +994,15 @@ const Sessions = () => {
                 <small style={{ color: 'var(--color-muted)' }}>
                   {formData.isInternMonitoring
                     ? 'A fresh monitoring session is created automatically at each time below, on the selected days.'
+                    : formData.sessionType === 'exam'
+                    ? 'A fresh mentor-assigned exam session is created automatically at each time below, on the selected days, with the mentors, batch, college and (optional) location chosen here.'
                     : 'A new session for this location is created automatically at each time below, on the selected days.'}
                 </small>
               )}
             </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'scheduled' && (
+          {formData.recurrence === 'scheduled' && (
             <>
               <div className="form-row">
                 <div className="form-group">
@@ -1014,7 +1030,7 @@ const Sessions = () => {
             </>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
+          {formData.recurrence === 'cron' && (
             <>
               <div className="form-group">
                 <label>Time(s) of day</label>
@@ -1187,6 +1203,7 @@ const Sessions = () => {
                 <input id="session-college" type="text" value={formData.collegeName} onChange={(e) => setFormData({ ...formData, collegeName: e.target.value })} placeholder="e.g., XYZ Engineering College" required />
               </div>
 
+              {formData.recurrence === 'once' && (
               <div className="form-row">
                 <div className="form-group">
                   <label htmlFor="session-starts-date">Exam Date</label>
@@ -1197,6 +1214,7 @@ const Sessions = () => {
                   <input id="session-starts-time" type="time" value={formData.startsTime} onChange={(e) => setFormData({ ...formData, startsTime: e.target.value })} required />
                 </div>
               </div>
+              )}
             </>
           )}
 
@@ -1225,7 +1243,7 @@ const Sessions = () => {
                check-in flow to link to, so this only applies to the normal
                tab (plain session or intern monitoring — intern needs a link
                too, for the extension pairing / passkey-registration flow) ── */}
-          {formData.sessionType === 'normal' && (
+          {showShortLink && (
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <label>Short Link</label>
             <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
@@ -1257,19 +1275,19 @@ const Sessions = () => {
           </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
+          {showShortLink && formData.recurrence === 'cron' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               This link will be locked to the rule — it always redirects to whichever occurrence is currently active, and can't be picked for another one-off session while the rule is active. Pausing or deleting the rule frees it again.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
+          {showShortLink && formData.recurrence === 'once' && formData.shortlinkMode === 'auto' && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '-0.25rem', marginBottom: '0.5rem' }}>
               A random 6-character link will be created and copied to your clipboard.
             </p>
           )}
 
-          {formData.sessionType === 'normal' && formData.shortlinkMode === 'existing' && (
+          {showShortLink && formData.shortlinkMode === 'existing' && (
             <div className="form-group">
               {activeShortLinks.length === 0 ? (
                 <div style={{
@@ -1300,7 +1318,7 @@ const Sessions = () => {
             </div>
           )}
 
-          {formData.sessionType === 'normal' && formData.shortlinkMode === 'custom' && (
+          {showShortLink && formData.shortlinkMode === 'custom' && (
             <div className="form-group">
               <label>Custom Short Code</label>
               <input type="text" value={formData.customShortCode}

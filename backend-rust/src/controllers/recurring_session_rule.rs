@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     constants::ROLE_SUPER_ADMIN,
+    controllers::validate_active_mentor_ids,
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
     models::{RecurringSessionRule, ShortLink},
@@ -58,10 +59,37 @@ pub struct CreateRecurringRuleRequest {
     pub class_duration_minutes: Option<i32>,
     /// `"attendance"` (default) or `"intern_monitoring"`.
     pub session_kind: Option<String>,
+    /// `"normal"` (default) or `"exam"` -- the mentor-session shape. An exam
+    /// rule requires a batch, at least one mentor and a college name; its
+    /// location is optional. Generated occurrences start at fire time.
+    pub session_type: Option<String>,
+    /// Mentors assigned to every generated occurrence. Mandatory for an exam
+    /// rule, optional for a normal one.
+    #[serde(default)]
+    pub assigned_admin_ids: Vec<String>,
+    pub college_name: Option<String>,
 }
 
 const SESSION_KIND_ATTENDANCE: &str = "attendance";
 const SESSION_KIND_INTERN_MONITORING: &str = "intern_monitoring";
+const SESSION_TYPE_NORMAL: &str = "normal";
+const SESSION_TYPE_EXAM: &str = "exam";
+
+fn validate_session_type(t: &str) -> Result<()> {
+    if t != SESSION_TYPE_NORMAL && t != SESSION_TYPE_EXAM {
+        return Err(AppError::BadRequest(format!("Unknown sessionType '{}'", t)));
+    }
+    Ok(())
+}
+
+/// Parses an optional location ID, treating empty as absent.
+fn parse_optional_uuid(raw: Option<&str>, what: &str) -> Result<Option<Uuid>> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|e| AppError::BadRequest(format!("Invalid {}: {}", what, e)))
+}
 
 fn validate_session_kind(kind: &str) -> Result<()> {
     if kind != SESSION_KIND_ATTENDANCE && kind != SESSION_KIND_INTERN_MONITORING {
@@ -85,6 +113,8 @@ pub struct UpdateRecurringRuleRequest {
     pub days_of_week: Option<Vec<i16>>,
     pub monitoring_enabled: Option<bool>,
     pub class_duration_minutes: Option<i32>,
+    pub assigned_admin_ids: Option<Vec<String>>,
+    pub college_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +140,9 @@ pub struct RecurringRuleResponse {
     pub monitoring_enabled: bool,
     pub class_duration_minutes: Option<i32>,
     pub session_kind: String,
+    pub session_type: String,
+    pub assigned_admin_ids: Vec<String>,
+    pub college_name: Option<String>,
     pub start_date: Option<String>,
     pub run_once_date: Option<String>,
     /// True for a one-time schedule that has already fired.
@@ -143,6 +176,13 @@ impl From<RecurringSessionRule> for RecurringRuleResponse {
             monitoring_enabled: r.monitoring_enabled,
             class_duration_minutes: r.class_duration_minutes,
             session_kind: r.session_kind,
+            session_type: r.session_type,
+            assigned_admin_ids: r
+                .assigned_admin_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect(),
+            college_name: r.college_name,
             start_date: r.start_date.map(|d| d.to_string()),
             run_once_date: r.run_once_date.map(|d| d.to_string()),
             completed,
@@ -268,17 +308,38 @@ pub async fn create_recurring_rule(
     validate_session_kind(&session_kind)?;
     let is_intern_monitoring = session_kind == SESSION_KIND_INTERN_MONITORING;
 
-    // An attendance rule still requires a real location (enforced again at
-    // the DB level by migration 0008's CHECK); an intern-monitoring rule
-    // has none — no geofence, no QR display, nothing to point a location at.
+    let session_type = payload
+        .session_type
+        .clone()
+        .unwrap_or_else(|| SESSION_TYPE_NORMAL.to_string());
+    validate_session_type(&session_type)?;
+    let is_exam = session_type == SESSION_TYPE_EXAM;
+    if is_exam && is_intern_monitoring {
+        return Err(AppError::BadRequest(
+            "A rule cannot be both an exam rule and an intern-monitoring rule".to_string(),
+        ));
+    }
+
+    // A normal attendance rule still requires a real location (enforced
+    // again at the DB level by the 0008/0014 CHECK); an intern-monitoring
+    // rule has none, and an exam (mentor) rule's location is optional.
     let location_id = if is_intern_monitoring {
         None
+    } else if is_exam {
+        parse_optional_uuid(payload.location_id.as_deref(), "location ID")?
     } else {
         Some(
             Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
                 .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?,
         )
     };
+    if let Some(id) = location_id {
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM locations WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("Location not found".to_string()))?;
+    }
     let batch_id = payload
         .batch_id
         .as_deref()
@@ -286,6 +347,38 @@ pub async fn create_recurring_rule(
         .map(Uuid::parse_str)
         .transpose()
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
+
+    // Mentors: mandatory for an exam rule, optional for a normal one (so
+    // they can fix a student's check-in), never for intern monitoring.
+    let assigned_admin_ids = if is_intern_monitoring {
+        Vec::new()
+    } else {
+        validate_active_mentor_ids(&state.db, &payload.assigned_admin_ids).await?
+    };
+    let college_name = payload
+        .college_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if is_exam {
+        if batch_id.is_none() {
+            return Err(AppError::BadRequest(
+                "A batch is required for an exam rule".to_string(),
+            ));
+        }
+        if assigned_admin_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "At least one mentor is required for an exam rule".to_string(),
+            ));
+        }
+        if college_name.is_none() {
+            return Err(AppError::BadRequest(
+                "College name is required for an exam rule".to_string(),
+            ));
+        }
+    }
+    let college_name = if is_exam { college_name } else { None };
 
     validate_duration(payload.duration_minutes)?;
     let run_times_local = parse_run_times(&payload.run_times_local)?;
@@ -480,8 +573,9 @@ pub async fn create_recurring_rule(
         "INSERT INTO recurring_session_rules \
          (id, location_id, batch_id, description, duration_minutes, run_times_local, timezone, days_of_week, \
           is_active, created_by, created_at, updated_at, locked_short_code, next_run_at, \
-          monitoring_enabled, class_duration_minutes, session_kind, start_date, run_once_date) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11, $12, $13, $14, $15, $16) \
+          monitoring_enabled, class_duration_minutes, session_kind, start_date, run_once_date, \
+          session_type, assigned_admin_ids, college_name) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -500,6 +594,9 @@ pub async fn create_recurring_rule(
     .bind(&session_kind)
     .bind(start_date)
     .bind(run_once_date)
+    .bind(&session_type)
+    .bind(&assigned_admin_ids)
+    .bind(&college_name)
     .fetch_one(&state.db)
     .await?;
 
@@ -569,7 +666,10 @@ pub async fn update_recurring_rule(
         Some(_) => None,
         None => existing.location_id,
     };
-    if existing.session_kind == SESSION_KIND_ATTENDANCE && location_id.is_none() {
+    if existing.session_kind == SESSION_KIND_ATTENDANCE
+        && existing.session_type != SESSION_TYPE_EXAM
+        && location_id.is_none()
+    {
         return Err(AppError::BadRequest(
             "location_id is required for an attendance rule".to_string(),
         ));
@@ -637,11 +737,39 @@ pub async fn update_recurring_rule(
         validate_duration(minutes)?;
     }
 
+    let assigned_admin_ids = match &payload.assigned_admin_ids {
+        Some(raw) => validate_active_mentor_ids(&state.db, raw).await?,
+        None => existing.assigned_admin_ids.clone(),
+    };
+    let college_name = match &payload.college_name {
+        Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Some(_) => None,
+        None => existing.college_name.clone(),
+    };
+    if existing.session_type == SESSION_TYPE_EXAM {
+        if assigned_admin_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "At least one mentor is required for an exam rule".to_string(),
+            ));
+        }
+        if college_name.is_none() {
+            return Err(AppError::BadRequest(
+                "College name is required for an exam rule".to_string(),
+            ));
+        }
+        if batch_id.is_none() {
+            return Err(AppError::BadRequest(
+                "A batch is required for an exam rule".to_string(),
+            ));
+        }
+    }
+
     let updated: RecurringSessionRule = sqlx::query_as(
         "UPDATE recurring_session_rules \
          SET location_id = $1, batch_id = $2, description = $3, duration_minutes = $4, \
              run_times_local = $5, timezone = $6, days_of_week = $7, next_run_at = $8, updated_at = now(), \
-             monitoring_enabled = $9, class_duration_minutes = $10 \
+             monitoring_enabled = $9, class_duration_minutes = $10, \
+             assigned_admin_ids = $12, college_name = $13 \
          WHERE id = $11 \
          RETURNING *",
     )
@@ -656,6 +784,8 @@ pub async fn update_recurring_rule(
     .bind(monitoring_enabled)
     .bind(class_duration_minutes)
     .bind(rule_id)
+    .bind(&assigned_admin_ids)
+    .bind(&college_name)
     .fetch_one(&state.db)
     .await?;
 

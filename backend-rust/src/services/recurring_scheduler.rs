@@ -24,6 +24,7 @@ use std::time::Duration;
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::constants::ROLE_ADMIN;
 use crate::controllers::{create_session_row, SessionSpec, ShortlinkDirective};
 use crate::error::Result;
 use crate::models::{RecurringSessionRule, RECURRING_RULE_MAX_CONSECUTIVE_FAILURES};
@@ -114,6 +115,8 @@ async fn generate_occurrence(
         .filter(|_| rule.monitoring_enabled)
         .map(|minutes| now + chrono::Duration::minutes(minutes as i64));
 
+    let is_exam = rule.session_type == "exam";
+
     let shortlink = match &rule.locked_short_code {
         Some(code) => ShortlinkDirective::Existing(code.clone()),
         None => ShortlinkDirective::None,
@@ -126,8 +129,11 @@ async fn generate_occurrence(
             batch_id: rule.batch_id,
             description: rule.description.clone(),
             created_by: rule.created_by,
-            college_name: None,
-            starts_at: None,
+            college_name: rule.college_name.clone(),
+            // An exam (mentor) occurrence starts the moment it is generated,
+            // so `starts_at` is the fire time and the attendance window is
+            // anchored to it exactly as for a directly created exam session.
+            starts_at: is_exam.then_some(now),
             expires_at,
             recurring_rule_id: Some(rule.id),
             shortlink,
@@ -138,6 +144,22 @@ async fn generate_occurrence(
         },
     )
     .await?;
+
+    // Carry the rule's mentors onto the occurrence. Re-checked against the
+    // live admins table so a mentor deactivated (or demoted) since the rule
+    // was created isn't silently assigned.
+    if !rule.assigned_admin_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO session_admins (session_id, admin_id) \
+             SELECT $1, id FROM admins WHERE id = ANY($2) AND role = $3 AND is_active = true \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(session.id)
+        .bind(&rule.assigned_admin_ids)
+        .bind(ROLE_ADMIN)
+        .execute(&mut **tx)
+        .await?;
+    }
 
     // A one-time schedule has no next occurrence: record the run, deactivate
     // it, and release its locked short code (the session just created now

@@ -314,7 +314,10 @@ async fn fetch_assigned_mentors(
 /// admin/mentor account. Used for both exam sessions (mandatory mentors,
 /// enforced by `validate_with_objectids` before this runs) and normal
 /// sessions (optional mentors — an empty list is fine here).
-async fn validate_active_mentor_ids(db: &sqlx::PgPool, raw_ids: &[String]) -> Result<Vec<Uuid>> {
+pub async fn validate_active_mentor_ids(
+    db: &sqlx::PgPool,
+    raw_ids: &[String],
+) -> Result<Vec<Uuid>> {
     let mut assigned_admin_ids = Vec::with_capacity(raw_ids.len());
     for raw_id in raw_ids {
         let raw_id = raw_id.trim();
@@ -418,8 +421,9 @@ pub async fn create_session(
 
     // Exam session: mentors/college/start-time are all mandatory and
     // validated together (validate_with_objectids already guarantees they're
-    // present and well-formed above); location does not apply — exam
-    // attendance is marked manually, not geofenced. Normal session: none of
+    // present and well-formed above); location is optional — exam
+    // attendance is marked manually, but a location may be attached to
+    // geofence student self check-in via a short link. Normal session: none of
     // that applies, but location is mandatory; mentors are optional (assigned
     // so they can manually fix a student's self check-in — see the
     // mentor-edit-window feature).
@@ -432,9 +436,31 @@ pub async fn create_session(
                 .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|e| AppError::BadRequest(format!("Invalid start time: {}", e)))?;
 
+        // Location is optional for an exam session: when given, the
+        // session is geofenced exactly like a normal one for any student
+        // who reaches it through a short link.
+        let exam_location_id = match payload
+            .location_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(raw) => {
+                let id = Uuid::parse_str(raw)
+                    .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM locations WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&state.db)
+                    .await?
+                    .ok_or_else(|| AppError::BadRequest("Location not found".to_string()))?;
+                Some(id)
+            }
+            None => None,
+        };
+
         (
             assigned_admin_ids,
-            None,
+            exam_location_id,
             payload.college_name.clone(),
             Some(starts_at),
         )

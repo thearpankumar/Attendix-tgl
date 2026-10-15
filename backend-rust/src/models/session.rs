@@ -82,6 +82,12 @@ impl Session {
         self.expires_at <= Utc::now()
     }
 
+    /// True for a session with a scheduled start (exam / mentor session)
+    /// that hasn't reached it yet, so self check-in must not open early.
+    pub fn not_started_yet(&self) -> bool {
+        self.starts_at.is_some_and(|t| t > Utc::now())
+    }
+
     pub fn get_token_prefix(token: &str) -> String {
         token.chars().take(8).collect()
     }

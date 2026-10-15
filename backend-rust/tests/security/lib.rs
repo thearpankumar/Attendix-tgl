@@ -8,6 +8,7 @@ mod excel_session_flow_tests;
 mod extension_pairing_tests;
 mod flag_queue_tests;
 mod intern_monitoring_tests;
+mod mentor_session_schedule_tests;
 mod normal_session_mentor_tests;
 mod one_time_schedule_tests;
 mod recurring_rule_shortlink_tests;

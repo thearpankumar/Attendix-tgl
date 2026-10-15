@@ -63,6 +63,12 @@ pub(crate) async fn load_active_short_link_and_session(
         return Err(AppError::BadRequest("Session expired".to_string()));
     }
 
+    if session.not_started_yet() {
+        return Err(AppError::BadRequest(
+            "This session hasn't started yet".to_string(),
+        ));
+    }
+
     Ok((short_link, session))
 }
 

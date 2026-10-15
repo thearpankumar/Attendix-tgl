@@ -55,6 +55,20 @@ pub struct RecurringSessionRule {
     /// on. `None` means "from today".
     #[serde(default)]
     pub start_date: Option<NaiveDate>,
+    /// `"normal"` (default) or `"exam"` -- the same split as
+    /// `CreateSessionRequest::session_type`. An exam rule's occurrences are
+    /// mentor-assigned, carry `college_name`, and start at fire time; their
+    /// location is optional.
+    #[serde(default = "default_normal_type")]
+    pub session_type: String,
+    /// Mentors assigned to every generated occurrence (`session_admins`).
+    #[serde(default)]
+    pub assigned_admin_ids: Vec<Uuid>,
+    pub college_name: Option<String>,
+}
+
+fn default_normal_type() -> String {
+    "normal".to_string()
 }
 
 fn default_attendance_kind() -> String {
