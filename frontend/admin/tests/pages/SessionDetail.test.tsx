@@ -316,6 +316,32 @@ describe('SessionDetail', () => {
     expect(screen.getByText('MIT')).toBeInTheDocument();
   });
 
+  it('shows present and absent students together on the All tab when a batch is attached', async () => {
+    (axios.get as any).mockImplementation((url: string) => {
+      if (url.includes('/absent')) {
+        return Promise.resolve({ data: [{ name: 'Missing Student', rollNumber: 'ROLL999', collegeName: 'MIT' }] });
+      }
+      return makeMockGet({ ...BASE_SESSION, batchId: { _id: 'b1', name: 'CS Batch' } }, [ATTENDANCE_RECORD])(url);
+    });
+    renderComponent();
+    // Default tab is All: attendee and absentee are in the same table.
+    expect(await screen.findByText('Jane Student')).toBeInTheDocument();
+    expect(await screen.findByText('Missing Student')).toBeInTheDocument();
+    expect(screen.getAllByTestId('absent-row')).toHaveLength(1);
+    expect(document.getElementById('tab-all')!.textContent).toContain('2');
+
+    // Verified tab stays attendance-only.
+    fireEvent.click(document.getElementById('tab-verified')!);
+    expect(screen.queryByText('Missing Student')).not.toBeInTheDocument();
+  });
+
+  it('does not list absentees on the All tab when no batch is attached', async () => {
+    (axios.get as any).mockImplementation(makeMockGet(BASE_SESSION, [ATTENDANCE_RECORD]));
+    renderComponent();
+    expect(await screen.findByText('Jane Student')).toBeInTheDocument();
+    expect(screen.queryByTestId('absent-row')).not.toBeInTheDocument();
+  });
+
   it('selects a row via checkbox, bulk-marks it verified, and clears the selection', async () => {
     const unverifiedRec = { ...ATTENDANCE_RECORD, verified: false };
     (axios.get as any).mockImplementation(makeMockGet(BASE_SESSION, [unverifiedRec]));

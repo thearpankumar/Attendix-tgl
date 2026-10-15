@@ -316,6 +316,7 @@ pub async fn get_session_devices(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AbsentStudent {
     pub name: String,
     pub roll_number: String,

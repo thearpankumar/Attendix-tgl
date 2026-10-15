@@ -665,3 +665,164 @@ async fn student_stays_locked_out_after_mentor_marks_present_or_absent() {
         "a student must never be able to self-submit over an existing (mentor-marked) row"
     );
 }
+
+/// Seeds a minimal self-submitted, present attendance row directly (mirrors
+/// the NOT-NULL columns `submit_attendance` populates).
+async fn seed_self_submitted_present(
+    db: &sqlx::PgPool,
+    session_id: &str,
+    name: &str,
+    roll_number: &str,
+) {
+    sqlx::query(
+        "INSERT INTO attendances ( \
+            id, session_id, student_name, roll_number, photo_url, photo_public_id, \
+            student_latitude, student_longitude, distance_from_location, verified, \
+            source, status, captured_at \
+         ) VALUES ($1, $2, $3, $4, 'https://example.com/p.jpg', 'photos/p', $5, $6, 0.0, true, \
+            'self_submitted', 'present', now())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::parse_str(session_id).unwrap())
+    .bind(name)
+    .bind(roll_number)
+    .bind(12.9716_f64)
+    .bind(77.5946_f64)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// Regression: a normal session with NO batch has an empty roster, and the
+/// mentor's roster view used to return zero students — so a student's
+/// self-submitted attendance was invisible to the assigned mentor. The
+/// roster must now list every attendee even without a batch.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn mentor_sees_attendance_in_session_without_batch() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("nobatch-super");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+    let (mentor_id, mentor_username) = create_mentor(&super_client, &app, "nobatch-mentor").await;
+    let (location_id, _batch_id) = seed_location_and_batch(&db, super_id, "UNUSED01").await;
+
+    let (status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "sessionType": "normal",
+                "locationId": location_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "durationMinutes": 30,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{session_body:?}");
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+
+    seed_self_submitted_present(&db, &session_id, "Walk In", "WALK001").await;
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+    let (status, roster) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/roster"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{roster:?}");
+    let students = roster["students"].as_array().unwrap();
+    assert_eq!(students.len(), 1, "no-batch attendee must be listed: {roster:?}");
+    assert_eq!(students[0]["rollNumber"], "WALK001");
+    assert_eq!(students[0]["status"], "present");
+    assert_eq!(students[0]["source"], "self_submitted");
+    assert_eq!(roster["summary"]["total"], 1);
+    assert_eq!(roster["summary"]["present"], 1);
+    assert_eq!(roster["summary"]["unmarked"], 0);
+}
+
+/// A session with a batch shows everyone in one combined list: roster
+/// students who attended (present), roster students who did not (unmarked),
+/// and an attendee who is not on the roster at all.
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn mentor_roster_combines_present_absent_and_off_roster() {
+    let (app, db) = create_test_app().await;
+
+    let super_username = unique("combo-super");
+    let super_id = seed_admin(
+        &db,
+        &super_username,
+        &format!("{}@example.com", super_username),
+        "super-password-123",
+        "super_admin",
+    )
+    .await;
+    let super_client = Client::login(&app, &super_username, "super-password-123").await;
+    let (mentor_id, mentor_username) = create_mentor(&super_client, &app, "combo-mentor").await;
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, "COMBO001").await;
+    sqlx::query(
+        "INSERT INTO students (id, batch_id, position, name, roll_number) VALUES ($1, $2, 1, 'Second', 'COMBO002')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(batch_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (status, session_body) = super_client
+        .mutate(
+            &app,
+            "POST",
+            "/api/admin/sessions",
+            serde_json::json!({
+                "sessionType": "normal",
+                "locationId": location_id.to_string(),
+                "batchId": batch_id.to_string(),
+                "assignedAdminIds": [mentor_id],
+                "durationMinutes": 30,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{session_body:?}");
+    let session_id = session_body["_id"].as_str().unwrap().to_string();
+
+    seed_self_submitted_present(&db, &session_id, "Test Student", "combo001").await;
+    seed_self_submitted_present(&db, &session_id, "Stranger", "OTHER999").await;
+
+    let mentor_client = Client::login(&app, &mentor_username, "mentor-password-123").await;
+    let (status, roster) = mentor_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/roster"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{roster:?}");
+    let students = roster["students"].as_array().unwrap();
+    assert_eq!(students.len(), 3, "{roster:?}");
+    let status_of = |roll: &str| {
+        students
+            .iter()
+            .find(|s| s["rollNumber"].as_str().unwrap().eq_ignore_ascii_case(roll))
+            .map(|s| s["status"].as_str().unwrap().to_string())
+    };
+    assert_eq!(status_of("COMBO001").as_deref(), Some("present"));
+    assert_eq!(status_of("COMBO002").as_deref(), Some("unmarked"));
+    assert_eq!(status_of("OTHER999").as_deref(), Some("present"));
+    assert_eq!(roster["summary"]["total"], 3);
+    assert_eq!(roster["summary"]["present"], 2);
+    assert_eq!(roster["summary"]["unmarked"], 1);
+
+    // The admin Absent tab / combined All view reads these as camelCase keys.
+    let (status, absent) = super_client
+        .get(&app, &format!("/api/admin/sessions/{session_id}/absent"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{absent:?}");
+    let absent = absent.as_array().unwrap();
+    assert_eq!(absent.len(), 1, "{absent:?}");
+    assert_eq!(absent[0]["rollNumber"], "COMBO002");
+}

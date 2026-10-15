@@ -13,6 +13,7 @@ import AdminSecurityReview from '../components/SecurityReview';
 import StudentBehaviorDialog from '../components/StudentBehaviorDialog';
 import StudentMonitoringDashboard from '../components/StudentMonitoringDashboard';
 import { downloadBlob } from '../utils/downloadBlob';
+import { absentRowsForTab, allTabCount } from '../utils/combinedAttendance';
 
 interface Session {
   _id: string;
@@ -150,6 +151,11 @@ const SessionDetail = () => {
     if (activeTab === 'verified')   return attendance.filter(a => a.verified);
     return attendance.filter(a => !a.verified);
   }, [attendance, activeTab]);
+
+  // A batch (roster) is optional; only then does absence mean anything and
+  // the "All" tab show present + absent students together.
+  const hasRoster = !!session?.batchId || !!stats?.hasRoster;
+  const absentRowsInTable = absentRowsForTab(activeTab, hasRoster, absentStudents);
 
   // ── Fetch ───────────────────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -784,7 +790,7 @@ const SessionDetail = () => {
             className="status-tabs"
             title={selectedIds.size > 0 ? 'Clear selection before switching tabs' : undefined}
           >
-            {(['all', 'verified', 'unverified', ...(session.batchId ? ['absent'] : [])] as ActiveTab[]).map(tab => (
+            {(['all', 'verified', 'unverified', ...(hasRoster ? ['absent'] : [])] as ActiveTab[]).map(tab => (
               <button
                 key={tab}
                 id={`tab-${tab}`}
@@ -795,7 +801,7 @@ const SessionDetail = () => {
               >
                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
                 <span className="tab-count">
-                  {tab === 'all' ? attendance.length : tab === 'verified' ? verifiedCount : tab === 'unverified' ? unverifiedCount : absentStudents.length}
+                  {tab === 'all' ? allTabCount(attendance.length, absentStudents.length, hasRoster) : tab === 'verified' ? verifiedCount : tab === 'unverified' ? unverifiedCount : absentStudents.length}
                 </span>
               </button>
             ))}
@@ -836,7 +842,7 @@ const SessionDetail = () => {
               </table>
             </div>
           )
-        ) : filteredAttendance.length === 0 ? (
+        ) : filteredAttendance.length === 0 && absentRowsInTable.length === 0 ? (
           <p style={{ padding: 'var(--space-6)' }}>
             {attendance.length === 0 ? 'No attendance records yet' : `No ${activeTab} records`}
           </p>
@@ -1002,6 +1008,29 @@ const SessionDetail = () => {
                     </tr>
                   );
                 })}
+                {/* "All" tab on a session with a batch: absent roster students
+                    listed together with the attendees, same columns. */}
+                {absentRowsInTable.map(student => (
+                  <tr key={`absent-${student.rollNumber}`} data-testid="absent-row">
+                    <td className="col-check" />
+                    <td style={{ fontWeight: 500 }}>{student.rollNumber}</td>
+                    <td>
+                      <span title={student.name} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {student.name}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td style={{ textAlign: 'center' }}>
+                      <Badge tone="danger">Absent</Badge>
+                    </td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td style={{ textAlign: 'center' }}>-</td>
+                    <td className="kebab-cell" />
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

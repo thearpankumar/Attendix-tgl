@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::{
     controllers::{
         fetch_roster_name, fetch_roster_students, find_roster_student, find_session_for_admin,
-        mentor_edit_window_closed, resolve_roster_source,
+        mentor_edit_window_closed, resolve_roster_source, RosterStudentRow,
     },
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
@@ -131,83 +131,110 @@ pub async fn get_session_roster(
         mentor_edit_window_hours: sys_config.session_config.mentor_edit_window_hours,
     };
 
-    // Legacy sessions created before batches were mandatory (or a normal
-    // session with no batch attached) have no roster to show — mirrors
-    // get_session_absent's existing `None => vec![]` fallback.
     let students = fetch_roster_students(&state.db, &source).await?;
-    if students.is_empty() {
-        return Ok(Json(RosterResponse {
-            session: session_info,
-            students: vec![],
-            summary: RosterSummary {
-                total: 0,
-                marked: 0,
-                present: 0,
-                absent: 0,
-                unmarked: 0,
-            },
-        }));
-    }
 
     let attendances: Vec<Attendance> =
-        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1")
+        sqlx::query_as("SELECT * FROM attendances WHERE session_id = $1 ORDER BY captured_at")
             .bind(session_id)
             .fetch_all(&state.db)
             .await?;
 
-    let by_roll: HashMap<String, &Attendance> = attendances
-        .iter()
-        .map(|a| (a.roll_number.to_uppercase(), a))
-        .collect();
-
-    let mut present = 0i64;
-    let mut absent = 0i64;
-
-    let roster: Vec<RosterStudent> = students
-        .into_iter()
-        .map(|s| {
-            let att = by_roll.get(&s.roll_number.to_uppercase());
-            let (status, source, marked_at) = match att {
-                Some(a) => {
-                    match a.status {
-                        AttendanceStatus::Present => present += 1,
-                        AttendanceStatus::Absent => absent += 1,
-                    }
-                    (
-                        status_label(a.status),
-                        Some(source_label(a.source)),
-                        Some(a.captured_at),
-                    )
-                }
-                None => ("unmarked", None, None),
-            };
-            RosterStudent {
-                student_id: s.id.to_string(),
-                roll_number: s.roll_number,
-                name: s.name,
-                college_name: s.college_name,
-                email: s.email,
-                status,
-                source,
-                marked_at,
-            }
-        })
-        .collect();
-
-    let total = roster.len() as i64;
-    let marked = present + absent;
+    // A session with no batch (or students who checked in without being on
+    // its roster) still has attendance a mentor must be able to see, so the
+    // list is roster students merged with any off-roster attendees rather
+    // than being empty whenever the roster is.
+    let (roster, summary) = build_roster_view(students, &attendances);
 
     Ok(Json(RosterResponse {
         session: session_info,
         students: roster,
-        summary: RosterSummary {
+        summary,
+    }))
+}
+
+/// Merges the batch roster with a session's attendance rows into the single
+/// combined present/absent/unmarked list the mentor apps render. Roster
+/// students come first (in roster order), followed by any attendee whose roll
+/// number is not on the roster (e.g. every attendee of a no-batch session).
+/// Off-roster rows are read-only for the mentor (`source` is never "manual"
+/// unless the mentor created it, and `mark_attendance_manual` only accepts
+/// roster students).
+fn build_roster_view(
+    students: Vec<RosterStudentRow>,
+    attendances: &[Attendance],
+) -> (Vec<RosterStudent>, RosterSummary) {
+    let by_roll: HashMap<String, &Attendance> = attendances
+        .iter()
+        .map(|a| (a.roll_number.to_uppercase(), a))
+        .collect();
+    let roster_rolls: std::collections::HashSet<String> = students
+        .iter()
+        .map(|s| s.roll_number.to_uppercase())
+        .collect();
+
+    let mut present = 0i64;
+    let mut absent = 0i64;
+    let mut count = |a: &Attendance| match a.status {
+        AttendanceStatus::Present => present += 1,
+        AttendanceStatus::Absent => absent += 1,
+    };
+
+    let mut roster: Vec<RosterStudent> = Vec::with_capacity(students.len());
+    for s in students {
+        let (status, source, marked_at) = match by_roll.get(&s.roll_number.to_uppercase()) {
+            Some(a) => {
+                count(a);
+                (
+                    status_label(a.status),
+                    Some(source_label(a.source)),
+                    Some(a.captured_at),
+                )
+            }
+            None => ("unmarked", None, None),
+        };
+        roster.push(RosterStudent {
+            student_id: s.id.to_string(),
+            roll_number: s.roll_number,
+            name: s.name,
+            college_name: s.college_name,
+            email: s.email,
+            status,
+            source,
+            marked_at,
+        });
+    }
+
+    let mut seen_extra = std::collections::HashSet::new();
+    for a in attendances {
+        let roll_upper = a.roll_number.to_uppercase();
+        if roster_rolls.contains(&roll_upper) || !seen_extra.insert(roll_upper) {
+            continue;
+        }
+        count(a);
+        roster.push(RosterStudent {
+            student_id: a.id.to_string(),
+            roll_number: a.roll_number.clone(),
+            name: a.student_name.clone(),
+            college_name: None,
+            email: None,
+            status: status_label(a.status),
+            source: Some(source_label(a.source)),
+            marked_at: Some(a.captured_at),
+        });
+    }
+
+    let total = roster.len() as i64;
+    let marked = present + absent;
+    (
+        roster,
+        RosterSummary {
             total,
             marked,
             present,
             absent,
             unmarked: total - marked,
         },
-    }))
+    )
 }
 
 #[derive(Debug, Deserialize)]
