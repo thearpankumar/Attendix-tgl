@@ -386,6 +386,24 @@ pub async fn find_session_for_admin(
     .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
 }
 
+/// Like `find_session_for_admin` but for *mutating* a session's definition:
+/// only the creating admin or a super-admin qualifies. A mentor merely
+/// *assigned* to a session may read and mark it, never rewrite its schedule
+/// (same scoping as delete / short-link / rule endpoints).
+async fn find_session_for_owner(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+    auth: &AuthenticatedAdmin,
+) -> Result<Session> {
+    sqlx::query_as("SELECT * FROM sessions WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)")
+        .bind(session_id)
+        .bind(&auth.role)
+        .bind(auth.id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
+}
+
 pub async fn create_session(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -962,7 +980,7 @@ pub async fn update_session_schedule(
     let session_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid session ID: {}", e)))?;
 
-    let session = find_session_for_admin(&state.db, session_id, &auth).await?;
+    let session = find_session_for_owner(&state.db, session_id, &auth).await?;
 
     // A session generated from a recurring rule anchors its same-day check
     // to the rule's timezone (the only timezone concept this schema has
@@ -1023,6 +1041,16 @@ pub async fn update_session_schedule(
                 ));
             }
             schedule_anchor + chrono::Duration::minutes(minutes as i64)
+        }
+        // Moving the start without naming a new duration keeps the existing
+        // attendance window length and slides it with the start. Leaving
+        // `expires_at` alone here used to strand it before the new start,
+        // leaving the session permanently unmarkable.
+        None if payload.starts_at.is_some() => {
+            let old_anchor = session.starts_at.unwrap_or(session.created_at);
+            let window =
+                (session.expires_at - old_anchor).max(chrono::Duration::minutes(5));
+            schedule_anchor + window
         }
         None => session.expires_at,
     };

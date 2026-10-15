@@ -2,6 +2,7 @@
 mod test_db;
 
 mod audit_log_tests;
+mod authz_validation_tests;
 mod audit_regression_tests;
 mod batch_lifecycle_tests;
 mod delete_integrity_tests;

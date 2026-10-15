@@ -84,39 +84,56 @@ async fn update_config(
 ) -> Result<impl axum::response::IntoResponse> {
     use chrono::Utc;
 
+    // System-wide configuration (rate limits, lockout, GPS/photo thresholds,
+    // session windows) affects every user, so — like `toggle_dev_bypass` —
+    // only a super-admin may change it. Mentors may still read it.
+    auth.require_role(crate::constants::ROLE_SUPER_ADMIN)?;
+
     // Merge onto the persisted config so `dev_bypass_enabled` survives
     // untouched and omitted sections are preserved.
     let mut current = SystemConfig::load(&state.db)
         .await?
         .unwrap_or_else(SystemConfig::default);
 
+    let mut updated_sections: Vec<&str> = Vec::new();
     if let Some(v) = payload.gps_validation {
         current.gps_validation = v;
+        updated_sections.push("gpsValidation");
     }
     if let Some(v) = payload.emulator_detection {
         current.emulator_detection = v;
+        updated_sections.push("emulatorDetection");
     }
     if let Some(v) = payload.trust_score {
         current.trust_score = v;
+        updated_sections.push("trustScore");
     }
     if let Some(v) = payload.rate_limits {
         current.rate_limits = v;
+        updated_sections.push("rateLimits");
     }
     if let Some(v) = payload.webauthn_config {
         current.webauthn_config = v;
+        updated_sections.push("webauthnConfig");
     }
     if let Some(v) = payload.photo_verification {
         current.photo_verification = v;
+        updated_sections.push("photoVerification");
     }
     if let Some(v) = payload.session_config {
         current.session_config = v;
+        updated_sections.push("sessionConfig");
     }
     if let Some(v) = payload.lockout_config {
         current.lockout_config = v;
+        updated_sections.push("lockoutConfig");
     }
     if let Some(v) = payload.attendance_config {
         current.attendance_config = v;
+        updated_sections.push("attendanceConfig");
     }
+
+    current.validate().map_err(AppError::BadRequest)?;
 
     current.updated_by = Some(auth.id);
     current.updated_at = Utc::now();
@@ -125,6 +142,22 @@ async fn update_config(
 
     // Flush in-memory hot-reload cache
     state.set_system_config(saved.clone()).await;
+
+    // Detective control, not a gate: a failure to record never fails the
+    // request (same as dev_bypass_toggled below).
+    if let Err(e) = crate::models::record_audit_event(
+        &state.db,
+        Some(auth.id),
+        "system_config_updated",
+        serde_json::json!({
+            "sections": updated_sections,
+        }),
+        None,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "Failed to record audit log entry for system_config_updated");
+    }
 
     Ok(Json(serde_json::json!({
         "message": "System configuration saved successfully",

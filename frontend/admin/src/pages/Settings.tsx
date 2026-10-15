@@ -474,7 +474,11 @@ const Settings = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await axios.put('/api/config', config);
+      // GET returns bookkeeping fields (and the dev-bypass flag, which has its
+      // own password-confirmed endpoint) that PUT rejects as unknown fields.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { id, devBypassEnabled, updatedBy, updatedAt, ...editable } = config as SystemConfig & Record<string, unknown>;
+      const res = await axios.put('/api/config', editable);
       setSaved(res.data.config ?? config);
       toast.success('Settings saved successfully!');
     } catch (err: unknown) {

@@ -221,6 +221,176 @@ impl SystemConfig {
         })
     }
 
+    /// Range-checks every operator-editable value. Bounds are deliberately
+    /// wide (they only exist to reject nonsense such as negative windows,
+    /// NaN, or thresholds outside 0..=1) and never tighter than what the
+    /// admin Settings page's inputs allow. Returns the first violation as a
+    /// message suitable for a 400 response.
+    pub fn validate(&self) -> Result<(), String> {
+        fn check_f64(name: &str, v: f64, min: f64, max: f64) -> Result<(), String> {
+            if v.is_finite() && (min..=max).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} must be between {min} and {max}"))
+            }
+        }
+        fn check_i64(name: &str, v: i64, min: i64, max: i64) -> Result<(), String> {
+            if (min..=max).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} must be between {min} and {max}"))
+            }
+        }
+
+        let g = &self.gps_validation;
+        check_f64(
+            "gpsValidation.accuracyVerySuspicious",
+            g.accuracy_very_suspicious,
+            0.1,
+            100_000.0,
+        )?;
+        check_f64(
+            "gpsValidation.accuracySuspicious",
+            g.accuracy_suspicious,
+            1.0,
+            100_000.0,
+        )?;
+        check_f64(
+            "gpsValidation.speedThreshold",
+            g.speed_threshold,
+            0.0,
+            10_000.0,
+        )?;
+        check_i64(
+            "gpsValidation.timestampDriftMax",
+            g.timestamp_drift_max,
+            0,
+            86_400_000,
+        )?;
+        check_f64(
+            "gpsValidation.positionJumpThreshold",
+            g.position_jump_threshold,
+            0.0,
+            10_000_000.0,
+        )?;
+        check_f64(
+            "gpsValidation.geofenceMaxDistanceM",
+            g.geofence_max_distance_m,
+            1.0,
+            1_000_000.0,
+        )?;
+
+        let t = &self.trust_score;
+        check_f64("trustScore.anomalyPenalty", t.anomaly_penalty, 0.0, 100.0)?;
+        check_f64(
+            "trustScore.safeReviewBonus",
+            t.safe_review_bonus,
+            0.0,
+            100.0,
+        )?;
+
+        let r = &self.rate_limits;
+        for (name, window, max) in [
+            (
+                "admin",
+                r.admin_window_secs,
+                u64::from(r.admin_max_requests),
+            ),
+            (
+                "student",
+                r.student_window_secs,
+                u64::from(r.student_max_requests),
+            ),
+            (
+                "login",
+                r.login_window_secs,
+                u64::from(r.login_max_requests),
+            ),
+            (
+                "clientLog",
+                r.client_log_window_secs,
+                u64::from(r.client_log_max_requests),
+            ),
+            (
+                "registration",
+                r.registration_window_secs,
+                u64::from(r.registration_max_requests),
+            ),
+        ] {
+            if !(1..=86_400).contains(&window) {
+                return Err(format!(
+                    "rateLimits.{name}WindowSecs must be between 1 and 86400"
+                ));
+            }
+            if !(1..=1_000_000).contains(&max) {
+                return Err(format!(
+                    "rateLimits.{name}MaxRequests must be between 1 and 1000000"
+                ));
+            }
+        }
+
+        check_i64(
+            "webauthnConfig.gracePeriodMinutes",
+            self.webauthn_config.grace_period_minutes,
+            0,
+            1440,
+        )?;
+
+        let p = &self.photo_verification;
+        check_f64(
+            "photoVerification.similarityThreshold",
+            f64::from(p.similarity_threshold),
+            0.0,
+            1.0,
+        )?;
+        check_f64(
+            "photoVerification.highSimilarityThreshold",
+            f64::from(p.high_similarity_threshold),
+            0.0,
+            1.0,
+        )?;
+        if p.similarity_threshold > p.high_similarity_threshold {
+            return Err(
+                "photoVerification.similarityThreshold cannot exceed highSimilarityThreshold"
+                    .to_string(),
+            );
+        }
+
+        let s = &self.session_config;
+        if !(1..=525_600).contains(&s.expire_minutes) {
+            return Err("sessionConfig.expireMinutes must be between 1 and 525600".to_string());
+        }
+        check_i64(
+            "sessionConfig.manualMarkEarlyWindowMinutes",
+            s.manual_mark_early_window_minutes,
+            0,
+            1440,
+        )?;
+        check_i64(
+            "sessionConfig.mentorEditWindowHours",
+            s.mentor_edit_window_hours,
+            1,
+            8760,
+        )?;
+
+        let l = &self.lockout_config;
+        if !(1..=1000).contains(&l.max_login_attempts) {
+            return Err("lockoutConfig.maxLoginAttempts must be between 1 and 1000".to_string());
+        }
+        if !(1..=525_600).contains(&l.lockout_duration_minutes) {
+            return Err(
+                "lockoutConfig.lockoutDurationMinutes must be between 1 and 525600".to_string(),
+            );
+        }
+
+        if !(1..=1000).contains(&self.attendance_config.max_attendance_attempts) {
+            return Err(
+                "attendanceConfig.maxAttendanceAttempts must be between 1 and 1000".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Loads the singleton config row, if one exists.
     pub async fn load(pool: &sqlx::PgPool) -> sqlx::Result<Option<SystemConfig>> {
         sqlx::query_as::<_, SystemConfig>(

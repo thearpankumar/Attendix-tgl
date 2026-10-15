@@ -34,8 +34,9 @@ pub struct WebAuthnCredentialResponse {
 }
 
 /// Confirms the calling admin may manage this student's credential: any
-/// super-admin may, for any student; a mentor only for one on the roster of
-/// a batch they created themselves.
+/// super-admin may, for any student (including an off-roster one, which
+/// `get_credentials`/stats already show them — see the comment there); a
+/// mentor only for one on the roster of a batch they created themselves.
 ///
 /// WebAuthn credentials belong to students, not admins, so the ownership chain
 /// runs admin -> batch -> student. Without this check any admin could reset,
@@ -45,15 +46,21 @@ async fn assert_student_owned(
     roll_number: &str,
     admin: &AuthenticatedAdmin,
 ) -> Result<()> {
+    // Same short-circuit as the listing endpoints: roster membership gates a
+    // mentor's access, never a super-admin's. Without it a super-admin saw an
+    // off-roster passkey in the list yet got "Student not found" on
+    // suspend/unsuspend/reset of that very row.
+    if admin.role == crate::constants::ROLE_SUPER_ADMIN {
+        return Ok(());
+    }
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
              SELECT 1 FROM students st \
              JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
-             WHERE upper(st.roll_number) = upper($1) AND ($2 = 'super_admin' OR b.created_by = $3) \
+             WHERE upper(st.roll_number) = upper($1) AND b.created_by = $2 \
          )",
     )
     .bind(roll_number)
-    .bind(&admin.role)
     .bind(admin.id)
     .fetch_one(pool)
     .await?;
@@ -63,6 +70,10 @@ async fn assert_student_owned(
     } else {
         Err(AppError::NotFound("Student not found".to_string()))
     }
+}
+
+fn no_credential() -> AppError {
+    AppError::NotFound("No passkey is enrolled for this student".to_string())
 }
 
 pub async fn reset_credential(
@@ -102,19 +113,26 @@ pub async fn reset_credential(
 
     assert_student_owned(&state.db, &payload.student_id, &auth).await?;
 
-    let previous_credential_id: Option<String> =
-        sqlx::query_scalar("SELECT credential_id FROM webauthn_credentials WHERE student_id = $1")
-            .bind(&payload.student_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let mut tx = state.db.begin().await?;
+
+    // A reset of a student with no enrolled passkey used to "succeed" (and
+    // log a re-enrollment entry for nothing).
+    let previous_credential_id: String = sqlx::query_scalar(
+        "SELECT credential_id FROM webauthn_credentials WHERE upper(student_id) = upper($1)",
+    )
+    .bind(&payload.student_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(no_credential)?;
+    let previous_credential_id = Some(previous_credential_id);
 
     // Update credential with reset metadata instead of deleting
     sqlx::query(
-        "UPDATE webauthn_credentials SET reset_at = now(), reset_by = $1 WHERE student_id = $2",
+        "UPDATE webauthn_credentials SET reset_at = now(), reset_by = $1 WHERE upper(student_id) = upper($2)",
     )
     .bind(auth.id)
     .bind(&payload.student_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -127,8 +145,9 @@ pub async fn reset_credential(
     .bind(&payload.reason)
     .bind(&previous_credential_id)
     .bind(WebAuthnReenrollmentAction::Reset)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Json(
         serde_json::json!({ "success": true, "message": "Credential reset successfully" }),
@@ -148,16 +167,20 @@ pub async fn suspend_credential(
 ) -> Result<impl IntoResponse> {
     assert_student_owned(&state.db, &payload.student_id, &auth).await?;
 
-    sqlx::query(
+    let mut tx = state.db.begin().await?;
+    let updated = sqlx::query(
         "UPDATE webauthn_credentials \
          SET is_suspended = true, suspended_reason = $1, suspended_at = now(), suspended_by = $2 \
-         WHERE student_id = $3",
+         WHERE upper(student_id) = upper($3)",
     )
     .bind(&payload.reason)
     .bind(auth.id)
     .bind(&payload.student_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    if updated.rows_affected() == 0 {
+        return Err(no_credential());
+    }
 
     sqlx::query(
         "INSERT INTO webauthn_reenrollment_logs \
@@ -168,10 +191,14 @@ pub async fn suspend_credential(
     .bind(auth.id)
     .bind(&payload.reason)
     .bind(WebAuthnReenrollmentAction::Suspend)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    // The admin UI toasts `res.data.message`.
+    Ok(Json(
+        serde_json::json!({ "success": true, "message": "Credential suspended successfully" }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,14 +214,18 @@ pub async fn unsuspend_credential(
 ) -> Result<impl IntoResponse> {
     assert_student_owned(&state.db, &payload.student_id, &auth).await?;
 
-    sqlx::query(
+    let mut tx = state.db.begin().await?;
+    let updated = sqlx::query(
         "UPDATE webauthn_credentials \
          SET is_suspended = false, suspended_reason = NULL, suspended_at = NULL \
-         WHERE student_id = $1",
+         WHERE upper(student_id) = upper($1)",
     )
     .bind(&payload.student_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    if updated.rows_affected() == 0 {
+        return Err(no_credential());
+    }
 
     sqlx::query(
         "INSERT INTO webauthn_reenrollment_logs \
@@ -205,10 +236,13 @@ pub async fn unsuspend_credential(
     .bind(auth.id)
     .bind(&payload.reason)
     .bind(WebAuthnReenrollmentAction::Unsuspend)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "message": "Credential unsuspended successfully" }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

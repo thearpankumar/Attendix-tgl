@@ -79,7 +79,7 @@ function WebAuthnCredentials() {
         student_id: selectedStudent?.studentId,
         reason: reason.trim()
       });
-      toast.success(res.data.message); 
+      toast.success(res.data.message || 'Credential reset successfully'); 
       setShowResetModal(false); 
       setSelectedStudent(null); 
       setReason(''); 
@@ -100,7 +100,7 @@ function WebAuthnCredentials() {
         student_id: selectedStudent?.studentId,
         reason: reason.trim()
       });
-      toast.success(res.data.message); 
+      toast.success(res.data.message || (suspend ? 'Credential suspended' : 'Credential unsuspended')); 
       setShowSuspendModal(false); 
       setSelectedStudent(null); 
       setReason(''); 
