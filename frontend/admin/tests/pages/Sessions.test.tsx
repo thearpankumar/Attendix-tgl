@@ -485,6 +485,61 @@ describe('Sessions', () => {
     expect(container.querySelectorAll('input[type="time"]').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('"Schedule for later" creates a one-time rule with runOnceDate and no daysOfWeek', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    (axios.post as any).mockResolvedValue({ data: { ...RULE, runOnceDate: '2099-01-02' } });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
+    fireEvent.click(screen.getByText('Schedule for later'));
+    // Cron-only pickers stay hidden.
+    expect(screen.queryByText(/Days of week/i)).not.toBeInTheDocument();
+    fireEvent.change(container.querySelector('#session-schedule-date')!, { target: { value: '2099-01-02' } });
+    fireEvent.change(container.querySelector('#session-schedule-time')!, { target: { value: '10:15' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/admin/recurring-rules', expect.objectContaining({
+        locationId: 'loc1',
+        runOnceDate: '2099-01-02',
+        runTimesLocal: ['10:15'],
+        daysOfWeek: undefined,
+      }));
+    });
+    expect(axios.post).not.toHaveBeenCalledWith('/api/admin/sessions', expect.anything());
+  });
+
+  it('"Schedule for later" rejects a date/time in the past without calling the API', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.change(screen.getByLabelText(/^Location$/i), { target: { value: 'loc1' } });
+    fireEvent.click(screen.getByText('Schedule for later'));
+    fireEvent.change(container.querySelector('#session-schedule-date')!, { target: { value: '2000-01-01' } });
+    fireEvent.change(container.querySelector('#session-schedule-time')!, { target: { value: '10:15' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => expect(axios.post).not.toHaveBeenCalledWith('/api/admin/recurring-rules', expect.anything()));
+  });
+
+  it('cron start date defaults to today (min = today) and shows the first run', async () => {
+    (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Create Session')[0]).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Create Session')[0]);
+    fireEvent.click(screen.getByText(/Cron job \(recurring\)/i));
+    const input = container.querySelector('#session-start-date') as HTMLInputElement;
+    expect(input.value).toBe(input.min);
+    expect(input.min).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(screen.getByText(/First run:/i)).toBeInTheDocument();
+  });
+
   it('"Add another time" adds a second time-of-day input', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ locations: [LOCATION] }));
     const { container } = renderComponent();

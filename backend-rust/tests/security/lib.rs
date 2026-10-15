@@ -9,6 +9,7 @@ mod extension_pairing_tests;
 mod flag_queue_tests;
 mod intern_monitoring_tests;
 mod normal_session_mentor_tests;
+mod one_time_schedule_tests;
 mod recurring_rule_shortlink_tests;
 mod recurring_scheduler_tests;
 mod route_auth_tests;

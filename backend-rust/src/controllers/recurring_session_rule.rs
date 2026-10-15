@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     Extension,
 };
-use chrono::{DateTime, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,8 +30,20 @@ pub struct CreateRecurringRuleRequest {
     pub run_times_local: Vec<String>,
     /// IANA timezone name, e.g. "Asia/Kolkata".
     pub timezone: String,
-    /// 0=Sunday..6=Saturday — at least one required.
+    /// 0=Sunday..6=Saturday — at least one required for a recurring rule;
+    /// ignored (and may be omitted) for a one-time schedule.
+    #[serde(default)]
     pub days_of_week: Vec<i16>,
+    /// "YYYY-MM-DD" — first local day (in `timezone`) a recurring rule may
+    /// fire on. Omitted means today. Must not be in the past. A run time
+    /// already gone by on that first day is skipped (no backfill), so the
+    /// first occurrence is the next matching slot. Not allowed together
+    /// with `runOnceDate`.
+    pub start_date: Option<String>,
+    /// "YYYY-MM-DD" — makes this a one-time schedule: the rule creates one
+    /// session on this local date (in `timezone`) at the single entry of
+    /// `runTimesLocal`, then deactivates itself. Must be in the future.
+    pub run_once_date: Option<String>,
     pub shortlink_mode: Option<String>,
     pub custom_short_code: Option<String>,
     pub existing_short_code: Option<String>,
@@ -98,10 +110,15 @@ pub struct RecurringRuleResponse {
     pub monitoring_enabled: bool,
     pub class_duration_minutes: Option<i32>,
     pub session_kind: String,
+    pub start_date: Option<String>,
+    pub run_once_date: Option<String>,
+    /// True for a one-time schedule that has already fired.
+    pub completed: bool,
 }
 
 impl From<RecurringSessionRule> for RecurringRuleResponse {
     fn from(r: RecurringSessionRule) -> Self {
+        let completed = r.is_one_time() && r.last_generated_at.is_some();
         Self {
             id: r.id.to_string(),
             location_id: r.location_id.map(|id| id.to_string()),
@@ -126,6 +143,9 @@ impl From<RecurringSessionRule> for RecurringRuleResponse {
             monitoring_enabled: r.monitoring_enabled,
             class_duration_minutes: r.class_duration_minutes,
             session_kind: r.session_kind,
+            start_date: r.start_date.map(|d| d.to_string()),
+            run_once_date: r.run_once_date.map(|d| d.to_string()),
+            completed,
         }
     }
 }
@@ -142,6 +162,67 @@ fn parse_run_times(raw: &[String]) -> Result<Vec<NaiveTime>> {
                 .map_err(|_| AppError::BadRequest(format!("Invalid time '{}': expected HH:MM", s)))
         })
         .collect()
+}
+
+fn parse_date(raw: &str, field: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map_err(|_| AppError::BadRequest(format!("Invalid {}: expected YYYY-MM-DD", field)))
+}
+
+/// Parses the optional `startDate` / `runOnceDate` pair and checks them
+/// against "today" in the rule's own timezone. Returns `(start_date,
+/// run_once_date)`. A start date of today is allowed; one in the past, or
+/// more than a year out, is rejected.
+fn parse_schedule_dates(
+    start_date: Option<&str>,
+    run_once_date: Option<&str>,
+    timezone: &str,
+) -> Result<(Option<NaiveDate>, Option<NaiveDate>)> {
+    let tz: chrono_tz::Tz = timezone
+        .parse()
+        .map_err(|_| AppError::BadRequest(format!("Unknown timezone: {}", timezone)))?;
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    let max = today + chrono::Duration::days(366);
+
+    let start_date = start_date
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| parse_date(s, "startDate"))
+        .transpose()?;
+    let run_once_date = run_once_date
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| parse_date(s, "runOnceDate"))
+        .transpose()?;
+
+    if start_date.is_some() && run_once_date.is_some() {
+        return Err(AppError::BadRequest(
+            "startDate cannot be combined with runOnceDate".to_string(),
+        ));
+    }
+    if let Some(d) = start_date {
+        if d < today {
+            return Err(AppError::BadRequest(
+                "startDate cannot be in the past".to_string(),
+            ));
+        }
+        if d > max {
+            return Err(AppError::BadRequest(
+                "startDate must be within the next year".to_string(),
+            ));
+        }
+    }
+    if let Some(d) = run_once_date {
+        if d < today {
+            return Err(AppError::BadRequest(
+                "The scheduled date cannot be in the past".to_string(),
+            ));
+        }
+        if d > max {
+            return Err(AppError::BadRequest(
+                "The scheduled date must be within the next year".to_string(),
+            ));
+        }
+    }
+    Ok((start_date, run_once_date))
 }
 
 fn validate_days_of_week(days: &[i16]) -> Result<()> {
@@ -208,8 +289,29 @@ pub async fn create_recurring_rule(
 
     validate_duration(payload.duration_minutes)?;
     let run_times_local = parse_run_times(&payload.run_times_local)?;
-    validate_days_of_week(&payload.days_of_week)?;
     validate_timezone(&payload.timezone)?;
+    let (start_date, run_once_date) = parse_schedule_dates(
+        payload.start_date.as_deref(),
+        payload.run_once_date.as_deref(),
+        &payload.timezone,
+    )?;
+    // A one-time schedule fires on exactly one date at exactly one time, so
+    // `days_of_week` is derived from that date rather than taken from the
+    // client (the column still needs >= 1 entry).
+    let days_of_week: Vec<i16> = match run_once_date {
+        Some(date) => {
+            if run_times_local.len() != 1 {
+                return Err(AppError::BadRequest(
+                    "A one-time schedule takes exactly one time of day".to_string(),
+                ));
+            }
+            vec![date.weekday().num_days_from_sunday() as i16]
+        }
+        None => {
+            validate_days_of_week(&payload.days_of_week)?;
+            payload.days_of_week.clone()
+        }
+    };
     // Intern-monitoring rules always have monitoring on — that's the entire
     // point of the kind — and therefore always need a class duration, which
     // becomes the tracked work-hours span for each generated occurrence.
@@ -364,11 +466,13 @@ pub async fn create_recurring_rule(
         }
     };
 
-    let next_run_at = RecurringSessionRule::compute_next_run_at(
-        &payload.days_of_week,
+    let next_run_at = RecurringSessionRule::compute_next_run_at_bounded(
+        &days_of_week,
         &run_times_local,
         &payload.timezone,
         Utc::now(),
+        start_date,
+        run_once_date,
     )
     .map_err(AppError::BadRequest)?;
 
@@ -376,8 +480,8 @@ pub async fn create_recurring_rule(
         "INSERT INTO recurring_session_rules \
          (id, location_id, batch_id, description, duration_minutes, run_times_local, timezone, days_of_week, \
           is_active, created_by, created_at, updated_at, locked_short_code, next_run_at, \
-          monitoring_enabled, class_duration_minutes, session_kind) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11, $12, $13, $14) \
+          monitoring_enabled, class_duration_minutes, session_kind, start_date, run_once_date) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, now(), now(), $10, $11, $12, $13, $14, $15, $16) \
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -387,13 +491,15 @@ pub async fn create_recurring_rule(
     .bind(payload.duration_minutes)
     .bind(&run_times_local)
     .bind(&payload.timezone)
-    .bind(&payload.days_of_week)
+    .bind(&days_of_week)
     .bind(auth.id)
     .bind(&locked_short_code)
     .bind(next_run_at)
     .bind(payload.monitoring_enabled)
     .bind(payload.class_duration_minutes)
     .bind(&session_kind)
+    .bind(start_date)
+    .bind(run_once_date)
     .fetch_one(&state.db)
     .await?;
 
@@ -446,6 +552,11 @@ pub async fn update_recurring_rule(
         .map_err(|e| AppError::BadRequest(format!("Invalid rule ID: {}", e)))?;
 
     let existing = find_rule_for_admin(&state.db, rule_id, &auth).await?;
+    if existing.is_one_time() && existing.last_generated_at.is_some() {
+        return Err(AppError::BadRequest(
+            "This one-time schedule has already run and can't be edited".to_string(),
+        ));
+    }
 
     // `session_kind` is immutable after creation (not accepted by this
     // request type at all), so an intern-monitoring rule's location stays
@@ -494,11 +605,18 @@ pub async fn update_recurring_rule(
     // Any schedule-affecting field recomputes next_run_at from now — an
     // edit should never retroactively "owe" an occurrence that would have
     // fired under the old schedule.
-    let next_run_at = RecurringSessionRule::compute_next_run_at(
+    if existing.is_one_time() && run_times_local.len() != 1 {
+        return Err(AppError::BadRequest(
+            "A one-time schedule takes exactly one time of day".to_string(),
+        ));
+    }
+    let next_run_at = RecurringSessionRule::compute_next_run_at_bounded(
         &days_of_week,
         &run_times_local,
         &timezone,
         Utc::now(),
+        existing.start_date,
+        existing.run_once_date,
     )
     .map_err(AppError::BadRequest)?;
 
@@ -560,11 +678,18 @@ async fn set_rule_active(
     let existing = find_rule_for_admin(&state.db, rule_id, auth).await?;
 
     if active {
-        let next_run_at = RecurringSessionRule::compute_next_run_at(
+        if existing.is_one_time() && existing.last_generated_at.is_some() {
+            return Err(AppError::BadRequest(
+                "This one-time schedule has already run and can't be resumed".to_string(),
+            ));
+        }
+        let next_run_at = RecurringSessionRule::compute_next_run_at_bounded(
             &existing.days_of_week,
             &existing.run_times_local,
             &existing.timezone,
             Utc::now(),
+            existing.start_date,
+            existing.run_once_date,
         )
         .map_err(AppError::BadRequest)?;
 

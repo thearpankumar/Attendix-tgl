@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -46,6 +46,15 @@ pub struct RecurringSessionRule {
     /// (never accepted by `UpdateRecurringRuleRequest`).
     #[serde(default = "default_attendance_kind")]
     pub session_kind: String,
+    /// Set for a one-time schedule: the single local calendar date (in
+    /// `timezone`) the rule fires on. After it fires the rule deactivates
+    /// itself. `None` for an ordinary recurring rule.
+    #[serde(default)]
+    pub run_once_date: Option<NaiveDate>,
+    /// First local calendar day (in `timezone`) a recurring rule may fire
+    /// on. `None` means "from today".
+    #[serde(default)]
+    pub start_date: Option<NaiveDate>,
 }
 
 fn default_attendance_kind() -> String {
@@ -73,12 +82,19 @@ impl RecurringSessionRule {
     /// always finds a match even when every allowed day's times for the
     /// current week have already passed.
     pub fn next_occurrence_after(&self, after: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
-        Self::compute_next_run_at(
+        Self::compute_next_run_at_bounded(
             &self.days_of_week,
             &self.run_times_local,
             &self.timezone,
             after,
+            self.start_date,
+            self.run_once_date,
         )
+    }
+
+    /// True for a one-time schedule (fires once, then deactivates).
+    pub fn is_one_time(&self) -> bool {
+        self.run_once_date.is_some()
     }
 
     /// Free-function form of the above, usable before a `RecurringSessionRule`
@@ -90,17 +106,50 @@ impl RecurringSessionRule {
         timezone: &str,
         after: DateTime<Utc>,
     ) -> Result<DateTime<Utc>, String> {
+        Self::compute_next_run_at_bounded(
+            days_of_week,
+            run_times_local,
+            timezone,
+            after,
+            None,
+            None,
+        )
+    }
+
+    /// Like [`Self::compute_next_run_at`], additionally honouring:
+    ///
+    /// - `start_date`: no occurrence earlier than this local calendar day
+    ///   (`None` = from today). A run time already past on the first
+    ///   eligible day is simply skipped (never backfilled), so "start today"
+    ///   with a time that has gone by yields the next matching slot.
+    /// - `run_once_date`: a one-time schedule -- only that exact local date
+    ///   is considered, and `days_of_week` is ignored. Errors if that
+    ///   instant is not strictly after `after`.
+    pub fn compute_next_run_at_bounded(
+        days_of_week: &[i16],
+        run_times_local: &[NaiveTime],
+        timezone: &str,
+        after: DateTime<Utc>,
+        start_date: Option<NaiveDate>,
+        run_once_date: Option<NaiveDate>,
+    ) -> Result<DateTime<Utc>, String> {
         let tz: chrono_tz::Tz = timezone
             .parse()
             .map_err(|_| format!("Unknown timezone: {}", timezone))?;
 
-        let start_date = after.with_timezone(&tz).date_naive();
+        let today = after.with_timezone(&tz).date_naive();
+        let start_date = match (run_once_date, start_date) {
+            (Some(d), _) => d,
+            (None, Some(d)) => d.max(today),
+            (None, None) => today,
+        };
+        let scan_days: i64 = if run_once_date.is_some() { 1 } else { 8 };
         let mut candidates: Vec<DateTime<Utc>> = Vec::new();
 
-        for day_offset in 0..8i64 {
+        for day_offset in 0..scan_days {
             let candidate_date = start_date + Duration::days(day_offset);
             let weekday_num = candidate_date.weekday().num_days_from_sunday() as i16;
-            if !days_of_week.contains(&weekday_num) {
+            if run_once_date.is_none() && !days_of_week.contains(&weekday_num) {
                 continue;
             }
             for &time in run_times_local {
@@ -121,11 +170,127 @@ impl RecurringSessionRule {
         }
 
         candidates.into_iter().min().ok_or_else(|| {
+            if run_once_date.is_some() {
+                return "The scheduled date and time must be in the future".to_string();
+            }
             format!(
                 "Could not find a next occurrence within 8 days \
                  (days_of_week={:?}, run_times_local={:?}, timezone={})",
                 days_of_week, run_times_local, timezone
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+    fn t(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+    const ALL: [i16; 7] = [0, 1, 2, 3, 4, 5, 6];
+
+    #[test]
+    fn first_occurrence_is_today_when_time_not_yet_passed_in_ist() {
+        // 2026-10-16 08:00 UTC == 13:30 IST; 15:00 IST is still ahead today.
+        let next = RecurringSessionRule::compute_next_run_at(
+            &ALL,
+            &[t(15, 0)],
+            "Asia/Kolkata",
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(next, utc("2026-10-16T09:30:00Z"));
+    }
+
+    #[test]
+    fn time_already_passed_today_rolls_to_next_matching_day_without_backfill() {
+        // 13:30 IST, rule at 09:00 IST: today's slot is gone -> tomorrow.
+        let next = RecurringSessionRule::compute_next_run_at(
+            &ALL,
+            &[t(9, 0)],
+            "Asia/Kolkata",
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(next, utc("2026-10-17T03:30:00Z"));
+    }
+
+    #[test]
+    fn ist_date_boundary_uses_local_today_not_utc_today() {
+        // 20:00 UTC on the 15th is already 01:30 IST on the 16th; a 03:00 IST
+        // rule fires on the 16th (local today), i.e. 21:30 UTC on the 15th.
+        let next = RecurringSessionRule::compute_next_run_at(
+            &ALL,
+            &[t(3, 0)],
+            "Asia/Kolkata",
+            utc("2026-10-15T20:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(next, utc("2026-10-15T21:30:00Z"));
+    }
+
+    #[test]
+    fn start_date_defers_first_occurrence_and_today_is_allowed() {
+        let after = utc("2026-10-16T08:00:00Z");
+        let today = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let same = RecurringSessionRule::compute_next_run_at_bounded(
+            &ALL,
+            &[t(15, 0)],
+            "Asia/Kolkata",
+            after,
+            Some(today),
+            None,
+        )
+        .unwrap();
+        assert_eq!(same, utc("2026-10-16T09:30:00Z"));
+
+        let later = RecurringSessionRule::compute_next_run_at_bounded(
+            &ALL,
+            &[t(15, 0)],
+            "Asia/Kolkata",
+            after,
+            Some(NaiveDate::from_ymd_opt(2026, 10, 20).unwrap()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(later, utc("2026-10-20T09:30:00Z"));
+    }
+
+    #[test]
+    fn one_time_fires_exactly_on_its_date_and_ignores_days_of_week() {
+        let after = utc("2026-10-16T08:00:00Z");
+        let date = NaiveDate::from_ymd_opt(2026, 10, 18).unwrap();
+        // days_of_week deliberately excludes the target weekday.
+        let next = RecurringSessionRule::compute_next_run_at_bounded(
+            &[1],
+            &[t(10, 0)],
+            "Asia/Kolkata",
+            after,
+            None,
+            Some(date),
+        )
+        .unwrap();
+        assert_eq!(next, utc("2026-10-18T04:30:00Z"));
+    }
+
+    #[test]
+    fn one_time_in_the_past_is_an_error() {
+        let after = utc("2026-10-16T08:00:00Z"); // 13:30 IST
+        let today = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let err = RecurringSessionRule::compute_next_run_at_bounded(
+            &[5],
+            &[t(9, 0)],
+            "Asia/Kolkata",
+            after,
+            None,
+            Some(today),
+        )
+        .unwrap_err();
+        assert!(err.contains("future"), "{err}");
     }
 }

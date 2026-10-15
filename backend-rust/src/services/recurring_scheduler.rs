@@ -139,6 +139,24 @@ async fn generate_occurrence(
     )
     .await?;
 
+    // A one-time schedule has no next occurrence: record the run, deactivate
+    // it, and release its locked short code (the session just created now
+    // owns the link). `next_run_at` is left as the instant it fired.
+    if rule.is_one_time() {
+        sqlx::query(
+            "UPDATE recurring_session_rules \
+             SET is_active = false, locked_short_code = NULL, last_generated_at = now(), \
+                 last_generated_session_id = $1, consecutive_failures = 0, last_error = NULL, \
+                 claimed_by = NULL, claimed_at = NULL, updated_at = now() \
+             WHERE id = $2",
+        )
+        .bind(session.id)
+        .bind(rule.id)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(());
+    }
+
     let next_run_at = rule
         .next_occurrence_after(now)
         .map_err(crate::error::AppError::Internal)?;

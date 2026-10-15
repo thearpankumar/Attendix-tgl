@@ -23,6 +23,7 @@ import SessionRecordFilters, { emptyRecordFilters } from '../components/sessions
 import type { SessionRecordFiltersState } from '../components/sessions/SessionRecordFilters';
 import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
 import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadBlob';
+import { firstCronOccurrence, isFutureLocal, todayInTimezone } from '../utils/schedule';
 
 const PAGE_SIZE = 30;
 
@@ -78,6 +79,9 @@ interface RecurringRule {
   monitoringEnabled: boolean;
   classDurationMinutes?: number;
   sessionKind: 'attendance' | 'intern_monitoring';
+  startDate?: string;
+  runOnceDate?: string;
+  completed?: boolean;
 }
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -209,7 +213,13 @@ const Sessions = () => {
     internStartTime: '09:00',
     internEndTime: '17:00',
     // Cron-job (recurring) fields — only used/shown when recurrence === 'cron'.
-    recurrence: 'once' as 'once' | 'cron',
+    // 'once' = start immediately; 'scheduled' = one-time at scheduleDate/
+    // scheduleTime (in `timezone`); 'cron' = recurring.
+    recurrence: 'once' as 'once' | 'scheduled' | 'cron',
+    scheduleDate: '',
+    scheduleTime: '',
+    // First day a cron rule may fire on; '' means today (in `timezone`).
+    startDate: '',
     runTimesLocal: ['09:00'] as string[],
     daysOfWeek: [0, 1, 2, 3, 4, 5, 6] as number[],
     timezone: browserTimezone,
@@ -390,6 +400,7 @@ const Sessions = () => {
       const isExam = formData.sessionType === 'exam';
       const isIntern = formData.isInternMonitoring;
       const isCron = !isExam && formData.recurrence === 'cron';
+      const isScheduled = !isExam && formData.recurrence === 'scheduled';
 
       // Intern monitoring has no separate "check-in window" duration — there
       // is no location/link at all — so the work-hours span computed from
@@ -420,6 +431,17 @@ const Sessions = () => {
       if (isCron) {
         if (formData.runTimesLocal.length === 0) { toast.error('Add at least one time of day'); return; }
         if (formData.daysOfWeek.length === 0) { toast.error('Select at least one day of the week'); return; }
+      }
+      if (isScheduled) {
+        if (!formData.scheduleDate || !formData.scheduleTime) { toast.error('Pick the date and time to start this session'); return; }
+        if (!isFutureLocal(formData.scheduleDate, formData.scheduleTime, formData.timezone)) {
+          toast.error('The scheduled date and time must be in the future');
+          return;
+        }
+      }
+      if (isCron && formData.startDate && formData.startDate < todayInTimezone(formData.timezone)) {
+        toast.error('Start date cannot be in the past');
+        return;
       }
       if (formData.shortlinkMode === 'existing' && !formData.existingShortCode) {
         toast.error('Please select an existing short link, or switch to a different mode.');
@@ -456,21 +478,23 @@ const Sessions = () => {
           });
           return;
         }
-        if (!isCron && selectedLink?.sessionId) {
+        if (!isCron && !isScheduled && selectedLink?.sessionId) {
           setReassignConfirm({ open: true, shortCode: formData.existingShortCode, reason: 'session', ruleDescription: '' });
           return;
         }
       }
 
-      if (isCron) {
+      if (isCron || isScheduled) {
         await axios.post('/api/admin/recurring-rules', {
           locationId: isIntern ? undefined : formData.locationId,
           batchId: formData.batchId || undefined,
           description: formData.description,
           durationMinutes: duration,
-          runTimesLocal: formData.runTimesLocal,
+          runTimesLocal: isScheduled ? [formData.scheduleTime] : formData.runTimesLocal,
           timezone: formData.timezone,
-          daysOfWeek: formData.daysOfWeek,
+          daysOfWeek: isScheduled ? undefined : formData.daysOfWeek,
+          runOnceDate: isScheduled ? formData.scheduleDate : undefined,
+          startDate: isCron ? (formData.startDate || undefined) : undefined,
           shortlinkMode: formData.shortlinkMode,
           customShortCode: formData.customShortCode.trim() || undefined,
           existingShortCode: formData.existingShortCode || undefined,
@@ -479,7 +503,9 @@ const Sessions = () => {
           classDurationMinutes: classDuration,
           sessionKind: isIntern ? 'intern_monitoring' : undefined,
         });
-        toast.success(isIntern
+        toast.success(isScheduled
+          ? `Session scheduled for ${formData.scheduleDate} ${formData.scheduleTime} (${formData.timezone}) — it will be created automatically at that time.`
+          : isIntern
           ? 'Intern monitoring schedule created — a monitoring session will be generated automatically for each scheduled work day.'
           : 'Recurring session rule created — it will start generating sessions at its scheduled times.');
         setShowModal(false);
@@ -754,7 +780,7 @@ const Sessions = () => {
         <div className="card card-table mb-4">
           {recurringRules.length === 0 ? (
             <div style={{ padding: '1.25rem', color: 'var(--color-muted)', fontSize: '0.88rem' }}>
-              No recurring rules yet. Create a session and choose "Cron job (recurring)" to set one up.
+              No scheduled or recurring rules yet. Create a session and choose "Schedule for later" or "Cron job (recurring)" to set one up.
             </div>
           ) : (
             <DataTable
@@ -765,18 +791,19 @@ const Sessions = () => {
                   ? <Badge tone="neutral">Intern Monitoring</Badge>
                   : locations.find((l) => l._id === r.locationId)?.name || 'Unknown' },
                 { key: 'times', label: 'Times', width: '16%', render: (r) => r.runTimesLocal.join(', ') },
-                { key: 'days', label: 'Days', width: '16%', render: (r) => r.daysOfWeek.length === 7 ? 'Every day' : r.daysOfWeek.map((d) => DAY_LABELS[d]).join(', ') },
+                { key: 'days', label: 'Days', width: '16%', render: (r) => r.runOnceDate ? `Once on ${r.runOnceDate}` : r.daysOfWeek.length === 7 ? 'Every day' : r.daysOfWeek.map((d) => DAY_LABELS[d]).join(', ') },
                 { key: 'timezone', label: 'Timezone', width: '13%', render: (r) => r.timezone },
                 { key: 'link', label: 'Locked Link', width: '11%', render: (r) => r.lockedShortCode ? `/s/${r.lockedShortCode}` : <span style={{ color: 'var(--color-muted)' }}>—</span> },
-                { key: 'next', label: 'Next Run', width: '13%', render: (r) => r.isActive ? new Date(r.nextRunAt).toLocaleString() : <span style={{ color: 'var(--color-muted)' }}>Paused</span> },
+                { key: 'next', label: 'Next Run', width: '13%', render: (r) => r.completed ? <span style={{ color: 'var(--color-muted)' }}>Ran</span> : r.isActive ? new Date(r.nextRunAt).toLocaleString() : <span style={{ color: 'var(--color-muted)' }}>Paused</span> },
                 { key: 'status', label: 'Status', width: '8%', render: (r) => {
+                  if (r.completed) return <Badge tone="neutral">Completed</Badge>;
                   if (!r.isActive) return <Badge tone="neutral">Paused</Badge>;
                   if (r.consecutiveFailures > 0) return <Badge tone="warning">Attention</Badge>;
                   return <Badge tone="success">Active</Badge>;
                 } },
                 { key: 'actions', label: 'Actions', width: '9%', render: (r) => (
                   <div className="actions-cell">
-                    {r.isActive ? (
+                    {r.completed ? null : r.isActive ? (
                       <Button variant="secondary" size="sm" disabled={ruleBusyId === r._id} onClick={() => handlePauseRule(r._id)}>
                         <Pause size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Pause
                       </Button>
@@ -919,7 +946,7 @@ const Sessions = () => {
             <div className="form-group">
               <label>Cadence</label>
               <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.375rem' }}>
-                {(['once', 'cron'] as const).map((mode) => (
+                {(['once', 'scheduled', 'cron'] as const).map((mode) => (
                   <label key={mode} style={{
                     flex: 1, textAlign: 'center', padding: '0.45rem 0.25rem',
                     borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 500,
@@ -937,11 +964,18 @@ const Sessions = () => {
                       style={{ display: 'none' }} />
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                       {mode === 'cron' && <RefreshCw size={14} />}
-                      <span>{mode === 'once' ? 'One-time' : 'Cron job (recurring)'}</span>
+                      <span>{mode === 'once' ? 'Start now' : mode === 'scheduled' ? 'Schedule for later' : 'Cron job (recurring)'}</span>
                     </div>
                   </label>
                 ))}
               </div>
+              {formData.recurrence === 'scheduled' && (
+                <small style={{ color: 'var(--color-muted)' }}>
+                  {formData.isInternMonitoring
+                    ? 'One monitoring session is created automatically at the date and time below, once.'
+                    : 'One session for this location is created automatically at the date and time below, once. No cron rule needed.'}
+                </small>
+              )}
               {formData.recurrence === 'cron' && (
                 <small style={{ color: 'var(--color-muted)' }}>
                   {formData.isInternMonitoring
@@ -950,6 +984,34 @@ const Sessions = () => {
                 </small>
               )}
             </div>
+          )}
+
+          {formData.sessionType === 'normal' && formData.recurrence === 'scheduled' && (
+            <>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="session-schedule-date">Start date</label>
+                  <input id="session-schedule-date" type="date" value={formData.scheduleDate}
+                    min={todayInTimezone(formData.timezone)}
+                    onChange={(e) => setFormData({ ...formData, scheduleDate: e.target.value })} required />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="session-schedule-time">Start time</label>
+                  <input id="session-schedule-time" type="time" value={formData.scheduleTime}
+                    onChange={(e) => setFormData({ ...formData, scheduleTime: e.target.value })} required />
+                </div>
+              </div>
+              <div className="form-group">
+                <label htmlFor="session-timezone">Timezone</label>
+                <select id="session-timezone" value={formData.timezone} onChange={(e) => setFormData({ ...formData, timezone: e.target.value })} required>
+                  {!COMMON_TIMEZONES.includes(formData.timezone) && <option value={formData.timezone}>{formData.timezone}</option>}
+                  {COMMON_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+                </select>
+                <small style={{ color: 'var(--color-muted)' }}>
+                  The session opens at this date and time ({formData.timezone}) and stays open for the duration below.
+                </small>
+              </div>
+            </>
           )}
 
           {formData.sessionType === 'normal' && formData.recurrence === 'cron' && (
@@ -996,6 +1058,27 @@ const Sessions = () => {
                   {!COMMON_TIMEZONES.includes(formData.timezone) && <option value={formData.timezone}>{formData.timezone}</option>}
                   {COMMON_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
                 </select>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="session-start-date">Start date</label>
+                <input id="session-start-date" type="date"
+                  value={formData.startDate || todayInTimezone(formData.timezone)}
+                  min={todayInTimezone(formData.timezone)}
+                  onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} />
+                {(() => {
+                  const first = firstCronOccurrence({
+                    timezone: formData.timezone, daysOfWeek: formData.daysOfWeek,
+                    runTimesLocal: formData.runTimesLocal, startDate: formData.startDate || undefined,
+                  });
+                  return (
+                    <small style={{ color: 'var(--color-muted)' }}>
+                      {first
+                        ? `First run: ${first.isToday ? 'today' : first.date} at ${first.time} (${formData.timezone}).${first.isToday ? '' : ' Times already passed today are skipped, not backfilled.'}`
+                        : 'Select at least one day and time.'}
+                    </small>
+                  );
+                })()}
               </div>
             </>
           )}
@@ -1231,6 +1314,8 @@ const Sessions = () => {
             <button type="submit" className="btn btn-success">
               {formData.recurrence === 'cron'
                 ? (formData.isInternMonitoring ? 'Create Recurring Monitoring Schedule' : 'Create Recurring Rule')
+                : formData.recurrence === 'scheduled'
+                ? (formData.isInternMonitoring ? 'Schedule Monitoring Session' : 'Schedule Session')
                 : (formData.isInternMonitoring ? 'Create Monitoring Session' : 'Create Session')}
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
