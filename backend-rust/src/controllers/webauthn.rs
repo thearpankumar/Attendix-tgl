@@ -48,7 +48,7 @@ async fn assert_student_owned(
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
              SELECT 1 FROM students st \
-             JOIN batches b ON b.id = st.batch_id \
+             JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
              WHERE upper(st.roll_number) = upper($1) AND ($2 = 'super_admin' OR b.created_by = $3) \
          )",
     )
@@ -248,7 +248,7 @@ pub async fn get_credentials(
     // short-circuits the roster check instead of being ANDed inside it.
     const OWNED_STUDENTS: &str = "$1 = 'super_admin' OR EXISTS ( \
          SELECT 1 FROM students st \
-         JOIN batches b ON b.id = st.batch_id \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE upper(st.roll_number) = upper(webauthn_credentials.student_id) \
            AND b.created_by = $2)";
 
@@ -342,7 +342,7 @@ pub async fn get_webauthn_stats(
     // credential belonging to a roll number not on a batch roster.
     const OWNED_STUDENTS: &str = "$1 = 'super_admin' OR EXISTS ( \
          SELECT 1 FROM students st \
-         JOIN batches b ON b.id = st.batch_id \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE upper(st.roll_number) = upper(webauthn_credentials.student_id) \
            AND b.created_by = $2)";
 
@@ -366,7 +366,7 @@ pub async fn get_webauthn_stats(
     // a super-admin, only their own for a mentor).
     let unique_students: i64 = sqlx::query_scalar(
         "SELECT COUNT(DISTINCT upper(st.roll_number)) FROM students st \
-         JOIN batches b ON b.id = st.batch_id WHERE ($1 = 'super_admin' OR b.created_by = $2)",
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL WHERE ($1 = 'super_admin' OR b.created_by = $2)",
     )
     .bind(&auth.role)
     .bind(auth.id)

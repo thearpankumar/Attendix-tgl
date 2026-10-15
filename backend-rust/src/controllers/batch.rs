@@ -170,7 +170,7 @@ pub async fn get_batches(
 
     let batches = sqlx::query_as::<_, Batch>(
         "SELECT * FROM batches \
-         WHERE ($1 = 'super_admin' OR created_by = $2) \
+         WHERE deleted_at IS NULL AND ($1 = 'super_admin' OR created_by = $2) \
            AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%') \
          ORDER BY created_at DESC",
     )
@@ -272,7 +272,7 @@ pub async fn get_batch(
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
     let batch = sqlx::query_as::<_, Batch>(
-        "SELECT * FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+        "SELECT * FROM batches WHERE id = $1 AND deleted_at IS NULL AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(batch_id)
     .bind(&auth.role)
@@ -328,7 +328,7 @@ pub async fn get_batch_overview(
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
     let batch = sqlx::query_as::<_, Batch>(
-        "SELECT * FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+        "SELECT * FROM batches WHERE id = $1 AND deleted_at IS NULL AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(batch_id)
     .bind(&auth.role)
@@ -364,6 +364,101 @@ pub async fn get_batch_overview(
     }))
 }
 
+/// What deleting a batch would affect — the Batches page shows this in its
+/// confirmation dialog before the admin commits.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchDeleteImpactResponse {
+    pub session_count: i64,
+    pub active_rule_count: i64,
+    pub rule_count: i64,
+    /// `"archived"` when sessions/rules reference the batch (history is kept),
+    /// `"deleted"` when nothing does and the batch is removed outright.
+    pub mode: &'static str,
+}
+
+async fn batch_references(
+    db: impl sqlx::PgExecutor<'_>,
+    batch_id: Uuid,
+) -> Result<(i64, i64, i64)> {
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*) FROM sessions WHERE batch_id = $1), \
+            (SELECT COUNT(*) FROM recurring_session_rules WHERE batch_id = $1), \
+            (SELECT COUNT(*) FROM recurring_session_rules WHERE batch_id = $1 AND is_active)",
+    )
+    .bind(batch_id)
+    .fetch_one(db)
+    .await?;
+    Ok(counts)
+}
+
+pub async fn get_batch_delete_impact(
+    State(state): State<Arc<crate::AppState>>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let batch_id = Uuid::parse_str(&id)
+        .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
+    find_live_batch(&state.db, &auth, batch_id).await?;
+    let (session_count, rule_count, active_rule_count) =
+        batch_references(&state.db, batch_id).await?;
+    Ok(Json(BatchDeleteImpactResponse {
+        session_count,
+        active_rule_count,
+        rule_count,
+        mode: if session_count + rule_count > 0 {
+            "archived"
+        } else {
+            "deleted"
+        },
+    }))
+}
+
+/// Ownership-scoped lookup of a batch that has not been deleted/archived.
+pub(crate) async fn find_live_batch(
+    db: impl sqlx::PgExecutor<'_>,
+    auth: &AuthenticatedAdmin,
+    batch_id: Uuid,
+) -> Result<Batch> {
+    sqlx::query_as::<_, Batch>(
+        "SELECT * FROM batches WHERE id = $1 AND deleted_at IS NULL AND ($2 = 'super_admin' OR created_by = $3)",
+    )
+    .bind(batch_id)
+    .bind(&auth.role)
+    .bind(auth.id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))
+}
+
+/// Rejects a batch that doesn't exist or has been deleted/archived. Used
+/// wherever a *new* session or recurring rule is pointed at a batch — a
+/// deleted batch must not be picked up again, though sessions that already
+/// reference it keep working (see `delete_batch`).
+pub(crate) async fn ensure_batch_assignable(
+    db: impl sqlx::PgExecutor<'_>,
+    batch_id: Uuid,
+) -> Result<()> {
+    let live: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM batches WHERE id = $1 AND deleted_at IS NULL")
+            .bind(batch_id)
+            .fetch_optional(db)
+            .await?;
+    live.map(|_| ())
+        .ok_or_else(|| AppError::BadRequest("Batch not found or has been deleted".to_string()))
+}
+
+/// Deletes a batch.
+///
+/// A batch nothing references is removed outright (its students cascade). A
+/// batch that sessions or recurring rules still reference is *archived*
+/// instead (`deleted_at` set; row and roster kept) — see migration 0015 for
+/// why: those sessions' roster, absent list, stats and exports are all
+/// derived from the batch, and attendance rows are keyed by roll number text,
+/// so nothing historical changes. Recurring rules pointing at the batch are
+/// paused (and release their locked short code) with an explanatory
+/// `last_error`, since a rule can't generate sessions for a deleted batch.
 pub async fn delete_batch(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -372,22 +467,83 @@ pub async fn delete_batch(
     let batch_id = Uuid::parse_str(&id)
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
 
-    let result = sqlx::query(
-        "DELETE FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+    let mut tx = state.db.begin().await?;
+
+    // Row lock so a concurrent session/rule create can't slip a reference in
+    // between the reference check and the delete.
+    let batch = sqlx::query_as::<_, Batch>(
+        "SELECT * FROM batches WHERE id = $1 AND deleted_at IS NULL AND ($2 = 'super_admin' OR created_by = $3) FOR UPDATE",
     )
     .bind(batch_id)
     .bind(&auth.role)
     .bind(auth.id)
-    .execute(&state.db)
-    .await?;
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Batch not found".to_string()))?;
 
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Batch not found".to_string()));
-    }
+    let (session_count, rule_count, _) = batch_references(&mut *tx, batch_id).await?;
+
+    let mode = if session_count + rule_count == 0 {
+        sqlx::query("DELETE FROM batches WHERE id = $1")
+            .bind(batch_id)
+            .execute(&mut *tx)
+            .await?;
+        "deleted"
+    } else {
+        sqlx::query("UPDATE batches SET deleted_at = now() WHERE id = $1")
+            .bind(batch_id)
+            .execute(&mut *tx)
+            .await?;
+        let reason = format!("Batch \"{}\" was deleted", batch.name);
+        sqlx::query(
+            "UPDATE recurring_session_rules \
+             SET is_active = false, locked_short_code = NULL, last_error = $2, updated_at = now() \
+             WHERE batch_id = $1 AND is_active",
+        )
+        .bind(batch_id)
+        .bind(&reason)
+        .execute(&mut *tx)
+        .await?;
+        "archived"
+    };
+
+    tx.commit().await?;
+
+    audit(
+        &state,
+        &auth,
+        "batch_deleted",
+        serde_json::json!({
+            "batch_id": batch_id,
+            "name": batch.name,
+            "mode": mode,
+            "sessions_kept": session_count,
+            "rules_paused": rule_count,
+        }),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
-        "message": "Batch deleted successfully"
+        "message": "Batch deleted successfully",
+        "mode": mode,
+        "sessionsKept": session_count,
+        "rulesPaused": rule_count,
     })))
+}
+
+/// Audit log entry for an admin batch action. The audit log is a detective
+/// control, not a gate — a failure to record never fails the request.
+pub(crate) async fn audit(
+    state: &crate::AppState,
+    auth: &AuthenticatedAdmin,
+    event: &str,
+    detail: serde_json::Value,
+) {
+    if let Err(e) =
+        crate::models::record_audit_event(&state.db, Some(auth.id), event, detail, None).await
+    {
+        tracing::error!(error = %e, event, "Failed to record audit log entry");
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -481,6 +637,19 @@ pub async fn upload_batch_excel(
     ))
 }
 
+/// Converts one spreadsheet row to strings, keeping column positions: a
+/// blank cell becomes an empty string rather than being dropped, otherwise
+/// every cell to its right would shift one column left (an empty Email cell
+/// would make the College value read as the email). Returns `None` for a row
+/// with no content at all.
+fn row_cells(row: &[calamine::Data]) -> Option<Vec<String>> {
+    let cells: Vec<String> = row
+        .iter()
+        .map(|c| format_cell(c).unwrap_or_default())
+        .collect();
+    cells.iter().any(|c| !c.is_empty()).then_some(cells)
+}
+
 fn format_cell(cell: &calamine::Data) -> Option<String> {
     match cell {
         calamine::Data::String(s) => {
@@ -524,30 +693,15 @@ pub(crate) fn read_raw_rows(data: &[u8]) -> Result<Vec<Vec<String>>> {
 
     if let Ok(mut wb) = open_workbook_from_rs::<Xlsx<_>, _>(cursor.clone()) {
         if let Some(Ok(range)) = wb.worksheet_range_at(0) {
-            for row in range.rows() {
-                let cells: Vec<String> = row.iter().filter_map(format_cell).collect();
-                if !cells.is_empty() {
-                    raw_rows.push(cells);
-                }
-            }
+            raw_rows.extend(range.rows().filter_map(row_cells));
         }
     } else if let Ok(mut wb) = open_workbook_from_rs::<Xls<_>, _>(cursor.clone()) {
         if let Some(Ok(range)) = wb.worksheet_range_at(0) {
-            for row in range.rows() {
-                let cells: Vec<String> = row.iter().filter_map(format_cell).collect();
-                if !cells.is_empty() {
-                    raw_rows.push(cells);
-                }
-            }
+            raw_rows.extend(range.rows().filter_map(row_cells));
         }
     } else if let Ok(mut wb) = open_workbook_from_rs::<Ods<_>, _>(cursor.clone()) {
         if let Some(Ok(range)) = wb.worksheet_range_at(0) {
-            for row in range.rows() {
-                let cells: Vec<String> = row.iter().filter_map(format_cell).collect();
-                if !cells.is_empty() {
-                    raw_rows.push(cells);
-                }
-            }
+            raw_rows.extend(range.rows().filter_map(row_cells));
         }
     } else if let Ok(text) = std::str::from_utf8(data) {
         for line in text.lines() {
@@ -647,7 +801,7 @@ pub(crate) const ROLL_NUMBER_ALIASES: &[&str] = &[
 /// matched any column.
 pub(crate) const ROLL_NUMBER_WEAK_ALIASES: &[&str] = &["id", "slno", "sno", "srno", "serialno"];
 
-fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
+pub(crate) fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     let raw_rows = read_raw_rows(data)?;
 
     let mut students = Vec::new();
@@ -656,16 +810,6 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     if raw_rows.is_empty() {
         return Ok((students, errors));
     }
-
-    // Roster import checks a row's name/roll/email/college columns together in
-    // one pass (see below), so the strong-vs-weak roll-alias split that
-    // `parse_roll_numbers_from_file` needs to avoid an ambiguous "S.No"-style
-    // column shadowing the real one doesn't apply here — a genuine name
-    // column already won't be mistaken for a roll column, and vice versa.
-    // Checking both lists together keeps this exactly as permissive as
-    // before the split.
-    let is_roll_alias =
-        |norm: &str| ROLL_NUMBER_ALIASES.contains(&norm) || ROLL_NUMBER_WEAK_ALIASES.contains(&norm);
 
     let name_aliases = [
         "name",
@@ -694,6 +838,11 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
     let mut roll_col: Option<usize> = None;
     let mut email_col: Option<usize> = None;
     let mut college_col: Option<usize> = None;
+    // An "S.No"/"Sr. No."/"ID" column is only a roll number of last resort:
+    // it must not shadow a real roll/register-number column that happens to
+    // sit to its right, so it's tracked separately and used only if no
+    // unambiguous alias matched anywhere in the header.
+    let mut weak_roll_col: Option<usize> = None;
 
     // 1. Header row matching
     let header_row = &raw_rows[0];
@@ -701,13 +850,19 @@ fn parse_excel(data: &[u8]) -> Result<(Vec<StudentInput>, Vec<String>)> {
         let norm = normalize_header(cell_str);
         if name_col.is_none() && name_aliases.contains(&norm.as_str()) {
             name_col = Some(i);
-        } else if roll_col.is_none() && is_roll_alias(&norm) {
+        } else if roll_col.is_none() && ROLL_NUMBER_ALIASES.contains(&norm.as_str()) {
             roll_col = Some(i);
+        } else if weak_roll_col.is_none() && ROLL_NUMBER_WEAK_ALIASES.contains(&norm.as_str()) {
+            weak_roll_col = Some(i);
         } else if email_col.is_none() && email_aliases.contains(&norm.as_str()) {
             email_col = Some(i);
         } else if college_col.is_none() && college_aliases.contains(&norm.as_str()) {
             college_col = Some(i);
         }
+    }
+
+    if roll_col.is_none() {
+        roll_col = weak_roll_col;
     }
 
     let start_row_idx = if name_col.is_some() || roll_col.is_some() {
@@ -825,6 +980,34 @@ mod batch_tests {
             students[0].college_name.as_deref(),
             Some("Computer Science")
         );
+    }
+
+    #[test]
+    fn test_parse_prefers_real_roll_column_over_serial_number_column() {
+        let csv_data = b"S.No,Reg No.,Student Name\n1,R001,Alice\n2,R002,Bob\n";
+        let (students, errors) = parse_excel(csv_data).unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(students[0].roll_number, "R001");
+        assert_eq!(students[1].name, "Bob");
+        // ...but a lone weak alias is still accepted as the roll column.
+        let (students, _) = parse_excel(b"ID,Name\nA1,Cara\n").unwrap();
+        assert_eq!(students[0].roll_number, "A1");
+    }
+
+    #[test]
+    fn test_row_cells_keeps_blank_cells_in_place() {
+        use calamine::Data;
+        let row = [
+            Data::String("R001".into()),
+            Data::String("Alice".into()),
+            Data::Empty,
+            Data::String("CollegeX".into()),
+        ];
+        assert_eq!(
+            row_cells(&row).unwrap(),
+            vec!["R001", "Alice", "", "CollegeX"]
+        );
+        assert!(row_cells(&[Data::Empty, Data::String("  ".into())]).is_none());
     }
 
     #[test]

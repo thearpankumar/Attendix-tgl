@@ -125,7 +125,7 @@ async fn assert_owns_batch(
     batch_id: Uuid,
 ) -> Result<()> {
     let exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM batches WHERE id = $1 AND ($2 = 'super_admin' OR created_by = $3)",
+        "SELECT id FROM batches WHERE id = $1 AND deleted_at IS NULL AND ($2 = 'super_admin' OR created_by = $3)",
     )
     .bind(batch_id)
     .bind(&auth.role)
@@ -295,7 +295,7 @@ pub async fn get_student_session_detail(
 
     let roll_number: Option<String> = sqlx::query_scalar(
         "SELECT st.roll_number FROM students st \
-         JOIN batches b ON b.id = st.batch_id \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE st.id = $1 AND st.batch_id = $2 AND ($3 = 'super_admin' OR b.created_by = $4)",
     )
     .bind(student_id)
@@ -414,7 +414,7 @@ pub async fn get_all_students(
     let page: Vec<AllStudentsPageRow> = sqlx::query_as(
         "SELECT st.id, st.name, st.roll_number, st.email, st.batch_id, b.name AS batch_name \
          FROM students st \
-         JOIN batches b ON b.id = st.batch_id \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE ($1 = 'super_admin' OR b.created_by = $2) \
            AND ($3::text IS NULL OR st.name ILIKE '%' || $3 || '%' \
                 OR st.roll_number ILIKE '%' || $3 || '%' OR b.name ILIKE '%' || $3 || '%') \
@@ -761,7 +761,7 @@ async fn resolve_roll_number_lookup(
 
     let rows: Vec<LookupDbRow> = sqlx::query_as(
         "SELECT st.id, st.name, st.email, st.roll_number, st.batch_id, b.name AS batch_name \
-         FROM students st JOIN batches b ON b.id = st.batch_id \
+         FROM students st JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE upper(st.roll_number) = ANY($1) AND ($2 = 'super_admin' OR b.created_by = $3)",
     )
     .bind(&queried_upper)
@@ -981,7 +981,7 @@ pub async fn export_student_lookup(
 
     let rows: Vec<LookupDbRow> = sqlx::query_as(
         "SELECT st.id, st.name, st.email, st.roll_number, st.batch_id, b.name AS batch_name \
-         FROM students st JOIN batches b ON b.id = st.batch_id \
+         FROM students st JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE st.id = ANY($1) AND ($2 = 'super_admin' OR b.created_by = $3)",
     )
     .bind(&ids)
@@ -1018,7 +1018,7 @@ pub async fn export_student_lookup(
         "SELECT st.name, st.roll_number, b.name AS batch_name, \
                 COALESCE(ses.starts_at, ses.created_at) AS session_date, a.status \
          FROM students st \
-         JOIN batches b ON b.id = st.batch_id \
+         JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          JOIN sessions ses ON ses.batch_id = st.batch_id \
              AND ($3::timestamptz IS NULL OR ses.created_at >= $3) \
              AND ($4::timestamptz IS NULL OR ses.created_at <= $4) \

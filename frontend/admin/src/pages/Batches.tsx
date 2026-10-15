@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router';
-import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar, CalendarClock, BarChart3, Search } from 'lucide-react';
+import { Users, Upload, X, Trash2, FileSpreadsheet, Plus, Eye, Calendar, CalendarClock, BarChart3, Search, Pencil } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import DataTable from '../components/ui/DataTable';
 import type { Column } from '../components/ui/DataTable';
 import Badge from '../components/ui/Badge';
 import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
+import ConfirmModal from '../components/ui/ConfirmModal';
+import { describeDeleteImpact } from '../utils/batchDelete';
+import type { DeleteImpact } from '../utils/batchDelete';
+import BatchRosterEditorModal from '../components/batches/BatchRosterEditorModal';
 
 const PAGE_SIZE = 30;
 
@@ -42,6 +46,8 @@ const Batches = () => {
   const offsetRef = useRef(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ batch: Batch; impact: DeleteImpact | null } | null>(null);
+  const [rosterBatch, setRosterBatch] = useState<Batch | null>(null);
 
   // Search bar — debounced independently so typing doesn't fire a request
   // per keystroke (same idiom as SessionRecordFilters.tsx's search field).
@@ -200,16 +206,36 @@ const Batches = () => {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this batch? This will not delete past attendance records, but will unlink it from active sessions.')) return;
-    
-    setDeletingId(id);
+  // Step 1: look up what the batch is still used by so the confirmation can
+  // say what will happen. A failed lookup still allows deleting, with the
+  // generic wording.
+  const requestDelete = async (batch: Batch) => {
+    setDeletingId(batch._id);
+    let impact: DeleteImpact | null = null;
     try {
-      await axios.delete(`/api/admin/batches/${id}`);
-      toast.success('Batch deleted');
-      setBatches(batches.filter(b => b._id !== id));
+      const { data } = await axios.get<DeleteImpact>(`/api/admin/batches/${batch._id}/delete-impact`);
+      impact = data;
     } catch (_err) {
-      toast.error('Failed to delete batch');
+      impact = null;
+    } finally {
+      setDeletingId(null);
+    }
+    setDeleteTarget({ batch, impact });
+  };
+
+  // Step 2: the admin confirmed.
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const { batch } = deleteTarget;
+    setDeleteTarget(null);
+    setDeletingId(batch._id);
+    try {
+      const { data } = await axios.delete<{ mode?: string }>(`/api/admin/batches/${batch._id}`);
+      toast.success(data?.mode === 'archived' ? 'Batch deleted (past sessions and attendance kept)' : 'Batch deleted');
+      setBatches((prev) => prev.filter((b) => b._id !== batch._id));
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to delete batch');
     } finally {
       setDeletingId(null);
     }
@@ -280,8 +306,17 @@ const Batches = () => {
           )}
           {b.type === 'manual' && (
             <button
+              className="btn btn-secondary btn-small"
+              onClick={() => setRosterBatch(b)}
+              title="Edit Roster"
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+          {b.type === 'manual' && (
+            <button
               className="btn btn-danger btn-small"
-              onClick={() => handleDelete(b._id)}
+              onClick={() => requestDelete(b)}
               disabled={deletingId === b._id}
               title="Delete Batch"
             >
@@ -356,6 +391,21 @@ const Batches = () => {
           </>
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={deleteTarget !== null}
+        title="Delete batch?"
+        message={deleteTarget ? describeDeleteImpact(deleteTarget.batch.name, deleteTarget.batch.studentCount, deleteTarget.impact) : ''}
+        confirmText="Delete Batch"
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      <BatchRosterEditorModal
+        batch={rosterBatch}
+        onClose={() => setRosterBatch(null)}
+        onChanged={() => fetchBatches()}
+      />
 
       <AnimatePresence>
         {isModalOpen && (

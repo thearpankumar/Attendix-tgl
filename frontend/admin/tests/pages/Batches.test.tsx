@@ -234,47 +234,71 @@ describe('Batches', () => {
   });
 
   describe('delete batch', () => {
-    it('deletes a manual batch after confirmation and removes it from the list', async () => {
-      const batch = makeBatch(1);
-      (axios.get as any).mockResolvedValue({ data: [batch] });
-      (axios.delete as any).mockResolvedValue({ data: {} });
-      vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const mockGets = (impact: unknown) => {
+      (axios.get as any).mockImplementation((url: string) =>
+        Promise.resolve({ data: url.endsWith('/delete-impact') ? impact : [makeBatch(1)] })
+      );
+    };
+
+    it('explains the consequence for a batch used by sessions, then deletes on confirm', async () => {
+      mockGets({ sessionCount: 3, ruleCount: 1, activeRuleCount: 1, mode: 'archived' });
+      (axios.delete as any).mockResolvedValue({ data: { mode: 'archived' } });
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
 
-      const deleteBtn = screen.getByTitle('Delete Batch');
-      fireEvent.click(deleteBtn);
+      fireEvent.click(screen.getByTitle('Delete Batch'));
+      await waitFor(() => expect(screen.getByText('Delete batch?')).toBeInTheDocument());
+      expect(axios.get).toHaveBeenCalledWith('/api/admin/batches/b1/delete-impact');
+      expect(screen.getByText(/used by 3 sessions and 1 recurring schedule/)).toBeInTheDocument();
+      expect(screen.getByText(/keep their roster, attendance, absent lists and exports/)).toBeInTheDocument();
+      expect(screen.getByText(/will be paused/)).toBeInTheDocument();
+      expect(axios.delete).not.toHaveBeenCalled();
 
+      fireEvent.click(screen.getByText('Delete Batch', { selector: '.form-actions button' }));
       await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/admin/batches/b1'));
-      expect(toast.success).toHaveBeenCalledWith('Batch deleted');
+      expect(toast.success).toHaveBeenCalledWith('Batch deleted (past sessions and attendance kept)');
       await waitFor(() => expect(screen.queryByText('Batch 1')).not.toBeInTheDocument());
     });
 
+    it('says an unreferenced batch is permanently deleted', async () => {
+      mockGets({ sessionCount: 0, ruleCount: 0, activeRuleCount: 0, mode: 'deleted' });
+      (axios.delete as any).mockResolvedValue({ data: { mode: 'deleted' } });
+
+      renderComponent();
+      await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Delete Batch'));
+      await waitFor(() => expect(screen.getByText(/permanently deleted/)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByText('Delete Batch', { selector: '.form-actions button' }));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Batch deleted'));
+    });
+
     it('does not delete when the confirmation is dismissed', async () => {
-      const batch = makeBatch(1);
-      (axios.get as any).mockResolvedValue({ data: [batch] });
-      vi.spyOn(window, 'confirm').mockReturnValue(false);
+      mockGets({ sessionCount: 1, ruleCount: 0, activeRuleCount: 0, mode: 'archived' });
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
 
       fireEvent.click(screen.getByTitle('Delete Batch'));
+      await waitFor(() => expect(screen.getByText('Delete batch?')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Cancel'));
       expect(axios.delete).not.toHaveBeenCalled();
+      expect(screen.queryByText('Delete batch?')).not.toBeInTheDocument();
       expect(screen.getByText('Batch 1')).toBeInTheDocument();
     });
 
-    it('shows an error toast when delete fails', async () => {
-      const batch = makeBatch(1);
-      (axios.get as any).mockResolvedValue({ data: [batch] });
-      (axios.delete as any).mockRejectedValue(new Error('fail'));
-      vi.spyOn(window, 'confirm').mockReturnValue(true);
+    it('shows the server message when delete fails', async () => {
+      mockGets({ sessionCount: 0, ruleCount: 0, activeRuleCount: 0, mode: 'deleted' });
+      (axios.delete as any).mockRejectedValue({ response: { data: { message: 'Batch not found' } } });
 
       renderComponent();
       await waitFor(() => expect(screen.getByText('Batch 1')).toBeInTheDocument());
 
       fireEvent.click(screen.getByTitle('Delete Batch'));
-      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to delete batch'));
+      await waitFor(() => expect(screen.getByText('Delete batch?')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Delete Batch', { selector: '.form-actions button' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Batch not found'));
       expect(screen.getByText('Batch 1')).toBeInTheDocument();
     });
 

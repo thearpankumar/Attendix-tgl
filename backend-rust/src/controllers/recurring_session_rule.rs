@@ -347,6 +347,9 @@ pub async fn create_recurring_rule(
         .map(Uuid::parse_str)
         .transpose()
         .map_err(|e| AppError::BadRequest(format!("Invalid batch ID: {}", e)))?;
+    if let Some(id) = batch_id {
+        crate::controllers::batch::ensure_batch_assignable(&state.db, id).await?;
+    }
 
     // Mentors: mandatory for an exam rule, optional for a normal one (so
     // they can fix a student's check-in), never for intern monitoring.
@@ -682,6 +685,12 @@ pub async fn update_recurring_rule(
         Some(_) => None,
         None => existing.batch_id,
     };
+    // Only re-validate when the batch is being changed: a rule keeps its
+    // (possibly archived) batch until the admin picks another one, and the
+    // resume path below refuses to reactivate it in that state.
+    if let Some(id) = batch_id.filter(|id| Some(*id) != existing.batch_id) {
+        crate::controllers::batch::ensure_batch_assignable(&state.db, id).await?;
+    }
     let duration_minutes = payload
         .duration_minutes
         .unwrap_or(existing.duration_minutes);
@@ -808,6 +817,16 @@ async fn set_rule_active(
     let existing = find_rule_for_admin(&state.db, rule_id, auth).await?;
 
     if active {
+        if let Some(id) = existing.batch_id {
+            crate::controllers::batch::ensure_batch_assignable(&state.db, id)
+                .await
+                .map_err(|_| {
+                    AppError::BadRequest(
+                        "This rule's batch was deleted. Edit the rule to choose another batch before resuming it."
+                            .to_string(),
+                    )
+                })?;
+        }
         if existing.is_one_time() && existing.last_generated_at.is_some() {
             return Err(AppError::BadRequest(
                 "This one-time schedule has already run and can't be resumed".to_string(),

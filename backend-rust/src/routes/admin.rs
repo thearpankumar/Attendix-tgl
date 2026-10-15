@@ -201,8 +201,27 @@ pub fn create_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(crate::controllers::get_batch_overview),
         )
         .route(
+            "/batches/{id}/delete-impact",
+            get(crate::controllers::get_batch_delete_impact),
+        )
+        .route(
             "/batches/{id}/students",
-            get(crate::controllers::get_batch_students),
+            get(crate::controllers::get_batch_students)
+                .post(crate::controllers::add_batch_student)
+                .put(crate::controllers::sync_batch_students),
+        )
+        .route(
+            "/batches/{id}/students/parse",
+            post(crate::controllers::parse_batch_students),
+        )
+        .route(
+            "/batches/{id}/students/preview",
+            post(crate::controllers::preview_batch_students),
+        )
+        .route(
+            "/batches/{id}/students/{studentId}",
+            patch(crate::controllers::update_batch_student)
+                .delete(crate::controllers::delete_batch_student),
         )
         .route(
             "/batches/{id}/students/{studentId}/sessions",

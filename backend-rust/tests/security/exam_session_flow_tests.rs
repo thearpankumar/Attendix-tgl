@@ -187,6 +187,46 @@ impl Client {
         (status, json_body(response).await)
     }
 
+    /// POSTs a single-file `multipart/form-data` body (field name `file`),
+    /// the way a browser `FormData` upload would.
+    pub(crate) async fn post_file(
+        &self,
+        app: &axum::Router,
+        uri: &str,
+        file_name: &str,
+        file_bytes: &[u8],
+    ) -> (StatusCode, serde_json::Value) {
+        let boundary = "batch-roster-test-boundary";
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: text/csv\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("cookie", self.cookie_header())
+                    .header("x-csrf-token", &self.csrf_token)
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, json_body(response).await)
+    }
+
     pub(crate) async fn mutate(
         &self,
         app: &axum::Router,

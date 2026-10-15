@@ -575,6 +575,9 @@ pub async fn create_session(
         .batch_id
         .as_ref()
         .and_then(|id| Uuid::parse_str(id).ok());
+    if let Some(id) = batch_id {
+        crate::controllers::batch::ensure_batch_assignable(&state.db, id).await?;
+    }
 
     let duration_minutes = payload.duration_minutes.unwrap_or(30) as i64;
     // For an exam session, the window is anchored to the scheduled start

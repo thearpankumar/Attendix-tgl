@@ -617,7 +617,7 @@ pub async fn get_dashboard_stats(
 
     // Low / high engagement batches
     let batches: Vec<Batch> =
-        sqlx::query_as("SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2)")
+        sqlx::query_as("SELECT * FROM batches WHERE deleted_at IS NULL AND ($1 = 'super_admin' OR created_by = $2)")
             .bind(&auth.role)
             .bind(auth.id)
             .fetch_all(&state.db)
@@ -880,7 +880,7 @@ pub async fn get_dashboard_filters(
     Extension(auth): Extension<AuthenticatedAdmin>,
 ) -> Result<impl IntoResponse> {
     let batches: Vec<Batch> = sqlx::query_as(
-        "SELECT * FROM batches WHERE ($1 = 'super_admin' OR created_by = $2) ORDER BY name",
+        "SELECT * FROM batches WHERE deleted_at IS NULL AND ($1 = 'super_admin' OR created_by = $2) ORDER BY name",
     )
     .bind(&auth.role)
     .bind(auth.id)
