@@ -1,9 +1,14 @@
 import { useRouter } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 import { reportLovableError } from "../../../lib/lovable-error-reporting";
 
-export function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+export function ErrorComponent({ error: rawError, reset }: { error: unknown; reset: () => void }) {
+  // The router types a route error as `unknown`.
+  const error = useMemo(
+    () => (rawError instanceof Error ? rawError : new Error(String(rawError))),
+    [rawError],
+  );
   console.error(error);
   const router = useRouter();
   useEffect(() => {
