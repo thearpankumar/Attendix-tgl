@@ -4,6 +4,7 @@ mod test_db;
 mod audit_log_tests;
 mod audit_regression_tests;
 mod batch_lifecycle_tests;
+mod delete_integrity_tests;
 mod exam_session_flow_tests;
 mod excel_session_flow_tests;
 mod extension_pairing_tests;

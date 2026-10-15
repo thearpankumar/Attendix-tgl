@@ -457,8 +457,8 @@ pub(crate) async fn ensure_batch_assignable(
 /// why: those sessions' roster, absent list, stats and exports are all
 /// derived from the batch, and attendance rows are keyed by roll number text,
 /// so nothing historical changes. Recurring rules pointing at the batch are
-/// paused (and release their locked short code) with an explanatory
-/// `last_error`, since a rule can't generate sessions for a deleted batch.
+/// paused (releasing their short link for reuse, but remembering it so a
+/// later resume re-locks it) with an explanatory `last_error`, since a rule can't generate sessions for a deleted batch.
 pub async fn delete_batch(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -497,7 +497,7 @@ pub async fn delete_batch(
         let reason = format!("Batch \"{}\" was deleted", batch.name);
         sqlx::query(
             "UPDATE recurring_session_rules \
-             SET is_active = false, locked_short_code = NULL, last_error = $2, updated_at = now() \
+             SET is_active = false, last_error = $2, updated_at = now() \
              WHERE batch_id = $1 AND is_active",
         )
         .bind(batch_id)

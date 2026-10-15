@@ -448,11 +448,7 @@ pub async fn create_session(
             Some(raw) => {
                 let id = Uuid::parse_str(raw)
                     .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
-                sqlx::query_scalar::<_, Uuid>("SELECT id FROM locations WHERE id = $1")
-                    .bind(id)
-                    .fetch_optional(&state.db)
-                    .await?
-                    .ok_or_else(|| AppError::BadRequest("Location not found".to_string()))?;
+                crate::controllers::location::ensure_location_assignable(&state.db, id).await?;
                 Some(id)
             }
             None => None,
@@ -470,6 +466,7 @@ pub async fn create_session(
     } else {
         let location_id = Uuid::parse_str(payload.location_id.as_deref().unwrap_or_default())
             .map_err(|e| AppError::BadRequest(format!("Invalid location ID: {}", e)))?;
+        crate::controllers::location::ensure_location_assignable(&state.db, location_id).await?;
         let assigned_admin_ids =
             validate_active_mentor_ids(&state.db, &payload.assigned_admin_ids).await?;
         (assigned_admin_ids, Some(location_id), None, None)
@@ -1109,39 +1106,33 @@ pub async fn delete_session(
     ))
 }
 
-/// Deletes a session's attendance photos, attendance records, short-link
-/// attachments, and the session row itself. Shared by the single-session
-/// and bulk-delete handlers, both of which have already verified ownership
-/// and the caller's password before calling this.
+/// Deletes a session's attendance records, short-link attachments, dependent
+/// ceremony/device rows and the session row itself, then its photos from
+/// object storage. Shared by the single-session and bulk-delete handlers,
+/// both of which have already verified ownership and the caller's password
+/// before calling this.
+///
+/// All database work happens in ONE transaction so a failure part-way (for
+/// example a foreign key from a table this function doesn't know about) rolls
+/// everything back instead of leaving a session whose attendance is already
+/// gone. Photos are only removed from storage after the commit succeeds: an
+/// object can't be un-deleted, so it must never be destroyed for a delete that
+/// then rolls back.
 async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Result<()> {
+    let mut tx = state.db.begin().await?;
+
     // Find all attendance records with photos before deleting them
     let photo_ids_to_delete: Vec<String> = sqlx::query_scalar(
         "SELECT photo_public_id FROM attendances WHERE session_id = $1 AND photo_public_id <> ''",
     )
     .bind(session_id)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
-
-    // Delete photos from storage. Keys are re-validated here because they were
-    // recorded from a client-supplied field; without this a submitter could
-    // name an unrelated object and have it destroyed when the session ended.
-    for public_id in &photo_ids_to_delete {
-        let Ok(public_id) = crate::storage::validate_attendance_photo_key(public_id) else {
-            tracing::warn!("Skipping deletion of out-of-prefix photo key");
-            continue;
-        };
-        match state.storage.provider().delete(public_id).await {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!("Failed to delete photo {}: {}", public_id, e);
-            }
-        }
-    }
 
     // Delete all attendance records for this session
     sqlx::query("DELETE FROM attendances WHERE session_id = $1")
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
     // Detach any short links that pointed to this session so they can be reattached
@@ -1149,7 +1140,7 @@ async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Re
         "UPDATE short_links SET session_id = NULL, is_active = false WHERE session_id = $1",
     )
     .bind(session_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     // Every table below has a `session_id` FK with no ON DELETE CASCADE, so
@@ -1160,15 +1151,15 @@ async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Re
     // on every registration/authentication attempt.
     sqlx::query("DELETE FROM webauthn_challenges WHERE session_id = $1")
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM photo_hashes WHERE session_id = $1")
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM devices WHERE session_id = $1")
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     // webauthn_credentials outlive any single session (they're the student's
     // enrolled passkey) — detach the pointer to the last session it was used
@@ -1177,14 +1168,46 @@ async fn delete_session_records(state: &crate::AppState, session_id: Uuid) -> Re
         "UPDATE webauthn_credentials SET last_session_id = NULL WHERE last_session_id = $1",
     )
     .bind(session_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
+    .await?;
+    // Same for flags (a review trail that outlives the session) and for the
+    // recurring rule that generated this session: its "last generated
+    // session" pointer is purely informational and was the FK that made
+    // deleting a rule's most recent session fail with a 500 after the
+    // attendance was already gone. The rule keeps running on its schedule.
+    sqlx::query("UPDATE flags SET session_id = NULL WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE recurring_session_rules SET last_generated_session_id = NULL \
+         WHERE last_generated_session_id = $1",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
     .await?;
 
     // Delete the session
     sqlx::query("DELETE FROM sessions WHERE id = $1")
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
+
+    // Delete photos from storage (best effort, post-commit). Keys are
+    // re-validated here because they were recorded from a client-supplied
+    // field; without this a submitter could name an unrelated object and have
+    // it destroyed when the session ended.
+    for public_id in &photo_ids_to_delete {
+        let Ok(public_id) = crate::storage::validate_attendance_photo_key(public_id) else {
+            tracing::warn!("Skipping deletion of out-of-prefix photo key");
+            continue;
+        };
+        if let Err(e) = state.storage.provider().delete(public_id).await {
+            tracing::warn!("Failed to delete photo {}: {}", public_id, e);
+        }
+    }
 
     Ok(())
 }
@@ -1247,8 +1270,15 @@ pub async fn bulk_delete_sessions(
             continue;
         }
 
-        delete_session_records(&state, session_id).await?;
-        deleted_count += 1;
+        // Each session is deleted atomically; one that can't be removed is
+        // reported in `failedIds` (and logged) without undoing the others.
+        match delete_session_records(&state, session_id).await {
+            Ok(()) => deleted_count += 1,
+            Err(e) => {
+                tracing::error!(error = %e, %session_id, "bulk delete: session could not be deleted");
+                failed_ids.push(raw_id.clone());
+            }
+        }
     }
 
     Ok((

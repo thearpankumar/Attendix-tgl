@@ -149,7 +149,10 @@ const Locations = () => {
       await axios.delete(`/api/admin/locations/${id}`);
       toast.success('Location deleted');
       fetchLocations();
-    } catch { toast.error('Failed to delete location'); }
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to delete location');
+    }
     setDeleteId(null);
   };
 
@@ -259,7 +262,7 @@ const Locations = () => {
       <ConfirmModal
         isOpen={!!deleteId}
         title="Delete Location"
-        message="Are you sure you want to delete this location? This action cannot be undone."
+        message="Are you sure you want to delete this location? This cannot be undone. A location that sessions or recurring rules use can't be deleted - set it to inactive instead."
         confirmText="Delete"
         onConfirm={() => deleteId && handleDelete(deleteId)}
         onCancel={() => setDeleteId(null)}

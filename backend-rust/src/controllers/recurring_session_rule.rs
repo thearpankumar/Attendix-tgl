@@ -334,11 +334,7 @@ pub async fn create_recurring_rule(
         )
     };
     if let Some(id) = location_id {
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM locations WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::BadRequest("Location not found".to_string()))?;
+        crate::controllers::location::ensure_location_assignable(&state.db, id).await?;
     }
     let batch_id = payload
         .batch_id
@@ -677,6 +673,12 @@ pub async fn update_recurring_rule(
             "location_id is required for an attendance rule".to_string(),
         ));
     }
+    // Same rule as the batch below: only a location that is being *changed*
+    // must exist and be active; a rule keeps a since-deactivated location
+    // until the admin picks another one.
+    if let Some(id) = location_id.filter(|id| Some(*id) != existing.location_id) {
+        crate::controllers::location::ensure_location_assignable(&state.db, id).await?;
+    }
     let batch_id = match &payload.batch_id {
         Some(s) if !s.is_empty() => Some(
             Uuid::parse_str(s)
@@ -801,11 +803,15 @@ pub async fn update_recurring_rule(
     Ok(Json(RecurringRuleResponse::from(updated)))
 }
 
-/// Shared by pause/resume: flips `is_active`, and per the confirmed product
-/// decision, immediately releases the locked short code on pause (not just
-/// delete) — an admin might want to hand that link to a different ad-hoc
-/// session the moment a rule is switched off, not just after deleting it.
-/// Resuming clears any past-due `next_run_at` by recomputing it from "now",
+/// Shared by pause/resume: flips `is_active`. A paused rule *releases its
+/// short link for reuse* — an admin may hand that link to a different ad-hoc
+/// session the moment a rule is switched off, which works because only
+/// ACTIVE rules reserve a code (see the `is_active = true` checks in
+/// `create_session`/`create_recurring_rule`/`list_short_links`). The rule
+/// still remembers which code it owned (`locked_short_code` is kept), so
+/// resuming re-locks it; if another active rule has taken it in the meantime
+/// the resume is refused with a 409 rather than silently generating link-less
+/// sessions. Resuming clears any past-due `next_run_at` by recomputing it from "now",
 /// so a rule paused for a week doesn't fire a backlog the moment it's back on.
 async fn set_rule_active(
     state: &crate::AppState,
@@ -832,6 +838,21 @@ async fn set_rule_active(
                 "This one-time schedule has already run and can't be resumed".to_string(),
             ));
         }
+        if let Some(code) = &existing.locked_short_code {
+            let held_by_other: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM recurring_session_rules \
+                 WHERE locked_short_code = $1 AND is_active = true AND id <> $2",
+            )
+            .bind(code)
+            .bind(rule_id)
+            .fetch_optional(&state.db)
+            .await?;
+            if held_by_other.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "Short link '/s/{code}' is now locked to another active recurring rule, so this rule can't be resumed with it. Pause or delete the other rule first, or delete this rule and create a new one."
+                )));
+            }
+        }
         let next_run_at = RecurringSessionRule::compute_next_run_at_bounded(
             &existing.days_of_week,
             &existing.run_times_local,
@@ -855,7 +876,7 @@ async fn set_rule_active(
     } else {
         let updated: RecurringSessionRule = sqlx::query_as(
             "UPDATE recurring_session_rules \
-             SET is_active = false, locked_short_code = NULL, updated_at = now() \
+             SET is_active = false, updated_at = now() \
              WHERE id = $1 RETURNING *",
         )
         .bind(rule_id)

@@ -31,8 +31,12 @@ interface ShortLink {
   sessionId?: { _id: string; isActive: boolean; expiresAt: string; description?: string } | string;
 }
 
+const PAGE_SIZE = 25;
+
 const ShortLinks = () => {
   const [shortLinks, setShortLinks] = useState<ShortLink[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -43,7 +47,7 @@ const ShortLinks = () => {
   const fetchData = useCallback(async () => {
     try {
       const [linksRes, sessionsRes] = await Promise.all([
-        axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks'),
+        axios.get<{ shortLinks: ShortLink[]; total?: number }>('/api/admin/shortlinks', { params: { page, limit: PAGE_SIZE } }),
         axios.get<Session[]>('/api/admin/sessions'),
       ]);
       const mappedLinks = linksRes.data.shortLinks.map(link => {
@@ -54,10 +58,11 @@ const ShortLinks = () => {
         return link;
       });
       setShortLinks(mappedLinks as unknown as ShortLink[]);
+      setTotal(linksRes.data.total ?? linksRes.data.shortLinks.length);
       setSessions(sessionsRes.data);
     } catch { toast.error('Failed to fetch data'); }
     finally { setLoading(false); }
-  }, []);
+  }, [page]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -95,7 +100,10 @@ const ShortLinks = () => {
 
   const handleDelete = async (shortCode: string) => {
     try { await axios.delete(`/api/admin/shortlinks/${shortCode}`); toast.success('Short link deleted'); fetchData(); }
-    catch { toast.error('Failed to delete'); }
+    catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to delete');
+    }
     setConfirmAction(null);
   };
 
@@ -186,6 +194,16 @@ const ShortLinks = () => {
       ) : (
         <div className="card card-table">
           <DataTable columns={columns} rows={shortLinks} rowKey={(l) => l._id} />
+        </div>
+      )}
+
+      {total > PAGE_SIZE && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', marginTop: '16px' }}>
+          <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Previous</Button>
+          <span style={{ fontSize: '13px', color: 'var(--color-muted)' }}>
+            Page {page} of {Math.ceil(total / PAGE_SIZE)} ({total} links)
+          </span>
+          <Button variant="secondary" size="sm" disabled={page >= Math.ceil(total / PAGE_SIZE)} onClick={() => setPage((p) => p + 1)}>Next</Button>
         </div>
       )}
 

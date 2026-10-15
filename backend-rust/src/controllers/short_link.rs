@@ -153,19 +153,40 @@ pub struct ShortLinksQuery {
     pub is_active: Option<String>,
 }
 
+/// Upper bound for `GET /shortlinks?limit=`.
+const MAX_SHORT_LINKS_PAGE_SIZE: i64 = 500;
+
 pub async fn get_short_links(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(query): Query<ShortLinksQuery>,
 ) -> Result<impl IntoResponse> {
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(20);
+    // `?page=0` / negative values used to reach Postgres as a negative OFFSET
+    // and surface as a 500; clamp instead.
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query
+        .limit
+        .unwrap_or(20)
+        .clamp(1, MAX_SHORT_LINKS_PAGE_SIZE);
 
     let session_id_filter = query
         .session_id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s).ok());
     let is_active_filter = query.is_active.as_deref().map(|s| s == "true");
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM short_links \
+         WHERE ($1 = 'super_admin' OR created_by = $2) \
+           AND ($3::uuid IS NULL OR session_id = $3) \
+           AND ($4::bool IS NULL OR is_active = $4)",
+    )
+    .bind(&auth.role)
+    .bind(auth.id)
+    .bind(session_id_filter)
+    .bind(is_active_filter)
+    .fetch_one(&state.db)
+    .await?;
 
     let links = sqlx::query_as::<_, ShortLink>(
         "SELECT * FROM short_links \
@@ -216,7 +237,12 @@ pub async fn get_short_links(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({ "shortLinks": response })))
+    Ok(Json(serde_json::json!({
+        "shortLinks": response,
+        "total": total,
+        "page": page,
+        "limit": limit,
+    })))
 }
 
 pub async fn get_short_link_by_code(
@@ -384,14 +410,27 @@ pub async fn delete_short_link(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Path(short_code): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let result = sqlx::query(
+    let short_code = short_code.to_lowercase();
+    let result = match sqlx::query(
         "DELETE FROM short_links WHERE short_code = $1 AND ($2 = 'super_admin' OR created_by = $3)",
     )
-    .bind(short_code.to_lowercase())
+    .bind(&short_code)
     .bind(&auth.role)
     .bind(auth.id)
     .execute(&state.db)
-    .await?;
+    .await
+    {
+        Ok(r) => r,
+        // `recurring_session_rules.locked_short_code` references the code
+        // (active or paused rule alike), so the delete can't proceed.
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            return Err(AppError::Conflict(format!(
+                "Short link '/s/{short_code}' is locked to a recurring rule and can't be deleted. \
+                 Delete that rule first (or detach the link from its session instead)."
+            )));
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Short link not found".to_string()));

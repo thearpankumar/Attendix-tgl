@@ -143,4 +143,36 @@ describe('ShortLinks', () => {
     
     await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/admin/shortlinks/TEST1'));
   });
+
+  it('should surface the server message when deleting a rule-locked link fails', async () => {
+    (axios.get as any).mockImplementation((url: string) => {
+      if (url.includes('/shortlinks')) return Promise.resolve({ data: { shortLinks: [{ _id: '1', shortCode: 'TEST1', isActive: true, createdAt: new Date().toISOString() }] } });
+      return Promise.resolve({ data: [] });
+    });
+    (axios.delete as any).mockRejectedValue({ response: { data: { message: "Short link '/s/test1' is locked to a recurring rule" } } });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getAllByText('Delete')[0]).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Delete Short Link/i })).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Delete')[1]);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Short link '/s/test1' is locked to a recurring rule"));
+  });
+
+  it('should paginate when the server reports more links than one page', async () => {
+    (axios.get as any).mockImplementation((url: string) => {
+      if (url.includes('/shortlinks')) {
+        return Promise.resolve({ data: { shortLinks: [{ _id: '1', shortCode: 'TEST1', isActive: true, createdAt: new Date().toISOString() }], total: 60, page: 1, limit: 25 } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    renderComponent();
+    await waitFor(() => expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument());
+    expect(axios.get).toHaveBeenCalledWith('/api/admin/shortlinks', { params: { page: 1, limit: 25 } });
+
+    fireEvent.click(screen.getByText('Next'));
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/admin/shortlinks', { params: { page: 2, limit: 25 } }));
+  });
 });

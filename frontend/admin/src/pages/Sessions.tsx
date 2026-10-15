@@ -286,7 +286,8 @@ const Sessions = () => {
           // not just what the currently active filters already narrowed to.
           axios.get<Session[]>('/api/admin/sessions', { params: baseParams, signal: abortRef.current.signal }),
           axios.get<Location[]>('/api/admin/locations', { signal: abortRef.current.signal }),
-          axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { signal: abortRef.current.signal }),
+          // The pickers below need every link, not the API's default page of 20.
+          axios.get<{ shortLinks: ShortLink[] }>('/api/admin/shortlinks', { params: { limit: 500 }, signal: abortRef.current.signal }),
           axios.get<Batch[]>('/api/admin/batches', { signal: abortRef.current.signal }),
           axios.get<Mentor[]>('/api/admin/users', { signal: abortRef.current.signal }),
           axios.get<SessionRecordsOverview>('/api/admin/sessions/stats-overview', {
@@ -578,9 +579,12 @@ const Sessions = () => {
     setRuleBusyId(id);
     try {
       await axios.post(`/api/admin/recurring-rules/${id}/pause`);
-      toast.success('Rule paused — its locked link (if any) is now free to reuse');
+      toast.success('Rule paused — its link (if any) is free to reuse meanwhile and is restored on resume');
       fetchRecurringRules();
-    } catch { toast.error('Failed to pause rule'); }
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to pause rule');
+    }
     finally { setRuleBusyId(null); }
   };
 
@@ -590,7 +594,10 @@ const Sessions = () => {
       await axios.post(`/api/admin/recurring-rules/${id}/resume`);
       toast.success('Rule resumed');
       fetchRecurringRules();
-    } catch { toast.error('Failed to resume rule'); }
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to resume rule');
+    }
     finally { setRuleBusyId(null); }
   };
 
