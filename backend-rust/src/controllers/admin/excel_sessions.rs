@@ -301,7 +301,8 @@ fn group_rows(raw_rows: &[Vec<String>]) -> Result<GroupingOutcome> {
 
         group.students.push(ParsedStudent {
             name,
-            roll_number,
+            // Same stored form as batch rosters and attendance rows.
+            roll_number: roll_number.trim().to_uppercase(),
             email,
             round,
         });

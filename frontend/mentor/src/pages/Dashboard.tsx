@@ -17,6 +17,9 @@ interface Session {
   isActive: boolean;
   attendanceCount: number;
   description?: string;
+  createdAt?: string;
+  /** Hours after creation during which a mentor may still mark/undo a normal session. */
+  mentorEditWindowHours?: number;
 }
 
 interface RosterSummary {
@@ -27,13 +30,33 @@ interface RosterSummary {
   unmarked: number;
 }
 
-type SessionState = 'live' | 'upcoming' | 'closed';
+// 'editing' = a normal (non-exam) session whose short self check-in window has
+// ended but whose mentor edit window is still open: the mentor can keep marking
+// and correcting attendance, so it must not be filed under Past/Inactive.
+type SessionState = 'live' | 'upcoming' | 'editing' | 'closed';
+
+const editWindowEndsAt = (s: Session): number | null => {
+  if (s.startsAt || !s.createdAt || s.mentorEditWindowHours == null) return null;
+  return new Date(s.createdAt).getTime() + s.mentorEditWindowHours * 3_600_000;
+};
 
 const sessionState = (s: Session): SessionState => {
   const now = Date.now();
-  if (!s.isActive || new Date(s.expiresAt).getTime() < now) return 'closed';
+  if (!s.isActive) return 'closed';
+  if (new Date(s.expiresAt).getTime() < now) {
+    const editEnds = editWindowEndsAt(s);
+    return editEnds !== null && editEnds > now ? 'editing' : 'closed';
+  }
   if (s.startsAt && new Date(s.startsAt).getTime() > now) return 'upcoming';
   return 'live';
+};
+
+const editTimeLeft = (s: Session) => {
+  const editEnds = editWindowEndsAt(s);
+  if (editEnds === null) return 'Editable';
+  const mins = Math.max(1, Math.round((editEnds - Date.now()) / 60000));
+  const h = Math.floor(mins / 60);
+  return h > 0 ? `Editable · ${h}h ${mins % 60}m left` : `Editable · ${mins}m left`;
 };
 
 const formatSlot = (s: Session) => {
@@ -109,7 +132,10 @@ const Dashboard = () => {
   // "Today" = currently live, or scheduled to start later today. "Upcoming"
   // = scheduled for a future calendar day. A live session is always today
   // by definition (it's happening right now), regardless of when it started.
-  const todaySessions = openSessions.filter((s) => sessionState(s) === 'live' || (s.startsAt && isToday(s.startsAt)));
+  const todaySessions = openSessions.filter((s) => {
+    const state = sessionState(s);
+    return state === 'live' || state === 'editing' || (s.startsAt && isToday(s.startsAt));
+  });
   const upcomingDaySessions = openSessions.filter((s) => sessionState(s) === 'upcoming' && s.startsAt && !isToday(s.startsAt));
   const visibleSessions = sessionsTab === 'today' ? todaySessions : upcomingDaySessions;
 
@@ -134,7 +160,10 @@ const Dashboard = () => {
     },
     { total: 0 }
   );
-  const liveRosterTotals = liveSessions.reduce(
+  // Sessions still open for the mentor's marking (live + inside the edit
+  // window) both count towards "how is marking going right now".
+  const markingSessions = openSessions.filter((s) => sessionState(s) === 'live' || sessionState(s) === 'editing');
+  const liveRosterTotals = markingSessions.reduce(
     (acc, s) => {
       const r = rosterMap[s._id];
       if (r) { acc.present += r.present; acc.marked += r.marked; }
@@ -197,7 +226,7 @@ const Dashboard = () => {
                         </div>
                         <div className="session-row-meta">
                           <span className={`badge ${state === 'live' ? 'badge-success' : 'badge-warning'}`}>
-                            {state === 'live' ? 'LIVE' : (s.startsAt ? timeUntil(s.startsAt) : 'Upcoming')}
+                            {state === 'live' ? 'LIVE' : state === 'editing' ? editTimeLeft(s) : (s.startsAt ? timeUntil(s.startsAt) : 'Upcoming')}
                           </span>
                           <span className="session-row-count">
                             {roster ? `${roster.marked}/${roster.total}` : `${s.attendanceCount}`} Marked

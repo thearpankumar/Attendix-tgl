@@ -57,12 +57,14 @@ fn clean_optional(value: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Trims and validates one student row. `row` is 1-based, for messages.
+/// Trims, upper-cases the roll number and validates one student row. `row` is 1-based, for messages.
 fn normalize_student(input: &StudentInput, row: Option<usize>) -> Result<StudentInput> {
     // Row prefix only makes sense for a multi-row roster.
     let at = row.map(|r| format!("Row {r}: ")).unwrap_or_default();
     let name = input.name.trim().to_string();
-    let roll_number = input.roll_number.trim().to_string();
+    // Roll numbers are stored trimmed and upper-cased everywhere (attendance
+    // rows, exports and every comparison already use that form).
+    let roll_number = input.roll_number.trim().to_uppercase();
     if name.is_empty() {
         return Err(AppError::BadRequest(format!("{at}name is required")));
     }
@@ -945,6 +947,14 @@ mod roster_tests {
     fn normalize_roster_rejects_case_insensitive_duplicates() {
         let err = normalize_roster(&[input("ab1", "A"), input(" AB1 ", "B")]).unwrap_err();
         assert!(err.to_string().contains("duplicate roll number"), "{err}");
+    }
+
+    #[test]
+    fn normalize_student_uppercases_roll_numbers() {
+        let n = normalize_student(&input("  zzr001 ", "A"), None).unwrap();
+        assert_eq!(n.roll_number, "ZZR001");
+        let rows = normalize_roster(&[input("ab1", "A"), input("ab2", "B")]).unwrap();
+        assert_eq!(rows[0].roll_number, "AB1");
     }
 
     #[test]

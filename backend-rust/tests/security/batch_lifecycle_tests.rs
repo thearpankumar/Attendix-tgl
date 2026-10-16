@@ -161,7 +161,7 @@ async fn deleting_a_batch_with_sessions_archives_it_and_keeps_history_working() 
         .get(&app, &format!("/api/admin/sessions/{session_id}/roster"))
         .await;
     assert!(
-        roster.to_string().contains(&roll),
+        roster.to_string().contains(&roll.to_uppercase()),
         "roster keeps the students: {roster:?}"
     );
     let (status, _) = client
@@ -509,7 +509,8 @@ async fn manual_row_add_edit_delete_with_duplicate_checks() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{added:?}");
-    assert_eq!(added["rollNumber"], "m002");
+    // Roll numbers are stored trimmed + upper-cased.
+    assert_eq!(added["rollNumber"], "M002");
     assert_eq!(added["position"], 1);
     let eve_id = added["id"].as_str().unwrap().to_string();
 

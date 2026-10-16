@@ -189,4 +189,60 @@ describe('Mentor Dashboard', () => {
       expect(screen.getByText('2')).toBeInTheDocument();
     });
   });
+  describe('mentor edit window', () => {
+    // A normal session: no startsAt, short self-check-in window already over,
+    // created `createdHoursAgo` hours ago, 48h mentor edit window.
+    const normalSession = (createdHoursAgo: number, over: Record<string, unknown> = {}) => ({
+      _id: 'norm1',
+      collegeName: 'Edit Window College',
+      batchName: 'CS303',
+      locationName: 'Room 7',
+      createdAt: new Date(Date.now() - createdHoursAgo * 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() - (createdHoursAgo * 3_600_000 - 1_800_000)).toISOString(),
+      isActive: true,
+      attendanceCount: 3,
+      mentorEditWindowHours: 48,
+      ...over,
+    });
+
+    it('keeps a normal session editable (not Past/Inactive) while the mentor edit window is open, and counts its students', async () => {
+      mockGet([normalSession(3)], { norm1: { total: 30, marked: 10, present: 8, absent: 2, unmarked: 20 } });
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText('Your Sessions')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/Editable · 45h/)).toBeInTheDocument();
+      expect(screen.queryByText(/past \/ inactive/i)).not.toBeInTheDocument();
+      // Students stat card includes it.
+      expect(screen.getByText('30')).toBeInTheDocument();
+      // Attendance card is computed from its marks: 8 present of 10 marked.
+      expect(screen.getAllByText('80%').length).toBeGreaterThan(0);
+    });
+
+    it('moves a normal session to Past/Inactive once the edit window has closed', async () => {
+      mockGet([normalSession(49)]);
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText(/past \/ inactive/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Editable/)).not.toBeInTheDocument();
+    });
+
+    it('never reopens an exam session (has startsAt) or a deactivated session after its end', async () => {
+      mockGet([
+        normalSession(3, { _id: 'exam1', startsAt: new Date(Date.now() - 3 * 3_600_000).toISOString(), collegeName: 'Exam College' }),
+        normalSession(3, { _id: 'off1', isActive: false, collegeName: 'Off College' }),
+      ]);
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText(/past \/ inactive/i)).toBeInTheDocument();
+      });
+      expect(screen.getByText('Exam College')).toBeInTheDocument();
+      expect(screen.getByText('Off College')).toBeInTheDocument();
+      expect(screen.queryByText(/Editable/)).not.toBeInTheDocument();
+    });
+  });
 });

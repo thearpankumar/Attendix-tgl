@@ -19,6 +19,7 @@ mod normal_session_mentor_tests;
 mod one_time_schedule_tests;
 mod recurring_rule_shortlink_tests;
 mod recurring_scheduler_tests;
+mod roster_roll_case_tests;
 mod route_auth_tests;
 mod security_enhancements_tests;
 mod security_tests;

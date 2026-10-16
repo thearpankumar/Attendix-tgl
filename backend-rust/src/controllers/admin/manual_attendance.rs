@@ -196,7 +196,7 @@ fn build_roster_view(
         };
         roster.push(RosterStudent {
             student_id: s.id.to_string(),
-            roll_number: s.roll_number,
+            roll_number: s.roll_number.to_uppercase(),
             name: s.name,
             college_name: s.college_name,
             email: s.email,
