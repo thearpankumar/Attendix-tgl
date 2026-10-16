@@ -582,7 +582,7 @@ pub async fn export_batch_students(
     let filename = format!(
         "Batch_Attendance_{}_{}.xlsx",
         batch_id,
-        Utc::now().format("%Y%m%d_%H%M%S")
+        crate::utils::ist::format_filename_stamp(Utc::now())
     );
     Ok(xlsx_attachment(filename, excel_data))
 }
@@ -654,7 +654,7 @@ fn build_batch_export_workbook(
         let row = (i + 1) as u32;
         sheet.write_string(row, 0, &d.name).map_err(xl_err)?;
         sheet.write_string(row, 1, &d.roll_number).map_err(xl_err)?;
-        sheet.write_string(row, 2, d.session_date.to_rfc3339()).map_err(xl_err)?;
+        sheet.write_string(row, 2, crate::utils::ist::format_datetime(d.session_date)).map_err(xl_err)?;
         let status_str = d.status.map(status_label).unwrap_or("unmarked");
         sheet.write_string(row, 3, status_str).map_err(xl_err)?;
     }
@@ -1043,7 +1043,7 @@ pub async fn export_student_lookup(
 
     let filename = format!(
         "Student_Lookup_Export_{}.xlsx",
-        Utc::now().format("%Y%m%d_%H%M%S")
+        crate::utils::ist::format_filename_stamp(Utc::now())
     );
     Ok(xlsx_attachment(filename, excel_data))
 }
@@ -1097,7 +1097,7 @@ fn build_lookup_export_workbook(
         details.write_string(row, 0, &d.name).map_err(xl_err)?;
         details.write_string(row, 1, &d.roll_number).map_err(xl_err)?;
         details.write_string(row, 2, &d.batch_name).map_err(xl_err)?;
-        details.write_string(row, 3, d.session_date.to_rfc3339()).map_err(xl_err)?;
+        details.write_string(row, 3, crate::utils::ist::format_datetime(d.session_date)).map_err(xl_err)?;
         details
             .write_string(row, 4, d.status.map(status_label).unwrap_or("unmarked"))
             .map_err(xl_err)?;

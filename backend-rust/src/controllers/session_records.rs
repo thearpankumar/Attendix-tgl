@@ -31,6 +31,7 @@ use crate::{error::Result, middleware::AuthenticatedAdmin, models::Session};
 pub struct SessionRecordFilters {
     pub location_id: Option<Uuid>,
     pub date_start: Option<DateTime<Utc>>,
+    /// Exclusive upper bound (start of the next IST day).
     pub date_end: Option<DateTime<Utc>>,
     pub batch_ids: Option<Vec<Uuid>>,
     pub class_labels: Option<Vec<String>>,
@@ -41,24 +42,18 @@ pub struct SessionRecordFilters {
     pub search: Option<String>,
 }
 
+/// Parses a `YYYY-MM-DD` filter value into the half-open UTC interval
+/// `[00:00 IST of day, 00:00 IST of day + 1)` (see `utils::ist`). An absent
+/// or unparseable date means "no date filter".
 fn parse_date_range(date: Option<&str>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
     let Some(date_str) = date else {
         return (None, None);
     };
-    let trimmed = date_str.trim();
-    if trimmed.is_empty() {
-        return (None, None);
-    }
-    let Ok(naive_date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") else {
+    let Ok(naive_date) = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d") else {
         return (None, None);
     };
-    let start = naive_date
-        .and_hms_opt(0, 0, 0)
-        .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
-    let end = naive_date
-        .and_hms_opt(23, 59, 59)
-        .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc));
-    (start, end)
+    let (start, end) = crate::utils::ist::ist_day_bounds_utc(naive_date);
+    (Some(start), Some(end))
 }
 
 fn split_csv(raw: Option<&str>) -> Option<Vec<String>> {
@@ -257,8 +252,8 @@ WITH scoped_sessions AS (
            OR EXISTS (
                 SELECT 1 FROM session_admins sa WHERE sa.session_id = s.id AND sa.admin_id = $2))
       AND ($3::uuid IS NULL OR s.location_id = $3)
-      AND ($4::timestamptz IS NULL OR s.created_at >= $4)
-      AND ($5::timestamptz IS NULL OR s.created_at <= $5)
+      AND ($4::timestamptz IS NULL OR COALESCE(s.starts_at, s.created_at) >= $4)
+      AND ($5::timestamptz IS NULL OR COALESCE(s.starts_at, s.created_at) < $5)
       AND ($6::uuid[] IS NULL OR COALESCE(s.batch_id, s.excel_batch_id) = ANY($6))
       AND ($7::text[] IS NULL OR COALESCE(eb.class_label, l.name) = ANY($7))
       AND ($8::text[] IS NULL OR eb.track = ANY($8))

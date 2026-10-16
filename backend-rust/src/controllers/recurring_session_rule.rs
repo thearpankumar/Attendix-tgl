@@ -17,6 +17,10 @@ use crate::{
     models::{RecurringSessionRule, ShortLink},
 };
 
+fn default_timezone() -> String {
+    crate::utils::ist::IST_TIMEZONE_NAME.to_string()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRecurringRuleRequest {
@@ -29,7 +33,9 @@ pub struct CreateRecurringRuleRequest {
     pub duration_minutes: i32,
     /// "HH:MM" 24-hour local times, e.g. ["09:00", "13:30"] — one or more.
     pub run_times_local: Vec<String>,
-    /// IANA timezone name, e.g. "Asia/Kolkata".
+    /// IANA timezone name; defaults to "Asia/Kolkata" (the product is
+    /// IST-only) when omitted. A per-rule override is still honoured.
+    #[serde(default = "default_timezone")]
     pub timezone: String,
     /// 0=Sunday..6=Saturday — at least one required for a recurring rule;
     /// ignored (and may be omitted) for a one-time schedule.

@@ -612,7 +612,7 @@ pub async fn upload_batch_excel(
             return Err(AppError::BadRequest("Batch name is required".to_string()))
         }
         Some(n) => n.trim().to_string(),
-        None => format!("Batch_{}", Utc::now().format("%Y%m%d_%H%M%S")),
+        None => format!("Batch_{}", crate::utils::ist::format_filename_stamp(Utc::now())),
     };
     if batch_name.chars().count() > 200 {
         return Err(AppError::BadRequest(

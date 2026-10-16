@@ -269,9 +269,9 @@ pub async fn get_dashboard_stats(
             DateTime::parse_from_rfc3339(start_str),
             DateTime::parse_from_rfc3339(end_str),
         ) {
-            qb.push(" AND created_at >= ");
+            qb.push(" AND COALESCE(starts_at, created_at) >= ");
             qb.push_bind(start.with_timezone(&Utc));
-            qb.push(" AND created_at <= ");
+            qb.push(" AND COALESCE(starts_at, created_at) <= ");
             qb.push_bind(end.with_timezone(&Utc));
         }
     }
@@ -566,34 +566,41 @@ pub async fn get_dashboard_stats(
     // Weekly trends - daily attendance counts for the last 7 days, grouped
     // in SQL rather than fetching every matching attendance row (same
     // full-row-fetch cost problem as student_checkins above). `AT TIME ZONE
-    // 'UTC'` before the date cast pins the day boundary to UTC explicitly,
-    // matching chrono's `DateTime<Utc>::format` semantics the old Rust-side
-    // grouping used, regardless of this connection's session TimeZone.
+    // 'Asia/Kolkata'` before the date cast pins the day boundary to IST
+    // explicitly (the product is IST-only), regardless of this connection's
+    // session TimeZone.
     #[derive(Debug, sqlx::FromRow)]
     struct DailyCountRow {
         day: chrono::NaiveDate,
         cnt: i64,
     }
-    let week_ago = Utc::now() - chrono::Duration::days(7);
+    // The last 7 IST calendar days, today included.
+    let week_ago = crate::utils::ist::ist_day_bounds_utc(
+        crate::utils::ist::ist_today() - chrono::Duration::days(6),
+    )
+    .0;
     let daily_rows: Vec<DailyCountRow> = sqlx::query_as(
-        "SELECT (captured_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS cnt \
+        "SELECT (captured_at AT TIME ZONE 'Asia/Kolkata')::date AS day, COUNT(*) AS cnt \
          FROM attendances WHERE session_id = ANY($1) AND status = 'present' AND captured_at >= $2 \
-         GROUP BY (captured_at AT TIME ZONE 'UTC')::date",
+         GROUP BY (captured_at AT TIME ZONE 'Asia/Kolkata')::date",
     )
     .bind(&session_ids)
     .bind(week_ago)
     .fetch_all(&state.db)
     .await?;
 
-    let mut daily_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // Keyed by the IST date itself so the series is chronological; only the
+    // label is a display string ("16 Oct").
+    let mut daily_counts: std::collections::BTreeMap<chrono::NaiveDate, i64> =
+        std::collections::BTreeMap::new();
     for row in &daily_rows {
-        let date_str = row.day.format("%b %d").to_string();
-        *daily_counts.entry(date_str).or_insert(0) += row.cnt;
+        *daily_counts.entry(row.day).or_insert(0) += row.cnt;
     }
 
     let mut weekly_trends: Vec<WeeklyTrend> = daily_counts
         .into_iter()
-        .map(|(date, count)| {
+        .map(|(day, count)| {
+            let date = day.format("%d %b").to_string();
             let rate = if total_students > 0 {
                 (count * 100 / total_students).min(100)
             } else {
@@ -606,7 +613,6 @@ pub async fn get_dashboard_stats(
             }
         })
         .collect();
-    weekly_trends.sort_by(|a, b| a.date.cmp(&b.date));
 
     if weekly_trends.is_empty() {
         weekly_trends.push(WeeklyTrend {
@@ -917,7 +923,7 @@ pub async fn get_dashboard_filters(
         });
     }
 
-    let today = Utc::now();
+    let today = crate::utils::ist::ist_today();
     let day_of_week = today.weekday().num_days_from_monday() as i64;
     let start_of_week = today - chrono::Duration::days(day_of_week);
     let end_of_week = start_of_week + chrono::Duration::days(6);
@@ -936,30 +942,13 @@ pub async fn get_dashboard_filters(
         "November",
         "December",
     ];
-    let short_months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-
     let yesterday = today - chrono::Duration::days(1);
 
+    let fmt = |d: chrono::NaiveDate| d.format("%d %b %Y").to_string();
     let timeframes = vec![
-        format!(
-            "This Week ({} {} - {} {})",
-            short_months[start_of_week.month() as usize - 1],
-            start_of_week.day(),
-            short_months[end_of_week.month() as usize - 1],
-            end_of_week.day()
-        ),
-        format!(
-            "Today ({} {})",
-            short_months[today.month() as usize - 1],
-            today.day()
-        ),
-        format!(
-            "Yesterday ({} {})",
-            short_months[yesterday.month() as usize - 1],
-            yesterday.day()
-        ),
+        format!("This Week ({} - {})", fmt(start_of_week), fmt(end_of_week)),
+        format!("Today ({})", fmt(today)),
+        format!("Yesterday ({})", fmt(yesterday)),
         format!("This Month ({})", months[today.month() as usize - 1]),
     ];
 
@@ -1099,7 +1088,11 @@ pub async fn get_attendance_series(
     Query(query): Query<AttendanceSeriesQuery>,
 ) -> Result<impl IntoResponse> {
     let days = query.days.unwrap_or(180).min(730);
-    let from = Utc::now() - chrono::Duration::days(days);
+    // Day-aligned in IST so the oldest bucket is a whole IST day.
+    let from = crate::utils::ist::ist_day_bounds_utc(
+        crate::utils::ist::ist_today() - chrono::Duration::days(days),
+    )
+    .0;
 
     // Every session visible to this admin (all for a super-admin, only their
     // own for a mentor) — scoped by session ownership, NOT by "sessions at my
@@ -1146,7 +1139,9 @@ pub async fn get_attendance_series(
                 .and_then(|id| location_names.get(&id))
                 .cloned()
                 .unwrap_or_else(|| "Unknown".to_string());
-            let date = attendance.captured_at.format("%Y-%m-%d").to_string();
+            let date = crate::utils::ist::to_ist(attendance.captured_at)
+                .format("%Y-%m-%d")
+                .to_string();
             result.push(AttendanceSeriesItem {
                 date,
                 location,
@@ -1200,7 +1195,11 @@ pub async fn get_sessions_by_date(
         session_ids.push(session.id);
         session_map.insert(
             session.id,
-            (session.location_id, session.description, session.created_at),
+            (
+                session.location_id,
+                session.description,
+                session.starts_at.unwrap_or(session.created_at),
+            ),
         );
     }
 
@@ -1208,15 +1207,11 @@ pub async fn get_sessions_by_date(
         return Ok(Json::<Vec<SessionByDateItem>>(vec![]));
     }
 
-    // Get attendance for the date
-    let date_start_str = format!("{}T00:00:00.000Z", query.date);
-    let date_end_str = format!("{}T23:59:59.999Z", query.date);
-    let date_start = DateTime::parse_from_rfc3339(&date_start_str)
-        .map(|d| d.with_timezone(&Utc))
+    // Check-ins on the requested IST day: the half-open interval
+    // [00:00 IST, 00:00 IST next day) expressed in UTC.
+    let day = chrono::NaiveDate::parse_from_str(query.date.trim(), "%Y-%m-%d")
         .map_err(|_| crate::error::AppError::BadRequest("Invalid date".to_string()))?;
-    let date_end = DateTime::parse_from_rfc3339(&date_end_str)
-        .map(|d| d.with_timezone(&Utc))
-        .map_err(|_| crate::error::AppError::BadRequest("Invalid date".to_string()))?;
+    let (date_start, date_end) = crate::utils::ist::ist_day_bounds_utc(day);
 
     let attendances: Vec<Attendance> = sqlx::query_as(
         "SELECT * FROM attendances WHERE session_id = ANY($1) AND status = 'present' AND captured_at >= $2 AND captured_at < $3",

@@ -967,13 +967,14 @@ pub async fn deactivate_session(
 }
 
 /// True when `anchor` and "now" fall on the same calendar day, interpreted
-/// in `tz_name` if given (an unparseable/absent timezone falls back to
-/// UTC) — the guard behind the same-day-only schedule-edit rule below.
+/// in `tz_name` if given (an unparseable/absent timezone falls back to IST,
+/// the product timezone) — the guard behind the same-day-only
+/// schedule-edit rule below.
 fn is_same_calendar_day(anchor: DateTime<Utc>, tz_name: Option<&str>) -> bool {
     let now = Utc::now();
     match tz_name.and_then(|s| s.parse::<chrono_tz::Tz>().ok()) {
         Some(tz) => anchor.with_timezone(&tz).date_naive() == now.with_timezone(&tz).date_naive(),
-        None => anchor.date_naive() == now.date_naive(),
+        None => crate::utils::ist::ist_date_of(anchor) == crate::utils::ist::ist_date_of(now),
     }
 }
 
@@ -1009,7 +1010,7 @@ pub async fn update_session_schedule(
 
     // A session generated from a recurring rule anchors its same-day check
     // to the rule's timezone (the only timezone concept this schema has
-    // today); a one-off session has none, so UTC is the honest fallback.
+    // today); a one-off session has none, so IST (the product timezone) is the fallback.
     let tz_name: Option<String> = match session.recurring_rule_id {
         Some(rule_id) => {
             sqlx::query_scalar("SELECT timezone FROM recurring_session_rules WHERE id = $1")
@@ -1448,7 +1449,7 @@ pub async fn export_session_attendance(
             student_name: attendance.student_name.clone(),
             verified: attendance.verified,
             distance: attendance.distance_from_location,
-            captured_at: attendance.captured_at.to_rfc3339(),
+            captured_at: crate::utils::ist::format_datetime(attendance.captured_at),
             webauthn_verified: attendance.webauthn_verified,
             device_flag: None,
         })
@@ -1468,7 +1469,7 @@ pub async fn export_session_attendance(
     let filename = format!(
         "attendance_{}_{}.xlsx",
         session_id,
-        Utc::now().format("%Y%m%d_%H%M%S")
+        crate::utils::ist::format_filename_stamp(Utc::now())
     );
 
     Ok((
@@ -1767,7 +1768,7 @@ async fn export_mentor_format(
                         .marked_by_admin_id
                         .and_then(|id| marker_emails.get(&id).cloned())
                         .unwrap_or_default();
-                    let marked_at = a.captured_at.format("%d/%m/%Y, %I:%M:%S %P").to_string();
+                    let marked_at = crate::utils::ist::format_datetime(a.captured_at);
                     (status.to_string(), marked_by, marked_at)
                 }
                 None => (String::new(), String::new(), String::new()),
@@ -1797,7 +1798,7 @@ async fn export_mentor_format(
     let filename = format!(
         "attendance_{}_{}.xlsx",
         session.id,
-        Utc::now().format("%Y%m%d_%H%M%S")
+        crate::utils::ist::format_filename_stamp(Utc::now())
     );
 
     Ok((
@@ -1989,7 +1990,7 @@ pub(crate) async fn build_sessions_workbook_response(
                                 .and_then(|id| marker_emails.get(&id).cloned())
                                 .unwrap_or_default();
                             let marked_at =
-                                a.captured_at.format("%d/%m/%Y, %I:%M:%S %P").to_string();
+                                crate::utils::ist::format_datetime(a.captured_at);
                             (status.to_string(), marked_by, marked_at)
                         }
                         None => (String::new(), String::new(), String::new()),
@@ -2050,7 +2051,7 @@ pub(crate) async fn build_sessions_workbook_response(
                     student_name: attendance.student_name.clone(),
                     verified: attendance.verified,
                     distance: attendance.distance_from_location,
-                    captured_at: attendance.captured_at.to_rfc3339(),
+                    captured_at: crate::utils::ist::format_datetime(attendance.captured_at),
                     webauthn_verified: attendance.webauthn_verified,
                     device_flag: None,
                 })
@@ -2083,7 +2084,7 @@ pub(crate) async fn build_sessions_workbook_response(
     let filename = format!(
         "Attendance_Export_{}sessions_{}.xlsx",
         included,
-        Utc::now().format("%d-%b-%Y_%H%M")
+        crate::utils::ist::to_ist(Utc::now()).format("%d-%b-%Y_%H%M")
     );
 
     Ok((
