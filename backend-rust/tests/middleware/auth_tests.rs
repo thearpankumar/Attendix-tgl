@@ -89,19 +89,19 @@ mod tests {
             assert!(result.is_err(), "Invalid email should be rejected");
         }
 
-        /// Test: should reject short password (< 6 chars)
+        /// Test: should reject short password (< 8 chars)
         /// Node.js: lines 105-115
         #[test]
         fn should_reject_short_password() {
             let mut req = AdminRegisterRequest {
                 username: "testadmin".to_string(),
                 email: "admin@test.com".to_string(),
-                password: "12345".to_string(),
+                password: "1234567".to_string(),
                 admin_secret: "secret".to_string(),
             };
 
             let result = req.validate_and_normalize();
-            assert!(result.is_err(), "Password < 6 chars should be rejected");
+            assert!(result.is_err(), "Password < 8 chars should be rejected");
         }
     }
 
@@ -959,20 +959,20 @@ mod tests {
             );
         }
 
-        /// Test: Admin with boundary password length (6 chars)
+        /// Test: Admin with boundary password length (8 chars)
         #[test]
         fn admin_password_at_min_boundary() {
             let mut req = AdminRegisterRequest {
                 username: "testadmin".to_string(),
                 email: "admin@test.com".to_string(),
-                password: "123456".to_string(), // Exactly 6 chars
+                password: "12345678".to_string(), // Exactly 8 chars
                 admin_secret: "secret".to_string(),
             };
 
             let result = req.validate_and_normalize();
             assert!(
                 result.is_ok(),
-                "Password at min boundary (6 chars) should pass"
+                "Password at min boundary (8 chars) should pass"
             );
         }
 

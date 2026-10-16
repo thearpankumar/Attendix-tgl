@@ -112,7 +112,9 @@ fn validate_session_kind(kind: &str) -> Result<()> {
 pub struct UpdateRecurringRuleRequest {
     pub location_id: Option<String>,
     pub batch_id: Option<String>,
-    pub description: Option<String>,
+    /// Omitted keeps the stored text; `null` or an empty string clears it.
+    #[serde(default, deserialize_with = "crate::utils::input::patch_text")]
+    pub description: Option<Option<String>>,
     pub duration_minutes: Option<i32>,
     pub run_times_local: Option<Vec<String>>,
     pub timezone: Option<String>,
@@ -737,7 +739,8 @@ pub async fn update_recurring_rule(
     )
     .map_err(AppError::BadRequest)?;
 
-    let description = payload.description.clone().or(existing.description.clone());
+    let description =
+        crate::utils::input::apply_patch(payload.description.clone(), existing.description.clone());
 
     let monitoring_enabled = payload
         .monitoring_enabled

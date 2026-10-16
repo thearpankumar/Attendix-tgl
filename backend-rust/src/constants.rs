@@ -232,3 +232,14 @@ pub const WEBAUTHN_AUTH_CHALLENGE_TTL_MINUTES: i64 = 15;
 /// documents (photos are uploaded to S3 out-of-band); the roster spreadsheet
 /// upload is the largest legitimate payload.
 pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// One password policy for every path that sets an admin/mentor password
+/// (bootstrap register, user create/update, self-service change). Login does
+/// not enforce it, so accounts created under the older 6-character rule can
+/// still sign in.
+pub const MIN_PASSWORD_LEN: usize = 8;
+
+/// True when `password` satisfies [`MIN_PASSWORD_LEN`] (counted in characters).
+pub fn password_meets_policy(password: &str) -> bool {
+    password.chars().count() >= MIN_PASSWORD_LEN
+}

@@ -25,7 +25,9 @@ use crate::{
     },
     error::{AppError, Result},
     middleware::AuthenticatedAdmin,
-    models::{record_audit_event, Attendance, AttendanceSource, AttendanceStatus, Location},
+    models::{
+        record_audit_event, Attendance, AttendanceSource, AttendanceStatus, Location, Session,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -254,6 +256,50 @@ pub struct ManualMarkResponse {
     pub roll_number: String,
 }
 
+/// The single gate for every manual attendance edit (mark *and* undo), so the
+/// two can never disagree about whether a session is still editable. Applies
+/// to mentors and super-admins alike.
+///
+/// * A deactivated session (explicitly ended by its creator / a super-admin)
+///   accepts no further manual edits.
+/// * Exam session (has `starts_at`): mirrors the mentor frontend's "starts
+///   soon" gate — a mentor may start marking
+///   `manual_mark_early_window_minutes` (Settings page) before the scheduled
+///   start, but never after the scheduled end (`expires_at`).
+/// * Normal session: its own short self-check-in window (`is_expired()`) is
+///   deliberately *not* checked — a mentor must still be able to fix a
+///   student's attendance after it closes, up to the later, configurable
+///   `mentor_edit_window_hours` cutoff counted from when it was created.
+fn ensure_manual_edit_open(
+    session: &Session,
+    early_window_minutes: i64,
+    edit_window_hours: i64,
+) -> Result<()> {
+    if !session.is_active {
+        return Err(AppError::BadRequest(
+            "This session has been deactivated".to_string(),
+        ));
+    }
+    if let Some(starts_at) = session.starts_at {
+        let marking_opens_at = starts_at - chrono::Duration::minutes(early_window_minutes);
+        if marking_opens_at > Utc::now() {
+            return Err(AppError::BadRequest(
+                "This session hasn't started yet".to_string(),
+            ));
+        }
+        if session.is_expired() {
+            return Err(AppError::BadRequest(
+                "This session's attendance window has closed".to_string(),
+            ));
+        }
+    } else if mentor_edit_window_closed(session, edit_window_hours) {
+        return Err(AppError::BadRequest(format!(
+            "The {edit_window_hours}-hour window to update this session's attendance has closed"
+        )));
+    }
+    Ok(())
+}
+
 /// Marks (or re-marks) a single roster student present/absent. Idempotent: a
 /// second call for the same student updates the existing manual row rather
 /// than creating a duplicate — this is how a mentor corrects a mis-swipe.
@@ -281,43 +327,11 @@ pub async fn mark_attendance_manual(
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
     let sys_config = state.get_system_config().await;
 
-    // Mirrors the mentor frontend's own "starts soon" gate — enforced here
-    // too since that's only a UI convenience, not something a direct API
-    // call is bound by. A session with no `starts_at` (normal self-check-in)
-    // has always been markable immediately. A mentor may start marking
-    // session_config.manual_mark_early_window_minutes (Settings page,
-    // super-admin configurable) before the scheduled start, but never after
-    // the session's scheduled end (`expires_at`, anchored to starts_at +
-    // duration).
-    if let Some(starts_at) = session.starts_at {
-        let marking_opens_at = starts_at
-            - chrono::Duration::minutes(sys_config.session_config.manual_mark_early_window_minutes);
-        if marking_opens_at > Utc::now() {
-            return Err(AppError::BadRequest(
-                "This session hasn't started yet".to_string(),
-            ));
-        }
-        // Exam session: unchanged — closes for good once its own scheduled
-        // end passes.
-        if session.is_expired() {
-            return Err(AppError::BadRequest(
-                "This session's attendance window has closed".to_string(),
-            ));
-        }
-    } else if mentor_edit_window_closed(
+    ensure_manual_edit_open(
         &session,
+        sys_config.session_config.manual_mark_early_window_minutes,
         sys_config.session_config.mentor_edit_window_hours,
-    ) {
-        // Normal session: its own self-check-in window (`is_expired()`) is
-        // deliberately *not* checked here — a mentor must still be able to
-        // fix a student's attendance after that window closes, up to this
-        // later, configurable cutoff counted from when the session was
-        // created.
-        return Err(AppError::BadRequest(format!(
-            "The {}-hour window to update this session's attendance has closed",
-            sys_config.session_config.mentor_edit_window_hours
-        )));
-    }
+    )?;
 
     let source = resolve_roster_source(&session);
     if matches!(source, crate::controllers::RosterSource::None) {
@@ -438,17 +452,13 @@ pub async fn undo_manual_mark(
 
     let session = find_session_for_admin(&state.db, session_id, &auth).await?;
 
-    // Same normal-session-only 48h (configurable) cutoff as marking itself —
-    // an undo is just another edit. Exam sessions are unaffected.
-    if session.starts_at.is_none() {
-        let sys_config = state.get_system_config().await;
-        if mentor_edit_window_closed(&session, sys_config.session_config.mentor_edit_window_hours) {
-            return Err(AppError::BadRequest(format!(
-                "The {}-hour window to update this session's attendance has closed",
-                sys_config.session_config.mentor_edit_window_hours
-            )));
-        }
-    }
+    // An undo is just another edit: same gate as marking.
+    let sys_config = state.get_system_config().await;
+    ensure_manual_edit_open(
+        &session,
+        sys_config.session_config.manual_mark_early_window_minutes,
+        sys_config.session_config.mentor_edit_window_hours,
+    )?;
 
     let roll_upper = roll_number.trim().to_uppercase();
 

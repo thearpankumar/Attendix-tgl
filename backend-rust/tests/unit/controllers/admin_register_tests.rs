@@ -428,15 +428,15 @@ mod register_admin_tests {
         // - Expects message 'Validation failed'
         //
         // In Rust implementation (validators.rs lines 134-140):
-        // - Validates password length: if self.password.len() < 6
-        // - Returns FieldError with message "Password must be at least 6 characters"
+        // - Validates password length: if !password_meets_policy(&self.password)
+        // - Returns FieldError with message "Password must be at least 8 characters"
         //
-        // Note: Node.js test uses password '123' (3 chars), but validators check for min 6
+        // Note: Node.js test uses password '123' (3 chars), but validators check for min 8
 
         let mut request = attendance_geotag_backend::middleware::validators::AdminRegisterRequest {
             username: "testuser".to_string(),
             email: "test@example.com".to_string(),
-            password: "123".to_string(), // Too short (need 6+ chars)
+            password: "123".to_string(), // Too short (need 8+ chars)
             admin_secret: "test-admin-secret".to_string(),
         };
 
@@ -449,7 +449,7 @@ mod register_admin_tests {
                 assert!(e
                     .errors
                     .iter()
-                    .any(|err| err.field == "password" && err.message.contains("6 characters")));
+                    .any(|err| err.field == "password" && err.message.contains("8 characters")));
             }
             Ok(_) => panic!("Expected validation error for short password"),
         }

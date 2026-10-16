@@ -1,5 +1,6 @@
 pub mod captcha;
 pub mod geo;
+pub mod input;
 pub mod ist;
 pub mod photo_hash;
 pub mod totp;

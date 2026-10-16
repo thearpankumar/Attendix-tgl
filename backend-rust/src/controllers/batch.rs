@@ -166,17 +166,18 @@ pub async fn get_batches(
         .search
         .as_ref()
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::input::escape_like);
 
     let batches = sqlx::query_as::<_, Batch>(
         "SELECT * FROM batches \
          WHERE deleted_at IS NULL AND ($1 = 'super_admin' OR created_by = $2) \
-           AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%') \
+           AND ($3::text IS NULL OR name ILIKE '%' || $3 || '%' ESCAPE '\\') \
          ORDER BY created_at DESC",
     )
     .bind(&auth.role)
     .bind(auth.id)
-    .bind(search)
+    .bind(&search)
     .fetch_all(&state.db)
     .await?;
 
@@ -228,11 +229,11 @@ pub async fn get_batches(
          FROM excel_batches eb \
          JOIN sessions s ON s.excel_batch_id = eb.id \
          WHERE ($1 = 'super_admin' OR eb.created_by = $2) \
-           AND ($3::text IS NULL OR eb.name ILIKE '%' || $3 || '%')",
+           AND ($3::text IS NULL OR eb.name ILIKE '%' || $3 || '%' ESCAPE '\\')",
     )
     .bind(&auth.role)
     .bind(auth.id)
-    .bind(search)
+    .bind(&search)
     .fetch_all(&state.db)
     .await?;
 

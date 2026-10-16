@@ -92,6 +92,22 @@ describe('Settings — Change Password collapsible card', () => {
     await fireEvent.press(screen.getByText('Change Password'));
     expect(screen.queryByText('Current Password')).toBeNull();
   });
+
+  it('rejects a new password shorter than 8 characters without calling the API', async () => {
+    const changePassword = jest.fn();
+    mockedUseAuth.mockReturnValue({ admin, logout: jest.fn(), changePassword });
+    await renderSettings();
+
+    await fireEvent.press(screen.getByText('Change Password'));
+    const [current, next, confirm] = screen.getAllByDisplayValue('');
+    await fireEvent.changeText(current, 'current-pass');
+    await fireEvent.changeText(next, 'abc1234');
+    await fireEvent.changeText(confirm, 'abc1234');
+    await fireEvent.press(screen.getByText('Update Password'));
+
+    expect(await screen.findByText('New password must be at least 8 characters')).toBeTruthy();
+    expect(changePassword).not.toHaveBeenCalled();
+  });
 });
 
 describe('Settings — App Update card', () => {

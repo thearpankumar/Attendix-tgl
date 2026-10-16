@@ -609,10 +609,7 @@ pub async fn create_session(
         None
     };
 
-    let batch_id = payload
-        .batch_id
-        .as_ref()
-        .and_then(|id| Uuid::parse_str(id).ok());
+    let batch_id = crate::utils::input::parse_optional_uuid(payload.batch_id.as_deref(), "batch ID")?;
     if let Some(id) = batch_id {
         crate::controllers::batch::ensure_batch_assignable(&state.db, id).await?;
     }
@@ -776,7 +773,7 @@ pub async fn get_sessions(
         .map(|l| l.clamp(1, SESSIONS_LIST_PAGE_SIZE))
         .unwrap_or(SESSIONS_LIST_PAGE_SIZE);
     let offset = query.offset.unwrap_or(0).max(0);
-    let filters = query.into_filters();
+    let filters = query.into_filters()?;
 
     // `query_session_records` is also the filter-matching engine for
     // /stats-overview and /export-filtered — using it here too guarantees
@@ -1891,8 +1888,8 @@ pub async fn export_bulk_attendance(
     let session_ids: Vec<Uuid> = payload
         .session_ids
         .iter()
-        .filter_map(|raw_id| Uuid::parse_str(raw_id).ok())
-        .collect();
+        .map(|raw_id| crate::utils::input::parse_uuid(raw_id, "session ID"))
+        .collect::<Result<_>>()?;
 
     build_sessions_workbook_response(&state, &auth, &session_ids).await
 }

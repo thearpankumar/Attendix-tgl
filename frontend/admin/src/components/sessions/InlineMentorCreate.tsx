@@ -101,8 +101,8 @@ const InlineMentorCreate = ({ email, onCreated, onCancel }: InlineMentorCreatePr
         type="password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
-        placeholder="Set a password (min 6 characters)"
-        minLength={6}
+        placeholder="Set a password (min 8 characters)"
+        minLength={8}
         required
       />
       <div style={{ display: 'flex', gap: '0.5rem' }}>

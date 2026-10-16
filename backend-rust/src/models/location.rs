@@ -67,6 +67,8 @@ pub struct LocationUpdate {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub radius_meters: Option<f64>,
-    pub description: Option<String>,
+    /// Omitted keeps the stored text; `null` or an empty string clears it.
+    #[serde(default, deserialize_with = "crate::utils::input::patch_text")]
+    pub description: Option<Option<String>>,
     pub is_active: Option<bool>,
 }

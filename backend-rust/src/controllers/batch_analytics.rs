@@ -197,17 +197,22 @@ pub async fn get_batch_students(
         .unwrap_or(BATCH_STUDENTS_DEFAULT_PAGE_SIZE)
         .clamp(1, BATCH_STUDENTS_MAX_PAGE_SIZE);
     let offset = q.offset.unwrap_or(0).max(0);
-    let search = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let search = q
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::input::escape_like);
 
     let page: Vec<RosterPageRow> = sqlx::query_as(
         "SELECT id, name, roll_number, email FROM students \
          WHERE batch_id = $1 \
-           AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR roll_number ILIKE '%' || $2 || '%') \
+           AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE '\\' OR roll_number ILIKE '%' || $2 || '%' ESCAPE '\\') \
          ORDER BY position \
          LIMIT $3 OFFSET $4",
     )
     .bind(batch_id)
-    .bind(search)
+    .bind(&search)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)
@@ -409,21 +414,26 @@ pub async fn get_all_students(
         .unwrap_or(BATCH_STUDENTS_DEFAULT_PAGE_SIZE)
         .clamp(1, BATCH_STUDENTS_MAX_PAGE_SIZE);
     let offset = q.offset.unwrap_or(0).max(0);
-    let search = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let search = q
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::input::escape_like);
 
     let page: Vec<AllStudentsPageRow> = sqlx::query_as(
         "SELECT st.id, st.name, st.roll_number, st.email, st.batch_id, b.name AS batch_name \
          FROM students st \
          JOIN batches b ON b.id = st.batch_id AND b.deleted_at IS NULL \
          WHERE ($1 = 'super_admin' OR b.created_by = $2) \
-           AND ($3::text IS NULL OR st.name ILIKE '%' || $3 || '%' \
-                OR st.roll_number ILIKE '%' || $3 || '%' OR b.name ILIKE '%' || $3 || '%') \
+           AND ($3::text IS NULL OR st.name ILIKE '%' || $3 || '%' ESCAPE '\\' \
+                OR st.roll_number ILIKE '%' || $3 || '%' ESCAPE '\\' OR b.name ILIKE '%' || $3 || '%' ESCAPE '\\') \
          ORDER BY st.name, st.id \
          LIMIT $4 OFFSET $5",
     )
     .bind(&auth.role)
     .bind(auth.id)
-    .bind(search)
+    .bind(&search)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)
@@ -521,8 +531,8 @@ pub async fn export_batch_students(
             let ids: Vec<Uuid> = payload
                 .student_ids
                 .iter()
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .collect();
+                .map(|s| crate::utils::input::parse_uuid(s, "student ID"))
+                .collect::<Result<_>>()?;
             if ids.is_empty() {
                 return Err(AppError::BadRequest(
                     "studentIds is required when scope is 'selected'".to_string(),
@@ -973,8 +983,8 @@ pub async fn export_student_lookup(
     let ids: Vec<Uuid> = payload
         .student_ids
         .iter()
-        .filter_map(|s| Uuid::parse_str(s).ok())
-        .collect();
+        .map(|s| crate::utils::input::parse_uuid(s, "student ID"))
+        .collect::<Result<_>>()?;
     if ids.is_empty() {
         return Err(AppError::BadRequest("studentIds must not be empty".to_string()));
     }

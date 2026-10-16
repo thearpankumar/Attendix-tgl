@@ -167,7 +167,7 @@ pub async fn update_location(
         latitude: payload.latitude.unwrap_or(existing.latitude),
         longitude: payload.longitude.unwrap_or(existing.longitude),
         radius_meters: payload.radius_meters.unwrap_or(existing.radius_meters),
-        description: payload.description.or(existing.description),
+        description: crate::utils::input::apply_patch(payload.description, existing.description),
         created_by: existing.created_by,
         is_active: payload.is_active.unwrap_or(existing.is_active),
         created_at: existing.created_at,

@@ -2,6 +2,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UserManagement from '../../src/pages/UserManagement';
 import axios from 'axios';
+import { toast } from 'react-toastify';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../src/context/AuthContext', () => ({
@@ -189,5 +190,38 @@ describe('UserManagement', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: /disable account/i })[0]);
     expect(axios.patch).not.toHaveBeenCalled();
+  });
+  it('shows the server message when toggling an account fails', async () => {
+    (axios.get as any).mockResolvedValue({ data: [MENTOR] });
+    (axios.patch as any).mockRejectedValue({ response: { data: { message: 'Email already exists' } } });
+    renderComponent();
+
+    await waitFor(() => expect(screen.getByText('mentor.jane')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /disable account/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Email already exists'));
+  });
+
+  it('shows the server message (e.g. a 409 conflict) when saving an account fails', async () => {
+    (axios.get as any).mockResolvedValue({ data: [] });
+    (axios.post as any).mockRejectedValue({ response: { data: { message: 'Username already exists' } } });
+
+    const { container } = renderComponent();
+    await waitFor(() => expect(screen.getByText('Create Account')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Create Account'));
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'dupe' } });
+    fireEvent.change(screen.getByLabelText(/college email/i), { target: { value: 'dupe@example.com' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'password123' } });
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Username already exists'));
+  });
+
+  it('asks for passwords of at least 8 characters', async () => {
+    (axios.get as any).mockResolvedValue({ data: [] });
+    renderComponent();
+    await waitFor(() => expect(screen.getByText('Create Account')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Create Account'));
+    expect(screen.getByLabelText(/^password$/i)).toHaveAttribute('minlength', '8');
   });
 });

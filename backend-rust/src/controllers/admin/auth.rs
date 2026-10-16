@@ -89,7 +89,7 @@ pub async fn register(
         return Err(AppError::NotFound("Not found".to_string()));
     }
 
-    let existing: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE username = $1")
+    let existing: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE lower(username) = lower($1)")
         .bind(&payload.username)
         .fetch_optional(&mut *tx)
         .await?;
@@ -97,7 +97,7 @@ pub async fn register(
         return Err(AppError::BadRequest("Username already exists".to_string()));
     }
 
-    let existing_email: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE email = $1")
+    let existing_email: Option<Admin> = sqlx::query_as("SELECT * FROM admins WHERE lower(email) = lower($1)")
         .bind(&payload.email)
         .fetch_optional(&mut *tx)
         .await?;
@@ -377,10 +377,11 @@ pub async fn change_own_password(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse> {
-    if payload.new_password.len() < 6 {
-        return Err(AppError::BadRequest(
-            "New password must be at least 6 characters".to_string(),
-        ));
+    if !crate::constants::password_meets_policy(&payload.new_password) {
+        return Err(AppError::BadRequest(format!(
+            "New password must be at least {} characters",
+            crate::constants::MIN_PASSWORD_LEN
+        )));
     }
 
     let admin: Admin = sqlx::query_as("SELECT * FROM admins WHERE id = $1")

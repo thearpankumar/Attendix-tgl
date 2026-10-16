@@ -45,8 +45,9 @@ const UserManagement = () => {
     try {
       const res = await axios.get<AdminUser[]>('/api/admin/users');
       setUsers(res.data);
-    } catch {
-      toast.error('Failed to fetch admin/mentor accounts');
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to fetch admin/mentor accounts');
     } finally {
       setLoading(false);
     }
@@ -105,8 +106,9 @@ const UserManagement = () => {
       await axios.patch(`/api/admin/users/${u._id}`, { isActive: !u.isActive });
       toast.success(u.isActive ? 'Account deactivated' : 'Account reactivated');
       fetchUsers();
-    } catch {
-      toast.error('Failed to update account status');
+    } catch (error) {
+      const err = error as { response?: { data?: { message?: string } } };
+      toast.error(err.response?.data?.message || 'Failed to update account status');
     }
   };
 
@@ -228,7 +230,7 @@ const UserManagement = () => {
           </div>
           <div className="form-group">
             <label htmlFor="user-password">{editing ? 'New Password (leave blank to keep current)' : 'Password'}</label>
-            <input id="user-password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} minLength={6} required={!editing} />
+            <input id="user-password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} minLength={8} required={!editing} placeholder="At least 8 characters" />
           </div>
           {(!editing || editing._id !== currentAdmin?._id) && (
             <div className="form-group">

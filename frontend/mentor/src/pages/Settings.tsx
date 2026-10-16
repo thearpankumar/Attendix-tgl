@@ -14,7 +14,7 @@ const Settings = () => {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (newPassword.length < 6) { toast.error('New password must be at least 6 characters'); return; }
+    if (newPassword.length < 8) { toast.error('New password must be at least 8 characters'); return; }
     if (newPassword !== confirmPassword) { toast.error('New passwords do not match'); return; }
     setSaving(true);
     try {
@@ -49,11 +49,11 @@ const Settings = () => {
           </div>
           <div className="field">
             <label>New Password</label>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={6} required />
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={8} required />
           </div>
           <div className="field">
             <label>Confirm New Password</label>
-            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} minLength={6} required />
+            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} minLength={8} required />
           </div>
           <button type="submit" className="btn btn-primary btn-block" disabled={saving}>
             {saving ? <Loader2 size={16} className="spin" /> : null}

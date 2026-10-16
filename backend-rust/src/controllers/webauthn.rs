@@ -302,7 +302,7 @@ pub async fn get_credentials(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| format!("%{s}%"));
+        .map(crate::utils::input::like_contains);
 
     let suspended: Option<bool> = match params.suspended.as_deref() {
         Some("true") => Some(true),
@@ -310,7 +310,7 @@ pub async fn get_credentials(
         _ => None,
     };
 
-    const FILTERS: &str = "AND ($3::text IS NULL OR student_id ILIKE $3) \
+    const FILTERS: &str = "AND ($3::text IS NULL OR student_id ILIKE $3 ESCAPE '\\') \
          AND ($4::bool IS NULL OR is_suspended = $4)";
 
     let total: i64 = sqlx::query_scalar(&format!(

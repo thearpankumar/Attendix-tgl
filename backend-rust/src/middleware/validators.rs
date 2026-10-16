@@ -82,7 +82,7 @@ impl ValidationError {
 /// # Validations:
 /// - username: length 3-30, alphanumeric
 /// - email: valid email format, normalized to lowercase
-/// - password: min 6 characters
+/// - password: min 8 characters
 /// - admin_secret: required (non-empty)
 #[derive(Debug, Deserialize, Validate)]
 pub struct AdminRegisterRequest {
@@ -92,7 +92,7 @@ pub struct AdminRegisterRequest {
     #[validate(email(message = "Valid email required"))]
     pub email: String,
 
-    #[validate(length(min = 6, message = "Password must be at least 6 characters"))]
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
     pub password: String,
 
     #[validate(length(min = 1, message = "Admin secret required"))]
@@ -135,10 +135,13 @@ impl AdminRegisterRequest {
         }
 
         // Validate password length
-        if self.password.len() < 6 {
+        if !crate::constants::password_meets_policy(&self.password) {
             errors.push(FieldError {
                 field: "password".to_string(),
-                message: "Password must be at least 6 characters".to_string(),
+                message: format!(
+                    "Password must be at least {} characters",
+                    crate::constants::MIN_PASSWORD_LEN
+                ),
             });
         }
 

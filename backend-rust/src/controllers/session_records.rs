@@ -20,7 +20,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::{error::Result, middleware::AuthenticatedAdmin, models::Session};
+use crate::{
+    error::Result,
+    middleware::AuthenticatedAdmin,
+    models::Session,
+    utils::input::{parse_optional_uuid, parse_uuid},
+};
 
 /// Shared filter criteria for session-record queries. `present`/`absent` and
 /// marking-progress are always computed against a session's roster, never
@@ -118,18 +123,18 @@ pub struct SessionRecordQueryParams {
 }
 
 impl SessionRecordQueryParams {
-    pub fn into_filters(self) -> SessionRecordFilters {
+    pub fn into_filters(self) -> Result<SessionRecordFilters> {
         let (date_start, date_end) = parse_date_range(self.date.as_deref());
         let batch_ids = split_csv(self.batch_ids.as_deref())
-            .map(|ids| ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect())
+            .map(|ids| {
+                ids.iter()
+                    .map(|s| parse_uuid(s, "batch ID"))
+                    .collect::<Result<Vec<Uuid>>>()
+            })
+            .transpose()?
             .and_then(non_empty_uuids);
-        SessionRecordFilters {
-            location_id: self
-                .location_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .and_then(|s| Uuid::parse_str(s).ok()),
+        Ok(SessionRecordFilters {
+            location_id: parse_optional_uuid(self.location_id.as_deref(), "location ID")?,
             date_start,
             date_end,
             batch_ids,
@@ -144,7 +149,7 @@ impl SessionRecordQueryParams {
                 .search
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-        }
+        })
     }
 }
 
@@ -167,21 +172,16 @@ pub struct SessionRecordFilterBody {
 }
 
 impl SessionRecordFilterBody {
-    pub fn into_filters(self) -> SessionRecordFilters {
+    pub fn into_filters(self) -> Result<SessionRecordFilters> {
         let (date_start, date_end) = parse_date_range(self.date.as_deref());
         let batch_ids = non_empty_uuids(
             self.batch_ids
                 .iter()
-                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
-                .collect(),
+                .map(|s| parse_uuid(s, "batch ID"))
+                .collect::<Result<Vec<Uuid>>>()?,
         );
-        SessionRecordFilters {
-            location_id: self
-                .location_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .and_then(|s| Uuid::parse_str(s).ok()),
+        Ok(SessionRecordFilters {
+            location_id: parse_optional_uuid(self.location_id.as_deref(), "location ID")?,
             date_start,
             date_end,
             batch_ids,
@@ -196,7 +196,7 @@ impl SessionRecordFilterBody {
                 .search
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-        }
+        })
     }
 }
 
@@ -286,7 +286,7 @@ roster_agg AS (
 ),
 search_matches AS (
     SELECT DISTINCT session_id FROM roster
-    WHERE $10::text IS NOT NULL AND (name ILIKE $10 OR roll_number ILIKE $10)
+    WHERE $10::text IS NOT NULL AND (name ILIKE $10 ESCAPE '\' OR roll_number ILIKE $10 ESCAPE '\')
 )
 SELECT ss.id, ss.created_at, ss.track, ss.class_label, ss.session_time_raw,
        COALESCE(ra.roster_size, 0) AS roster_size,
@@ -315,7 +315,10 @@ pub async fn query_session_records(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SessionRecordStats>> {
-    let search_pattern = filters.search.as_ref().map(|s| format!("%{}%", s));
+    let search_pattern = filters
+        .search
+        .as_deref()
+        .map(crate::utils::input::like_contains);
     let rows: Vec<SessionRecordStats> = sqlx::query_as(SESSION_RECORDS_SQL)
         .bind(&auth.role)
         .bind(auth.id)
@@ -420,7 +423,7 @@ pub async fn get_sessions_stats_overview(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Query(params): Query<SessionRecordQueryParams>,
 ) -> Result<impl IntoResponse> {
-    let filters = params.into_filters();
+    let filters = params.into_filters()?;
 
     let total_records: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sessions s \
@@ -471,7 +474,7 @@ pub async fn export_sessions_filtered(
     Extension(auth): Extension<AuthenticatedAdmin>,
     Json(payload): Json<SessionRecordFilterBody>,
 ) -> Result<impl IntoResponse> {
-    let filters = payload.into_filters();
+    let filters = payload.into_filters()?;
     let records = query_session_records(&state.db, &auth, &filters, i64::MAX, 0).await?;
 
     if records.is_empty() {
