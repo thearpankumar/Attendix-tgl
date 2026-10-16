@@ -1,7 +1,9 @@
+import { istHour } from '../utils/datetime';
+
 type GreetingPeriod = 'morning' | 'afternoon' | 'night';
 
 const greetingWord = () => {
-  const hour = new Date().getHours();
+  const hour = istHour();
   if (hour < 12) return 'Good morning';
   if (hour < 17) return 'Good afternoon';
   return 'Good evening';
@@ -10,7 +12,7 @@ const greetingWord = () => {
 // Same hour boundaries as greetingWord — "evening" shares the "night" visual
 // treatment since both cover the same after-17:00 stretch of the day.
 const greetingPeriod = (): GreetingPeriod => {
-  const hour = new Date().getHours();
+  const hour = istHour();
   if (hour < 12) return 'morning';
   if (hour < 17) return 'afternoon';
   return 'night';

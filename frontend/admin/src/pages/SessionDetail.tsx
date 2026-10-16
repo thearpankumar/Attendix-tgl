@@ -14,6 +14,7 @@ import StudentBehaviorDialog from '../components/StudentBehaviorDialog';
 import StudentMonitoringDashboard from '../components/StudentMonitoringDashboard';
 import { downloadBlob } from '../utils/downloadBlob';
 import { absentRowsForTab, allTabCount } from '../utils/combinedAttendance';
+import { formatDateForFilename, formatDateTime, formatTimeSeconds, istDateKey, todayIST } from '../utils/datetime';
 
 interface Session {
   _id: string;
@@ -247,9 +248,7 @@ const SessionDetail = () => {
     try {
       const res = await axios.get(`/api/admin/sessions/${id}/export`, { responseType: 'blob' });
 
-      const sessionDate = session?.createdAt ? new Date(session.createdAt) : new Date();
-      const dateOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
-      const dateStr = sessionDate.toLocaleDateString('en-GB', dateOpts).replace(/ /g, '_');
+      const dateStr = formatDateForFilename(session?.startsAt || session?.createdAt || new Date());
 
       const locName = session?.locationName || (typeof session?.locationId === 'object' ? session.locationId?.name : undefined) || 'Location';
       const batchPart = session?.batchId?.name ? `_${session.batchId.name}` : '';
@@ -483,11 +482,10 @@ const SessionDetail = () => {
   const statusTone = !session.isActive ? 'danger' : isExpired ? 'warning' : 'success';
   const statusLabel = !session.isActive ? 'Inactive' : isExpired ? 'Expired' : 'Active';
   // Mirrors the backend's same-day-only guard on PATCH .../schedule (in the
-  // browser's local timezone — a reasonable approximation of the backend's
-  // UTC/rule-timezone check for a same-day edit window). Anchored on
+  // IST calendar day, matching the backend's default timezone). Anchored on
   // startsAt when set, createdAt otherwise, same as the server.
   const scheduleAnchor = new Date(session.startsAt || session.createdAt || Date.now());
-  const isScheduleEditableToday = scheduleAnchor.toDateString() === new Date().toDateString();
+  const isScheduleEditableToday = istDateKey(scheduleAnchor) === todayIST();
   // A normal (non-exam) session has a location; an exam session never does.
   // Only a normal session's mentor list is time-boxed — see backend
   // `mentor_edit_window_closed`, mirrored here purely for UI feedback (the
@@ -538,7 +536,7 @@ const SessionDetail = () => {
               <span className="detail-label">
                 <Calendar size={14} /> Expires At:
               </span>
-              <span className="detail-value">{new Date(session.expiresAt).toLocaleString()}</span>
+              <span className="detail-value">{formatDateTime(session.expiresAt)}</span>
             </div>
             <div className="session-detail-item">
               <span className="detail-label">
@@ -557,7 +555,7 @@ const SessionDetail = () => {
                     {session.classDurationMinutes != null && (
                       <span style={{ marginLeft: 8, color: 'var(--color-muted)' }}>
                         {session.classDurationMinutes} min class
-                        {session.monitoringEndsAt && ` (through ${new Date(session.monitoringEndsAt).toLocaleTimeString()})`}
+                        {session.monitoringEndsAt && ` (through ${formatTimeSeconds(session.monitoringEndsAt)})`}
                       </span>
                     )}
                   </>
@@ -932,7 +930,7 @@ const SessionDetail = () => {
 
                       <td><span style={{ whiteSpace: 'nowrap' }}>{Math.round(record.distanceFromLocation)}m</span></td>
 
-                      <td><span style={{ whiteSpace: 'nowrap' }}>{new Date(record.capturedAt).toLocaleTimeString()}</span></td>
+                      <td><span style={{ whiteSpace: 'nowrap' }}>{formatTimeSeconds(record.capturedAt)}</span></td>
 
                       <td style={{ textAlign: 'center' }}>
                         <Badge tone={record.verified ? 'success' : 'danger'}>

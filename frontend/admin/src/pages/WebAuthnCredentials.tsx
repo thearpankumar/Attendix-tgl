@@ -10,6 +10,7 @@ import Modal from '../components/ui/Modal';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonTiles, SkeletonRows } from '../components/ui/Skeleton';
+import { formatDateTime } from '../utils/datetime';
 
 
 interface Credential {
@@ -113,7 +114,7 @@ function WebAuthnCredentials() {
     finally { setActionLoading(false); }
   };
 
-  const fmt = (d: string) => new Date(d).toLocaleString();
+  const fmt = (d: string) => formatDateTime(d);
   const deviceTypeEntries = stats ? Object.entries(stats.deviceTypes || {}) : [];
   const maxDeviceCount = Math.max(1, ...deviceTypeEntries.map(([, c]) => c));
 

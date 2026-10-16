@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { useStudentBehavior } from '../hooks/useStudentBehavior';
 import StudentBehaviorPanel from './StudentBehaviorPanel';
+import { formatTimeSeconds } from '../utils/datetime';
 
 export interface MonitoredStudent {
   rollNumber: string;
@@ -96,7 +97,7 @@ export default function StudentMonitoringDashboard({
                     dataKey="x"
                     type="number"
                     domain={['dataMin', 'dataMax']}
-                    tickFormatter={(t) => new Date(t).toLocaleTimeString()}
+                    tickFormatter={(t) => formatTimeSeconds(t)}
                     tick={{ fill: 'var(--color-muted)', fontSize: 11 }}
                   />
                   <YAxis
@@ -110,7 +111,7 @@ export default function StudentMonitoringDashboard({
                   />
                   <Tooltip
                     formatter={(_value, _name, props) => [CHART_CATEGORY_LABELS[props.payload.eventType], 'Event']}
-                    labelFormatter={(t) => new Date(t as number).toLocaleTimeString()}
+                    labelFormatter={(t) => formatTimeSeconds(t as number)}
                   />
                   <Scatter data={chartData} fill="var(--color-primary, #4f46e5)" />
                 </ScatterChart>

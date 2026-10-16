@@ -9,6 +9,7 @@ import EmptyState from '../components/ui/EmptyState';
 import Badge from '../components/ui/Badge';
 import Modal from '../components/ui/Modal';
 import { SkeletonRows } from '../components/ui/Skeleton';
+import { formatDateTime } from '../utils/datetime';
 
 type Severity = 'high' | 'medium' | 'low';
 
@@ -190,7 +191,7 @@ const FlagQueue = () => {
       },
     },
     { key: 'session', label: 'Session', render: (r) => <span style={{ color: 'var(--color-faint)', fontSize: '11px' }}>{r.sessionId.substring(0, 8)}...</span> },
-    { key: 'time', label: 'Time', render: (r) => new Date(r.capturedAt).toLocaleString() },
+    { key: 'time', label: 'Time', render: (r) => formatDateTime(r.capturedAt) },
     {
       key: 'status',
       label: 'Status',

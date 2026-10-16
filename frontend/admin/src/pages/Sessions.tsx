@@ -24,6 +24,7 @@ import type { SessionRecordFiltersState } from '../components/sessions/SessionRe
 import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
 import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadBlob';
 import { firstCronOccurrence, isFutureLocal, todayInTimezone } from '../utils/schedule';
+import { formatDateTime, formatISODate, IST_TIMEZONE, istToUtcISO } from '../utils/datetime';
 
 const PAGE_SIZE = 30;
 
@@ -95,10 +96,8 @@ const COMMON_TIMEZONES = (() => {
   return ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'UTC'];
 })();
 
-const browserTimezone = (() => {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
-  catch { return 'UTC'; }
-})();
+/** The product is IST-only: rules default to Asia/Kolkata, not the browser's zone. */
+const defaultTimezone = IST_TIMEZONE;
 
 /** "HH:MM" (24-hour, as returned by <input type="time">) -> minutes since midnight. */
 const parseHHMM = (t: string) => {
@@ -222,7 +221,7 @@ const Sessions = () => {
     startDate: '',
     runTimesLocal: ['09:00'] as string[],
     daysOfWeek: [0, 1, 2, 3, 4, 5, 6] as number[],
-    timezone: browserTimezone,
+    timezone: defaultTimezone,
   };
   const [formData, setFormData] = useState(emptyFormData);
   const [activeShortLinks, setActiveShortLinks] = useState<ShortLink[]>([]);
@@ -514,7 +513,7 @@ const Sessions = () => {
           sessionKind: isIntern ? 'intern_monitoring' : undefined,
         });
         toast.success(isScheduled
-          ? `Session scheduled for ${formData.scheduleDate} ${formData.scheduleTime} (${formData.timezone}) — it will be created automatically at that time.`
+          ? `Session scheduled for ${formatISODate(formData.scheduleDate)} ${formData.scheduleTime} (${formData.timezone}) — it will be created automatically at that time.`
           : isIntern
           ? 'Intern monitoring schedule created — a monitoring session will be generated automatically for each scheduled work day.'
           : 'Recurring session rule created — it will start generating sessions at its scheduled times.');
@@ -540,7 +539,7 @@ const Sessions = () => {
         batchId: isExam ? formData.batchId : (formData.batchId || undefined),
         assignedAdminIds: formData.assignedAdminIds.length > 0 ? formData.assignedAdminIds : undefined,
         collegeName: isExam ? formData.collegeName.trim() : undefined,
-        startsAt: isExam ? new Date(`${formData.startsDate}T${formData.startsTime}`).toISOString() : undefined,
+        startsAt: isExam ? istToUtcISO(formData.startsDate, formData.startsTime) : undefined,
         // Exam sessions have no self-service check-in flow, so there's
         // nothing for a short link to point to. Intern-monitoring sessions
         // DO need one — it's how the extension/passkey-registration flow
@@ -753,7 +752,7 @@ const Sessions = () => {
     { key: 'college',  label: 'College',    width: '12%', render: (s) => s.collegeName || <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'mentor',   label: 'Mentor',     width: '11%', render: (s) => (s.assignedAdminNames && s.assignedAdminNames.length > 0) ? s.assignedAdminNames.join(', ') : <span style={{ color: 'var(--color-muted)' }}>—</span> },
     { key: 'status',   label: 'Status',     width: '8%', render: (s) => { const st = getStatus(s); return <Badge tone={st.tone}>{st.label}</Badge>; }},
-    { key: 'starts',   label: 'Starts At',  width: '12%', render: (s) => s.startsAt ? new Date(s.startsAt).toLocaleString() : '—' },
+    { key: 'starts',   label: 'Starts At',  width: '12%', render: (s) => s.startsAt ? formatDateTime(s.startsAt) : '—' },
     { key: 'students', label: 'Students',   width: '7%', align: 'center', render: (s) => s.attendanceCount },
     { key: 'attendance', label: 'Attendance %', width: '9%', align: 'center', render: (s) => {
       if (s.attendancePercent == null) return <span style={{ color: 'var(--color-muted)' }}>—</span>;
@@ -810,7 +809,7 @@ const Sessions = () => {
                 { key: 'days', label: 'Days', width: '16%', render: (r) => r.runOnceDate ? `Once on ${r.runOnceDate}` : r.daysOfWeek.length === 7 ? 'Every day' : r.daysOfWeek.map((d) => DAY_LABELS[d]).join(', ') },
                 { key: 'timezone', label: 'Timezone', width: '13%', render: (r) => r.timezone },
                 { key: 'link', label: 'Locked Link', width: '11%', render: (r) => r.lockedShortCode ? `/s/${r.lockedShortCode}` : <span style={{ color: 'var(--color-muted)' }}>—</span> },
-                { key: 'next', label: 'Next Run', width: '13%', render: (r) => r.completed ? <span style={{ color: 'var(--color-muted)' }}>Ran</span> : r.isActive ? new Date(r.nextRunAt).toLocaleString() : <span style={{ color: 'var(--color-muted)' }}>Paused</span> },
+                { key: 'next', label: 'Next Run', width: '13%', render: (r) => r.completed ? <span style={{ color: 'var(--color-muted)' }}>Ran</span> : r.isActive ? formatDateTime(r.nextRunAt) : <span style={{ color: 'var(--color-muted)' }}>Paused</span> },
                 { key: 'status', label: 'Status', width: '8%', render: (r) => {
                   if (r.completed) return <Badge tone="neutral">Completed</Badge>;
                   if (!r.isActive) return <Badge tone="neutral">Paused</Badge>;
@@ -1097,7 +1096,7 @@ const Sessions = () => {
                   return (
                     <small style={{ color: 'var(--color-muted)' }}>
                       {first
-                        ? `First run: ${first.isToday ? 'today' : first.date} at ${first.time} (${formData.timezone}).${first.isToday ? '' : ' Times already passed today are skipped, not backfilled.'}`
+                        ? `First run: ${first.isToday ? 'today' : formatISODate(first.date)} at ${first.time} (${formData.timezone}).${first.isToday ? '' : ' Times already passed today are skipped, not backfilled.'}`
                         : 'Select at least one day and time.'}
                     </small>
                   );

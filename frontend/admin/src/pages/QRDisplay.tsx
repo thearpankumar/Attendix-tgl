@@ -4,6 +4,7 @@ import axios from 'axios';
 import { Copy } from 'lucide-react';
 
 import QRCode from 'qrcode';
+import { formatTimeSeconds } from '../utils/datetime';
 
 interface Session { _id: string; description?: string; expiresAt: string; isActive: boolean; totpEnabled?: boolean; }
 interface TotpData { totpCode: string; shortLink: string; expiresAt: string; windowSeconds: number; }
@@ -98,7 +99,7 @@ const QRDisplay = () => {
 
         <div className="kiosk-session-info">
           <p>Session: {session?.description || 'Attendance Session'}</p>
-          <p>Expires: {session?.expiresAt ? new Date(session.expiresAt).toLocaleTimeString() : 'N/A'}</p>
+          <p>Expires: {session?.expiresAt ? formatTimeSeconds(session.expiresAt) : 'N/A'}</p>
         </div>
       </div>
     </div>

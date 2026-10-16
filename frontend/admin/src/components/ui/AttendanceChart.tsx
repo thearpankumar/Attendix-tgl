@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Calendar } from 'lucide-react';
 import Modal from './Modal';
+import { addDaysISO, formatISODate, formatTime, todayIST } from '../../utils/datetime';
 
 /**
  * Dashboard attendance visualization — hand-built SVG bar chart (no chart dep).
@@ -38,32 +39,34 @@ function seeded(seed: number) {
 function generateDemoDataset(): Row[] {
   const rand = seeded(42);
   const out: Row[] = [];
-  const today = new Date();
+  const today = todayIST();
   for (let d = 0; d < 120; d++) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - d);
-    const iso = date.toISOString().slice(0, 10);
-    const weekend = date.getDay() === 0 || date.getDay() === 6;
+    const iso = addDaysISO(today, -d);
+    const dow = parseDay(iso).getDay();
+    const weekend = dow === 0 || dow === 6;
     const nSessions = weekend ? 1 + Math.floor(rand() * 2) : 2 + Math.floor(rand() * 4);
     for (let i = 0; i < nSessions; i++) {
       const location = DEMO_LOCATIONS[Math.floor(rand() * DEMO_LOCATIONS.length)];
       const session = DEMO_DESCRIPTIONS[Math.floor(rand() * DEMO_DESCRIPTIONS.length)];
       const hour = 8 + Math.floor(rand() * 10);
-      out.push({ date: iso, location, session, time: `${iso}T${String(hour).padStart(2, '0')}:00:00`, count: 12 + Math.floor(rand() * 42) });
+      out.push({ date: iso, location, session, time: `${iso}T${String(hour).padStart(2, '0')}:00:00+05:30`, count: 12 + Math.floor(rand() * 42) });
     }
   }
   return out;
 }
 
 function parseDay(s: string): Date { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
-function todayISO(): string { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
-function fmtDate(iso: string): string { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
-function fmtTime(t?: string): string { return t ? new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : ''; }
+function todayISO(): string { return todayIST(); }
+/** Local-calendar ISO key of a date built by `parseDay` (no UTC shift). */
+function localISO(d: Date): string { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function fmtDate(iso: string): string { return `${WEEKDAYS[parseDay(iso).getDay()]}, ${formatISODate(iso)}`; }
+function fmtTime(t?: string): string { return t ? formatTime(t) : ''; }
 
 function periodKey(date: Date, g: Granularity): { key: string; label: string; sort: number } {
-  if (g === 'monthly') return { key: `${date.getFullYear()}-${date.getMonth()}`, label: date.toLocaleDateString(undefined, { month: 'short' }), sort: date.getFullYear() * 12 + date.getMonth() };
-  if (g === 'weekly') { const s = new Date(date); s.setDate(date.getDate() - date.getDay()); s.setHours(0, 0, 0, 0); return { key: s.toISOString().slice(0, 10), label: s.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), sort: s.getTime() }; }
-  return { key: date.toISOString().slice(0, 10), label: date.toLocaleDateString(undefined, { day: 'numeric' }), sort: date.getTime() };
+  if (g === 'monthly') return { key: `${date.getFullYear()}-${date.getMonth()}`, label: formatISODate(`${localISO(date).slice(0, 8)}01`).slice(3, 6), sort: date.getFullYear() * 12 + date.getMonth() };
+  if (g === 'weekly') { const s = new Date(date); s.setDate(date.getDate() - date.getDay()); s.setHours(0, 0, 0, 0); return { key: localISO(s), label: formatISODate(localISO(s)).slice(0, 6), sort: s.getTime() }; }
+  return { key: localISO(date), label: String(date.getDate()), sort: date.getTime() };
 }
 
 function roundedTopPath(x: number, y: number, w: number, h: number, r: number): string {

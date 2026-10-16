@@ -12,6 +12,7 @@ import ConfirmModal from '../components/ui/ConfirmModal';
 import { describeDeleteImpact } from '../utils/batchDelete';
 import type { DeleteImpact } from '../utils/batchDelete';
 import BatchRosterEditorModal from '../components/batches/BatchRosterEditorModal';
+import { formatDate } from '../utils/datetime';
 
 const PAGE_SIZE = 30;
 
@@ -287,7 +288,7 @@ const Batches = () => {
     {
       key: 'created',
       label: 'Created',
-      render: (b: Batch) => new Date(b.createdAt).toLocaleDateString()
+      render: (b: Batch) => formatDate(b.createdAt)
     },
     {
       key: 'actions',
@@ -649,7 +650,7 @@ const Batches = () => {
                         <div>
                           <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, lineHeight: 1.2 }} className="dark:text-slate-400">Created On</div>
                           <div className="neumorphic-title" style={{ fontSize: '1rem', fontWeight: 700, lineHeight: 1.2, marginTop: '4px' }}>
-                            {new Date(selectedBatch.createdAt).toLocaleDateString()}
+                            {formatDate(selectedBatch.createdAt)}
                           </div>
                         </div>
                       </div>

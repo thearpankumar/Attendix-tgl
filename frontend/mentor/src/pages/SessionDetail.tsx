@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { PanInfo } from 'framer-motion';
 import { Check, X, Loader2, MapPin, Clock, Hourglass, PartyPopper, RotateCcw, Layers, List as ListIcon, Search, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import { downloadBlob } from '../utils/downloadBlob';
+import { formatDayMonthTime } from '../utils/datetime';
 
 interface RosterStudent {
   studentId: string;
@@ -236,7 +237,7 @@ const SessionDetail = () => {
         {session.batchName && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><MapPin size={13} /> {session.batchName}</span>}
         {session.startsAt && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <Clock size={13} /> {new Date(session.startsAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            <Clock size={13} /> {formatDayMonthTime(session.startsAt)}
           </span>
         )}
       </div>

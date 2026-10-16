@@ -5,6 +5,7 @@ import { toast } from 'react-toastify';
 import { MapPin, Clock, Users, ClipboardX, Loader2, Activity, CalendarClock, GraduationCap, PieChart } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import GreetingBanner from '../components/GreetingBanner';
+import { formatTime, formatWeekdayDateTime, istDateKey, todayIST } from '../utils/datetime';
 
 interface Session {
   _id: string;
@@ -37,9 +38,7 @@ const sessionState = (s: Session): SessionState => {
 
 const formatSlot = (s: Session) => {
   if (!s.startsAt) return null;
-  return new Date(s.startsAt).toLocaleString(undefined, {
-    weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  return formatWeekdayDateTime(s.startsAt);
 };
 
 const timeUntil = (iso: string) => {
@@ -50,15 +49,13 @@ const timeUntil = (iso: string) => {
   return h > 0 ? `Starts in ${h}h ${m}m` : `Starts in ${m}m`;
 };
 
-// Calendar-day comparison (local time), not a millisecond/24h-window
+// Calendar-day comparison (IST calendar day), not a millisecond/24h-window
 // comparison — a session starting at 11pm today and one starting at 1am
 // tomorrow are ~2 hours apart but must land in different buckets, while a
 // session 20+ hours from now that's still "today" (started this calendar
 // day) must not get pushed into "Upcoming".
 const isToday = (iso: string) => {
-  const d = new Date(iso);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return istDateKey(iso) === todayIST();
 };
 
 const Dashboard = () => {
@@ -227,7 +224,7 @@ const Dashboard = () => {
                       </div>
                       <div>
                         <div className="timeline-time">
-                          {new Date(s.startsAt!).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                          {formatTime(s.startsAt!)}
                           {state === 'upcoming' && ' · Upcoming'}
                         </div>
                         <div className="timeline-title">{s.batchName || s.collegeName || 'Session'}</div>

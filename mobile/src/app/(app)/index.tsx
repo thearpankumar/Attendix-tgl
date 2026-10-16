@@ -19,6 +19,7 @@ import { sessionState, useDashboard } from '../../hooks/useDashboard';
 import { useTheme } from '../../theme/ThemeProvider';
 import { Session } from '../../api/types';
 import { formatClock, formatSlot, timeUntil } from '../../utils/formatTime';
+import { istDateKey, todayIST } from '../../utils/datetime';
 
 // Calendar-day comparison (local time), not a millisecond/24h-window
 // comparison — a session starting at 11pm today and one starting at 1am
@@ -26,9 +27,7 @@ import { formatClock, formatSlot, timeUntil } from '../../utils/formatTime';
 // session 20+ hours from now that's still "today" (started this calendar
 // day) must not get pushed into "Upcoming".
 const isToday = (iso: string) => {
-  const d = new Date(iso);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return istDateKey(iso) === todayIST();
 };
 
 export default function Dashboard() {

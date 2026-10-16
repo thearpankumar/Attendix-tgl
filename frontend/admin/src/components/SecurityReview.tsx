@@ -26,6 +26,7 @@ import {
   Cancel as CancelIcon,
   Visibility as VisibilityIcon,
 } from '@mui/icons-material';
+import { formatDateTime } from '../utils/datetime';
 
 interface SecurityAnomaly {
   type: string;
@@ -324,7 +325,7 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
             <Box>
               <Typography variant="h6" sx={{ color: 'var(--color-text)', fontWeight: 600 }}>{selectedSubmission.rollNumber} - {selectedSubmission.studentName}</Typography>
               <Typography variant="body2" sx={{ color: 'var(--color-muted)' }}>
-                Captured: {new Date(selectedSubmission.capturedAt).toLocaleString()}
+                Captured: {formatDateTime(selectedSubmission.capturedAt)}
               </Typography>
 
               {selectedSubmission.gpsAnomalies && selectedSubmission.gpsAnomalies.length > 0 && (
@@ -361,7 +362,7 @@ export default function AdminSecurityReview({ sessionId, apiBaseUrl }: AdminSecu
                 <Box sx={{ mt: 3, p: 2, bgcolor: 'var(--color-success-bg)', border: '1px solid var(--color-success)', borderRadius: 'var(--radius-md)' }}>
                   <Typography variant="body2" sx={{ color: 'var(--color-success-txt)' }}>
                     Reviewed by <strong>{selectedSubmission.flagReviewedBy?.username || 'Admin'}</strong> on{' '}
-                    {new Date(selectedSubmission.flagReviewedAt || '').toLocaleString()}
+                    {formatDateTime(selectedSubmission.flagReviewedAt || '')}
                   </Typography>
                 </Box>
               )}

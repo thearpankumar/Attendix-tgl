@@ -3,6 +3,7 @@ import { useParams } from 'react-router';
 import { useMobileVerification } from '../hooks/useIsMobile';
 import MobileDeviceRequired from '../components/MobileDeviceRequired';
 import { useFaceDetection } from '../hooks/useFaceDetection';
+import { formatDateTime } from '../utils/datetime';
 
 interface SessionInfo { locationName: string; expiresAt: string; }
 interface StorageInfo { provider: string; supportsDirectUpload?: boolean; }
@@ -335,7 +336,7 @@ export default function LegacyAttend() {
               )}
               <div className="attend-panel">
                 <div className="attend-panel-label">Session expires</div>
-                <div className="attend-panel-value">{new Date(session.expiresAt).toLocaleString()}</div>
+                <div className="attend-panel-value">{formatDateTime(session.expiresAt)}</div>
               </div>
             </div>
           </div>

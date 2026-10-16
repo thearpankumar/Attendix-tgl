@@ -1,5 +1,6 @@
 import { Box, Typography, Chip, CircularProgress } from '@mui/material';
 import type { StudentBehaviorResponse } from '../hooks/useStudentBehavior';
+import { formatDateTime, formatTimeSeconds } from '../utils/datetime';
 
 const EVENT_LABELS: Record<string, string> = {
   extension_lifecycle: 'Extension install/uninstall',
@@ -91,7 +92,7 @@ export default function StudentBehaviorPanel({
                 {lock.extensionInstanceId.slice(0, 8)}…
               </Typography>
               <Typography variant="body2" sx={{ color: 'var(--color-muted)', ml: 'auto' }}>
-                {new Date(lock.lockedAt).toLocaleString()}
+                {formatDateTime(lock.lockedAt)}
               </Typography>
             </Box>
           ))}
@@ -114,7 +115,7 @@ export default function StudentBehaviorPanel({
             >
               <Typography variant="body2" sx={{ color: 'var(--color-text)' }}>{eventLabel(event.eventType)}</Typography>
               <Typography variant="body2" sx={{ color: 'var(--color-muted)', whiteSpace: 'nowrap' }}>
-                {new Date(event.recordedAt).toLocaleTimeString()}
+                {formatTimeSeconds(event.recordedAt)}
               </Typography>
             </Box>
           ))}

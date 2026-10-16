@@ -12,6 +12,7 @@ import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import { SkeletonRows } from '../components/ui/Skeleton';
+import { formatDate, formatDateTime } from '../utils/datetime';
 
 interface Session {
   _id: string;
@@ -135,7 +136,7 @@ const ShortLinks = () => {
       return (
         <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.sessionId.description || 'Session'}</div>
-          <div style={{ fontSize: '12px', color: 'var(--color-muted)' }}>Expires: {new Date(l.sessionId.expiresAt).toLocaleString()}</div>
+          <div style={{ fontSize: '12px', color: 'var(--color-muted)' }}>Expires: {formatDateTime(l.sessionId.expiresAt)}</div>
         </div>
       );
     }},
@@ -152,7 +153,7 @@ const ShortLinks = () => {
       return <Badge tone="success">Active</Badge>;
     }},
     { key: 'clicks',  label: 'Clicks',  width: '8%',  align: 'center', render: (l) => l.clickCount || 0 },
-    { key: 'created', label: 'Created', width: '11%', render: (l) => new Date(l.createdAt).toLocaleDateString() },
+    { key: 'created', label: 'Created', width: '11%', render: (l) => formatDate(l.createdAt) },
     { key: 'actions', label: 'Actions', width: '18%', render: (l) => (
       <div className="actions-cell">
         {l.sessionId ? (

@@ -9,6 +9,7 @@ import InfiniteScrollSentinel from '../components/ui/InfiniteScrollSentinel';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import { attendanceColor, attendanceColorBg } from '../utils/attendanceColor';
 import { downloadBlob, filenameFromContentDisposition } from '../utils/downloadBlob';
+import { formatDateTime, istDayEndISO, istDayStartISO } from '../utils/datetime';
 
 const PAGE_SIZE = 25;
 
@@ -58,12 +59,12 @@ interface StudentLookupResponse {
   notFound: string[];
 }
 
-/** yyyy-mm-dd (date input value) -> RFC3339 start/end-of-day UTC, or undefined if empty. */
+/** yyyy-mm-dd (date input value) -> RFC3339 start/end of that IST day, or undefined if empty. */
 function toRangeStart(value: string): string | undefined {
-  return value ? new Date(`${value}T00:00:00Z`).toISOString() : undefined;
+  return value ? istDayStartISO(value) : undefined;
 }
 function toRangeEnd(value: string): string | undefined {
-  return value ? new Date(`${value}T23:59:59.999Z`).toISOString() : undefined;
+  return value ? istDayEndISO(value) : undefined;
 }
 
 const StudentLookup = () => {
@@ -432,7 +433,7 @@ const StudentLookup = () => {
                         <tbody>
                           {sessionRows[s.studentId].map((row) => (
                             <tr key={row.sessionId}>
-                              <td>{new Date(row.sessionDate).toLocaleString()}</td>
+                              <td>{formatDateTime(row.sessionDate)}</td>
                               <td style={{ textTransform: 'capitalize' }}>{row.status}</td>
                               <td>{row.source ? row.source.replace('_', ' ') : '—'}</td>
                               <td>{row.markedByEmail || '—'}</td>

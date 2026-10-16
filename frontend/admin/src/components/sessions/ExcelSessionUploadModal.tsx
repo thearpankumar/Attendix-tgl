@@ -8,6 +8,7 @@ import {
 import MultiSelect from '../ui/MultiSelect';
 import InlineMentorCreate from './InlineMentorCreate';
 import type { Mentor } from '../../pages/Sessions';
+import { istToUtcISO, todayIST } from '../../utils/datetime';
 
 interface ParsedMentor { email: string; matchedAdminId: string | null; matchedName: string | null; }
 interface ParsedStudent { name: string; rollNumber: string; email?: string; round?: string; }
@@ -91,7 +92,7 @@ const parseDateFromFilename = (filename: string): string => {
     const candidate = `${yyyy}-${mm}-${dd}`;
     if (!Number.isNaN(new Date(candidate).getTime())) return candidate;
   }
-  return new Date().toISOString().slice(0, 10);
+  return todayIST();
 };
 
 const ExcelSessionUploadModal = ({ open, onClose, mentors, onMentorCreated, onSessionsCreated }: ExcelSessionUploadModalProps) => {
@@ -248,7 +249,7 @@ const ExcelSessionUploadModal = ({ open, onClose, mentors, onMentorCreated, onSe
             track: g.track,
             classLabel: g.classLabel,
             sessionTimeRaw: g.sessionTimeRaw,
-            startsAt: new Date(`${sessionDate}T${g.startTime}`).toISOString(),
+            startsAt: istToUtcISO(sessionDate, g.startTime),
             durationMinutes: g.durationMinutes,
             collegeName: g.collegeName,
             description: g.description,

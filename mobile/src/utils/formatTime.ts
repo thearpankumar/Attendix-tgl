@@ -1,25 +1,19 @@
+import { formatDayMonthTime, formatTime, formatWeekdayDateTime } from './datetime';
+
+/** "Fri, 16 Oct, 03:19 PM" (IST). */
 export function formatSlot(iso?: string): string | null {
   if (!iso) return null;
-  return new Date(iso).toLocaleString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatWeekdayDateTime(iso);
 }
 
+/** "03:19 PM" (IST). */
 export function formatClock(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return formatTime(iso);
 }
 
+/** "16 Oct, 03:19 PM" (IST). */
 export function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDayMonthTime(iso);
 }
 
 export function timeUntil(iso: string): string {
