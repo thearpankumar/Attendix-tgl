@@ -143,7 +143,7 @@ describe('Sessions', () => {
         batchId: 'batch1',
         assignedAdminIds: ['mentor1'],
         collegeName: 'XYZ College',
-        startsAt: new Date('2026-08-14T09:00').toISOString(),
+        startsAt: new Date('2026-08-14T09:00:00+05:30').toISOString(),
         shortlinkMode: 'none',
       }));
     });

@@ -20,7 +20,7 @@ const ROSTER_SUMMARY = { total: 45, marked: 42, present: 40, absent: 2, unmarked
 // the wall clock. Vitest's fake Date is what Dashboard.tsx's own
 // `new Date()`/`Date.now()` calls see too, so the component and the test
 // fixtures always agree on "now".
-const FIXED_NOW = new Date('2024-06-15T12:00:00');
+const FIXED_NOW = new Date('2024-06-15T12:00:00+05:30');
 
 // A function, not a module-level const: it must be evaluated after
 // vi.setSystemTime() has pinned the clock (in beforeEach below), not once
@@ -119,9 +119,8 @@ describe('Mentor Dashboard', () => {
   });
 
   it('does not show a session starting tomorrow under "Today" — it belongs in the Upcoming tab', async () => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
+    // Noon IST the next day (the clock is pinned to noon IST above).
+    const tomorrow = new Date(Date.now() + 24 * 3_600_000);
     const tomorrowSession = {
       ...liveSession(), _id: 'sess-tomorrow', batchName: 'SRM IST', collegeName: 'SRM IST',
       startsAt: tomorrow.toISOString(),
@@ -142,8 +141,7 @@ describe('Mentor Dashboard', () => {
   });
 
   it('does not show a misleading 100% Attendance when every session is upcoming, even if one has stray leftover marks', async () => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrow = new Date(Date.now() + 24 * 3_600_000);
     const upcomingWithStrayMarks = {
       ...liveSession(), _id: 'sess-upcoming-marked', batchName: 'SRM IST',
       startsAt: tomorrow.toISOString(),

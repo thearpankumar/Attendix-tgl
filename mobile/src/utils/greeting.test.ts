@@ -6,7 +6,7 @@ describe('greetingWord', () => {
   });
 
   const atHour = (hour: number) => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 0, 1, hour, 0, 0));
+    jest.useFakeTimers().setSystemTime(new Date(`2026-01-01T${String(hour).padStart(2, '0')}:00:00+05:30`));
   };
 
   it('says good morning before noon', () => {
@@ -46,7 +46,7 @@ describe('greetingPeriod', () => {
   });
 
   const atHour = (hour: number) => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 0, 1, hour, 0, 0));
+    jest.useFakeTimers().setSystemTime(new Date(`2026-01-01T${String(hour).padStart(2, '0')}:00:00+05:30`));
   };
 
   it('is morning before noon', () => {
