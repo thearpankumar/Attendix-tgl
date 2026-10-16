@@ -458,8 +458,10 @@ pub(crate) async fn ensure_batch_assignable(
 /// why: those sessions' roster, absent list, stats and exports are all
 /// derived from the batch, and attendance rows are keyed by roll number text,
 /// so nothing historical changes. Recurring rules pointing at the batch are
-/// paused (releasing their short link for reuse, but remembering it so a
-/// later resume re-locks it) with an explanatory `last_error`, since a rule can't generate sessions for a deleted batch.
+/// paused (`is_active = false`) with an explanatory `last_error`, since a rule
+/// can't generate sessions for a deleted batch. A paused rule keeps its
+/// `locked_short_code`; only active rules reserve a code (the unique index is
+/// partial on `is_active`), so others may reuse that code while it is paused.
 pub async fn delete_batch(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,

@@ -231,6 +231,16 @@ struct BatchIdCount {
     cnt: i64,
 }
 
+/// Optional UUID filter parameter: absent, blank or the literal `all` means
+/// "no filter"; a malformed value is a 400 instead of silently widening the
+/// result to everything.
+fn parse_filter_uuid(raw: Option<&str>, what: &str) -> Result<Option<Uuid>> {
+    let raw = raw
+        .map(str::trim)
+        .filter(|s| !s.eq_ignore_ascii_case("all"));
+    crate::utils::input::parse_optional_uuid(raw, what)
+}
+
 pub async fn get_dashboard_stats(
     State(state): State<Arc<crate::AppState>>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -246,22 +256,15 @@ pub async fn get_dashboard_stats(
     qb.push_bind(auth.id);
     qb.push(")");
 
-    if let Some(batch_id_str) = &query.batch_id {
-        if batch_id_str != "all" {
-            if let Ok(batch_uuid) = Uuid::parse_str(batch_id_str) {
-                qb.push(" AND batch_id = ");
-                qb.push_bind(batch_uuid);
-            }
-        }
+    // "all" (or absent/blank) means no filter; anything else must be a UUID.
+    if let Some(batch_uuid) = parse_filter_uuid(query.batch_id.as_deref(), "batch ID")? {
+        qb.push(" AND batch_id = ");
+        qb.push_bind(batch_uuid);
     }
 
-    if let Some(location_id_str) = &query.location_id {
-        if location_id_str != "all" {
-            if let Ok(location_uuid) = Uuid::parse_str(location_id_str) {
-                qb.push(" AND location_id = ");
-                qb.push_bind(location_uuid);
-            }
-        }
+    if let Some(location_uuid) = parse_filter_uuid(query.location_id.as_deref(), "location ID")? {
+        qb.push(" AND location_id = ");
+        qb.push_bind(location_uuid);
     }
 
     if let (Some(start_str), Some(end_str)) = (&query.start_date, &query.end_date) {
@@ -1088,6 +1091,7 @@ pub async fn get_attendance_series(
     Query(query): Query<AttendanceSeriesQuery>,
 ) -> Result<impl IntoResponse> {
     let days = query.days.unwrap_or(180).min(730);
+    let location_filter = parse_filter_uuid(query.location_id.as_deref(), "location ID")?;
     // Day-aligned in IST so the oldest bucket is a whole IST day.
     let from = crate::utils::ist::ist_day_bounds_utc(
         crate::utils::ist::ist_today() - chrono::Duration::days(days),
@@ -1109,6 +1113,9 @@ pub async fn get_attendance_series(
         std::collections::HashMap::new();
     let mut session_ids: Vec<Uuid> = Vec::new();
     for session in sessions {
+        if location_filter.is_some() && session.location_id != location_filter {
+            continue;
+        }
         session_ids.push(session.id);
         session_map.insert(
             session.id,

@@ -579,3 +579,33 @@ async fn undo_follows_the_same_exam_window_and_active_rules_as_marking() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+#[file_serial(admin_bootstrap)]
+async fn dashboard_filters_reject_malformed_uuids_but_accept_all_and_valid() {
+    let (app, db) = create_test_app().await;
+    let (client, super_id) = super_client(&app, &db, "dash-uuid").await;
+    let (location_id, batch_id) = seed_location_and_batch(&db, super_id, "DSH001").await;
+
+    for uri in [
+        "/api/admin/dashboard?batchId=not-a-uuid",
+        "/api/admin/dashboard?locationId=not-a-uuid",
+        "/api/admin/dashboard/attendance-series?location_id=bad",
+    ] {
+        let (status, body) = client.get(&app, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body:?}");
+    }
+
+    for uri in [
+        "/api/admin/dashboard?batchId=all&locationId=all".to_string(),
+        "/api/admin/dashboard?batchId=&locationId=".to_string(),
+        "/api/admin/dashboard".to_string(),
+        format!("/api/admin/dashboard?batchId={batch_id}&locationId={location_id}"),
+        "/api/admin/dashboard/attendance-series?location_id=all".to_string(),
+        "/api/admin/dashboard/attendance-series".to_string(),
+        format!("/api/admin/dashboard/attendance-series?location_id={location_id}"),
+    ] {
+        let (status, body) = client.get(&app, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body:?}");
+    }
+}
