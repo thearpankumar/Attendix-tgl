@@ -32,6 +32,10 @@ export const useAuth = () => {
   return ctx;
 };
 
+/** Like `useAuth` but returns null outside an AuthProvider instead of throwing —
+ * for leaf components that only want the user id for a per-user preference. */
+export const useOptionalAuth = () => useContext(AuthContext);
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [admin, setAdmin] = useState<Admin | null>(null);
   const [loading, setLoading] = useState(true);

@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import SessionRecordFilters, { emptyRecordFilters } from '../../../src/components/sessions/SessionRecordFilters';
 import type { SessionRecordFiltersState } from '../../../src/components/sessions/SessionRecordFilters';
 
@@ -129,5 +129,94 @@ describe('SessionRecordFilters', () => {
     fireEvent.focus(screen.getByLabelText(/Select Classes/i));
     fireEvent.click(screen.getByText('Room 1'));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ classLabels: ['Room 1'] }));
+  });
+
+  describe('collapsible card', () => {
+    beforeEach(() => localStorage.clear());
+
+    const toggle = () => screen.getByRole('button', { name: /^Filters/ });
+
+    it('is expanded by default with aria-expanded and aria-controls wired to the body', () => {
+      renderFilters(emptyRecordFilters);
+      const btn = toggle();
+      expect(btn).toHaveAttribute('aria-expanded', 'true');
+      const body = document.getElementById(btn.getAttribute('aria-controls')!);
+      expect(body).not.toBeNull();
+      expect(body).not.toHaveClass('is-collapsed');
+      expect(screen.queryByTestId('filters-summary')).not.toBeInTheDocument();
+    });
+
+    it('collapses and expands on click, keeping the body mounted and Export visible', () => {
+      renderFilters(emptyRecordFilters);
+      fireEvent.click(toggle());
+      expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+      const body = document.getElementById(toggle().getAttribute('aria-controls')!)!;
+      expect(body).toHaveClass('is-collapsed');
+      expect(screen.getByLabelText(/Select Batches/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Export Filtered/ })).toBeVisible();
+      fireEvent.click(toggle());
+      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+      expect(body).not.toHaveClass('is-collapsed');
+    });
+
+    it('is a real button, so Enter/Space activation comes from the platform', () => {
+      renderFilters(emptyRecordFilters);
+      expect(toggle().tagName).toBe('BUTTON');
+      expect(toggle()).toHaveAttribute('type', 'button');
+    });
+
+    it('does not toggle when Export is clicked', () => {
+      const onExport = vi.fn();
+      render(
+        <SessionRecordFilters allSessions={SESSIONS} batches={BATCHES} filters={emptyRecordFilters}
+          onChange={vi.fn()} onExportFiltered={onExport} exporting={false} exportCount={3} />
+      );
+      fireEvent.click(screen.getByRole('button', { name: /Export Filtered \(3\)/ }));
+      expect(onExport).toHaveBeenCalledTimes(1);
+      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('shows "No filters" when collapsed with nothing selected', () => {
+      renderFilters(emptyRecordFilters);
+      fireEvent.click(toggle());
+      expect(screen.getByTestId('filters-summary')).toHaveTextContent('No filters');
+    });
+
+    it('summarises the number of active filters when collapsed', () => {
+      renderFilters({ ...emptyRecordFilters, batchIds: ['batchA', 'batchB'], tracks: ['DSA'], search: ' ann ' });
+      fireEvent.click(toggle());
+      expect(screen.getByTestId('filters-summary')).toHaveTextContent('3 filters active');
+    });
+
+    it('uses the singular for one active filter and ignores a blank search', () => {
+      renderFilters({ ...emptyRecordFilters, markingStatus: 'partial', search: '   ' });
+      fireEvent.click(toggle());
+      expect(screen.getByTestId('filters-summary')).toHaveTextContent('1 filter active');
+    });
+
+    it('persists the collapsed state across remounts and defaults to expanded when storage throws', () => {
+      const first = renderFilters(emptyRecordFilters);
+      fireEvent.click(toggle());
+      first.unmount();
+      renderFilters(emptyRecordFilters);
+      expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('still works when localStorage is unavailable', () => {
+      const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+      const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      renderFilters(emptyRecordFilters);
+      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(toggle());
+      expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+      getSpy.mockRestore();
+      setSpy.mockRestore();
+    });
+
+    it('does not change filter behaviour while collapsed', () => {
+      const { onChange } = renderFilters({ ...emptyRecordFilters, tracks: ['DSA'] });
+      fireEvent.click(toggle());
+      expect(onChange).not.toHaveBeenCalled();
+    });
   });
 });

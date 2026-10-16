@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Download } from 'lucide-react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import { ChevronDown, Download } from 'lucide-react';
+import { useOptionalAuth } from '../../context/AuthContext';
 import MultiSelect from '../ui/MultiSelect';
 import Button from '../ui/Button';
 
@@ -53,6 +54,17 @@ const MARKING_STATUS_OPTIONS = [
   { value: 'partial', label: 'Partially Marked' },
   { value: 'complete', label: 'Fully Marked' },
 ];
+
+/** How many of the six filters currently narrow the list. */
+export const countActiveFilters = (f: SessionRecordFiltersState): number =>
+  [f.batchIds.length > 0, f.classLabels.length > 0, f.tracks.length > 0, f.timeSlots.length > 0, !!f.markingStatus, !!f.search.trim()]
+    .filter(Boolean).length;
+
+const EXPANDED_KEY_PREFIX = 'sessionRecordFilters.expanded';
+
+const readExpanded = (key: string): boolean => {
+  try { return localStorage.getItem(key) !== 'false'; } catch { return true; }
+};
 
 type FacetKey = 'batchIds' | 'classLabels' | 'tracks' | 'timeSlots';
 
@@ -138,6 +150,20 @@ const SessionRecordFilters = ({
     return batches.filter((b) => allowedKeys.has(b._id)).map((b) => ({ value: b._id, label: label(b) }));
   }, [allSessions, batches, filters]);
 
+  // Expanded/collapsed is remembered per signed-in user (default expanded).
+  // Collapsing only hides the body — the filters stay mounted and applied.
+  const auth = useOptionalAuth();
+  const expandedKey = `${EXPANDED_KEY_PREFIX}:${auth?.admin?._id ?? 'anonymous'}`;
+  const [expanded, setExpanded] = useState(() => readExpanded(expandedKey));
+  useEffect(() => setExpanded(readExpanded(expandedKey)), [expandedKey]);
+  const bodyId = useId();
+  const activeCount = countActiveFilters(filters);
+  const toggleExpanded = () => {
+    const next = !expanded;
+    setExpanded(next);
+    try { localStorage.setItem(expandedKey, String(next)); } catch { /* ignore */ }
+  };
+
   const set = <K extends keyof SessionRecordFiltersState>(key: K, value: SessionRecordFiltersState[K]) =>
     onChange({ ...filters, [key]: value });
 
@@ -155,98 +181,122 @@ const SessionRecordFilters = ({
   return (
     <div className="card session-record-filters">
       <div className="session-record-filters-header">
-        <h3>Filters</h3>
+        <h3 className="session-record-filters-heading">
+          <button
+            type="button"
+            className="session-record-filters-toggle"
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={toggleExpanded}
+          >
+            <ChevronDown size={18} className="session-record-filters-chevron" aria-hidden="true" />
+            <span>Filters</span>
+            {!expanded && (
+              <span className={`session-record-filters-summary${activeCount > 0 ? ' is-active' : ''}`} data-testid="filters-summary">
+                {activeCount > 0 ? `${activeCount} filter${activeCount === 1 ? '' : 's'} active` : 'No filters'}
+              </span>
+            )}
+          </button>
+        </h3>
         <Button variant="secondary" size="sm" onClick={onExportFiltered} disabled={exporting || exportCount === 0}>
           <Download size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
           {exporting ? 'Exporting…' : `Export Filtered (${exportCount})`}
         </Button>
       </div>
 
-      <div className="form-group">
-        <div className="session-record-filters-label-row">
-          <label htmlFor="record-filter-batches">Select Batches (multiple allowed)</label>
-          {filters.batchIds.length > 0 && (
-            <button type="button" className="link-button" onClick={() => set('batchIds', [])}>Deselect All</button>
-          )}
-        </div>
-        <MultiSelect
-          id="record-filter-batches"
-          options={batchOptions}
-          selected={filters.batchIds}
-          onChange={(next) => set('batchIds', next)}
-          placeholder={batchOptions.length === 0 ? 'No batches available for the selected filters' : 'Search batches…'}
-          emptyMessage="No batches available for the selected filters"
-        />
-      </div>
-
-      <div className="session-record-filters-row">
-        <div className="form-group">
-          <div className="session-record-filters-label-row">
-            <label htmlFor="record-filter-classes">Select Classes</label>
-            {filters.classLabels.length > 0 && (
-              <button type="button" className="link-button" onClick={() => set('classLabels', [])}>Deselect All</button>
-            )}
+      <div
+        id={bodyId}
+        className={`session-record-filters-collapse${expanded ? '' : ' is-collapsed'}`}
+        inert={!expanded}
+      >
+        <div className="session-record-filters-collapse-inner">
+          <div className="form-group">
+            <div className="session-record-filters-label-row">
+              <label htmlFor="record-filter-batches">Select Batches (multiple allowed)</label>
+              {filters.batchIds.length > 0 && (
+                <button type="button" className="link-button" onClick={() => set('batchIds', [])}>Deselect All</button>
+              )}
+            </div>
+            <MultiSelect
+              id="record-filter-batches"
+              options={batchOptions}
+              selected={filters.batchIds}
+              onChange={(next) => set('batchIds', next)}
+              placeholder={batchOptions.length === 0 ? 'No batches available for the selected filters' : 'Search batches…'}
+              emptyMessage="No batches available for the selected filters"
+            />
           </div>
-          <MultiSelect
-            id="record-filter-classes"
-            options={classOptions}
-            selected={filters.classLabels}
-            onChange={(next) => set('classLabels', next)}
-            placeholder="Search classes…"
-            emptyMessage="No classes available for the selected filters"
-          />
-        </div>
 
-        <div className="form-group">
-          <div className="session-record-filters-label-row">
-            <label htmlFor="record-filter-tracks">Select Tracks</label>
-            {filters.tracks.length > 0 && (
-              <button type="button" className="link-button" onClick={() => set('tracks', [])}>Deselect All</button>
-            )}
+          <div className="session-record-filters-row">
+            <div className="form-group">
+              <div className="session-record-filters-label-row">
+                <label htmlFor="record-filter-classes">Select Classes</label>
+                {filters.classLabels.length > 0 && (
+                  <button type="button" className="link-button" onClick={() => set('classLabels', [])}>Deselect All</button>
+                )}
+              </div>
+              <MultiSelect
+                id="record-filter-classes"
+                options={classOptions}
+                selected={filters.classLabels}
+                onChange={(next) => set('classLabels', next)}
+                placeholder="Search classes…"
+                emptyMessage="No classes available for the selected filters"
+              />
+            </div>
+
+            <div className="form-group">
+              <div className="session-record-filters-label-row">
+                <label htmlFor="record-filter-tracks">Select Tracks</label>
+                {filters.tracks.length > 0 && (
+                  <button type="button" className="link-button" onClick={() => set('tracks', [])}>Deselect All</button>
+                )}
+              </div>
+              <MultiSelect
+                id="record-filter-tracks"
+                options={trackOptions}
+                selected={filters.tracks}
+                onChange={(next) => set('tracks', next)}
+                placeholder="Search tracks…"
+                emptyMessage="No tracks available for the selected filters"
+              />
+            </div>
+
+            <div className="form-group">
+              <div className="session-record-filters-label-row">
+                <label htmlFor="record-filter-timeslots">Select Time Slots</label>
+                {filters.timeSlots.length > 0 && (
+                  <button type="button" className="link-button" onClick={() => set('timeSlots', [])}>Deselect All</button>
+                )}
+              </div>
+              <MultiSelect
+                id="record-filter-timeslots"
+                options={timeSlotOptions}
+                selected={filters.timeSlots}
+                onChange={(next) => set('timeSlots', next)}
+                placeholder="Search time slots…"
+                emptyMessage="No time slots available for the selected filters"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="record-filter-status">Status</label>
+              <select id="record-filter-status" value={filters.markingStatus} onChange={(e) => set('markingStatus', e.target.value)}>
+                {MARKING_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="record-filter-search">Search</label>
+              <input
+                id="record-filter-search"
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search students by name or registration…"
+              />
+            </div>
           </div>
-          <MultiSelect
-            id="record-filter-tracks"
-            options={trackOptions}
-            selected={filters.tracks}
-            onChange={(next) => set('tracks', next)}
-            placeholder="Search tracks…"
-            emptyMessage="No tracks available for the selected filters"
-          />
-        </div>
-
-        <div className="form-group">
-          <div className="session-record-filters-label-row">
-            <label htmlFor="record-filter-timeslots">Select Time Slots</label>
-            {filters.timeSlots.length > 0 && (
-              <button type="button" className="link-button" onClick={() => set('timeSlots', [])}>Deselect All</button>
-            )}
-          </div>
-          <MultiSelect
-            id="record-filter-timeslots"
-            options={timeSlotOptions}
-            selected={filters.timeSlots}
-            onChange={(next) => set('timeSlots', next)}
-            placeholder="Search time slots…"
-            emptyMessage="No time slots available for the selected filters"
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="record-filter-status">Status</label>
-          <select id="record-filter-status" value={filters.markingStatus} onChange={(e) => set('markingStatus', e.target.value)}>
-            {MARKING_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="record-filter-search">Search</label>
-          <input
-            id="record-filter-search"
-            type="text"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search students by name or registration…"
-          />
         </div>
       </div>
     </div>

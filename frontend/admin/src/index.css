@@ -1550,12 +1550,73 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
 }
 .session-record-filters-header h3 {
   font-size: var(--text-md);
   font-weight: 700;
   margin: 0;
+}
+/* The whole left side of the header is the toggle; Export sits beside it. */
+.session-record-filters-header .session-record-filters-heading { flex: 1; min-width: 0; }
+.session-record-filters-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 6px);
+}
+.session-record-filters-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.session-record-filters-chevron {
+  flex-shrink: 0;
+  color: var(--color-muted);
+  transition: transform 220ms var(--ease);
+}
+.session-record-filters-toggle[aria-expanded="false"] .session-record-filters-chevron {
+  transform: rotate(-90deg);
+}
+.session-record-filters-summary {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-record-filters-summary.is-active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* Smooth open/close without measuring height: animate the grid row. */
+.session-record-filters-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: var(--space-4);
+  transition: grid-template-rows 220ms var(--ease), margin-top 220ms var(--ease);
+}
+.session-record-filters-collapse-inner { min-height: 0; }
+.session-record-filters-collapse.is-collapsed {
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  visibility: hidden;
+  transition: grid-template-rows 220ms var(--ease), margin-top 220ms var(--ease), visibility 0s linear 220ms;
+}
+/* Clip only while animating/collapsed so open dropdown menus aren't cut off. */
+.session-record-filters-collapse.is-collapsed .session-record-filters-collapse-inner { overflow: hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .session-record-filters-collapse,
+  .session-record-filters-collapse.is-collapsed,
+  .session-record-filters-chevron { transition: none; }
 }
 
 .session-record-filters-row {

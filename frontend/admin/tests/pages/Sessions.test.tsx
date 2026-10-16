@@ -90,6 +90,28 @@ describe('Sessions', () => {
 
   // ─── Rendering ────────────────────────────────────────────────────────────
 
+  it('shows a rule-generated session that appears after load once the window regains focus, badged "From schedule"', async () => {
+    const generated = {
+      ...ACTIVE_SESSION, _id: 'gen1', locationId: { name: 'Room 202' }, recurringRuleId: 'rule1',
+    };
+    let current: object[] = [];
+    (axios.get as any).mockImplementation((url: string, config?: any) =>
+      makeMockGet({
+        sessions: current, locations: [LOCATION],
+        rules: [{ _id: 'rule1', description: 'Morning stand-up', runTimesLocal: ['09:00'], daysOfWeek: [1], timezone: 'Asia/Kolkata', isActive: true, consecutiveFailures: 0, durationMinutes: 30, nextRunAt: new Date().toISOString(), createdAt: new Date().toISOString(), monitoringEnabled: false, sessionKind: 'attendance' }],
+      })(url, config));
+    renderComponent();
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/admin/sessions', expect.anything()));
+    expect(screen.queryByText('Room 202')).not.toBeInTheDocument();
+
+    // The scheduler fires while the page is open.
+    current = [generated];
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(screen.getByText('Room 202')).toBeInTheDocument());
+    expect(screen.getByText('From schedule')).toBeInTheDocument();
+    expect(screen.getByTitle('From schedule: Morning stand-up')).toBeInTheDocument();
+  });
+
   it('renders sessions list', async () => {
     (axios.get as any).mockImplementation(makeMockGet({ sessions: [ACTIVE_SESSION], locations: [LOCATION] }));
     renderComponent();
