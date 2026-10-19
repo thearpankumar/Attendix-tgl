@@ -334,7 +334,12 @@ async fn dashboard_and_session_counts_only_count_present_checkins() {
         .unwrap();
     assert_eq!(mine["attendanceCount"], 1, "{mine:?}");
 
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    // sessions-by-date reads the date as an IST day, so ask for today in IST (UTC's date is
+    // a day behind for 5.5 hours every evening).
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap())
+        .format("%Y-%m-%d")
+        .to_string();
     let (status, by_date) = client
         .get(
             &app,
