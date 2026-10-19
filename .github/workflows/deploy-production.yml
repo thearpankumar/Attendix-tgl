@@ -20,7 +20,7 @@ jobs:
   build-and-push:
     name: Build & Push (${{ matrix.image }})
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABELS && fromJSON(vars.RUNNER_LABELS) || 'ubuntu-latest' }}
     environment: production
     permissions:
       contents: read
