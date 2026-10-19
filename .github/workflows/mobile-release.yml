@@ -48,7 +48,7 @@ jobs:
   build:
     name: EAS Build (${{ matrix.platform }})
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABELS && fromJSON(vars.RUNNER_LABELS) || 'ubuntu-latest' }}
     environment: production
     timeout-minutes: 60
     defaults:
@@ -111,7 +111,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABELS && fromJSON(vars.RUNNER_LABELS) || 'ubuntu-latest' }}
     permissions:
       contents: write
 

@@ -47,11 +47,11 @@ async fn assigned_mentor_cannot_edit_schedule_and_start_moves_the_window() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
     let session_id: Uuid = body["_id"].as_str().unwrap().parse().unwrap();
-    // Pin the session to 12:00 UTC today so the same-day edit guard can't
-    // flake around midnight.
+    // Pin the session to 12:00 IST today. The same-day edit guard compares IST calendar
+    // days, so pinning to a UTC day flakes for the 5.5 hours after 18:30 UTC.
     sqlx::query(
-        "UPDATE sessions SET starts_at = date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '12 hours', \
-         expires_at = date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '13 hours' WHERE id = $1",
+        "UPDATE sessions SET starts_at = date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + interval '12 hours', \
+         expires_at = date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + interval '13 hours' WHERE id = $1",
     )
     .bind(session_id)
     .execute(&db)
@@ -82,7 +82,13 @@ async fn assigned_mentor_cannot_edit_schedule_and_start_moves_the_window() {
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(unchanged.format("%H:%M").to_string(), "13:00");
+    assert_eq!(
+        unchanged
+            .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap())
+            .format("%H:%M")
+            .to_string(),
+        "13:00"
+    );
 
     // The creator moves only the start: the 60-minute window slides along
     // instead of being stranded at the old expiry.
